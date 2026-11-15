@@ -176,27 +176,53 @@ To make sure each column has the same length, helper function to check is requir
 
 ```rust
 pub struct TimeSeriesDescription {
-    pub labels: Vec<LabelSpec>,     // label name, cardinality, Zipf skewness (0 = uniform)
-    pub series_num: u64,            // distinct label sets; at most the product of the cardinalities
-    pub start_ms: i64,              // first timestamp (default 0)
-    pub sample_interval_ms: u64,    // milliseconds between two samples of one series
-    pub duration_ms: u64,           // ceil(duration_ms / sample_interval_ms) samples per series
-    pub value: DataDistribution,    // drawn independently per series; its own seed is unused
-    pub counter: bool,              // value = running sum of the draws, each floored at 0
-    pub seed: u64,                  // fixes the label sets and every value
+    pub labels: Vec<SeriesLabelSpec>,       // label name, cardinality, Zipf skewness (0 = uniform)
+    pub series_num: u64,                    // distinct label sets; at most the product of the cardinalities
+    pub start_ms: i64,                      // timestamp of the first sample (default 0)
+    pub sample_interval_ms: u64,            // milliseconds between two samples of one series
+    pub duration_ms: u64,                   // ceil(duration_ms / sample_interval_ms) samples per series
+    pub value_distribution: DataDistribution, // drawn independently per series; its seed is mixed with `seed`
+    pub counter: bool,                      // value = running sum of the draws, each floored at 0
+    pub seed: u64,                          // fixes the label sets and, with the distribution's seed, every value
 }
 
-pub struct LabelSpec {
+pub struct SeriesLabelSpec {
     pub name: String,      // values are `{name}_0` .. `{name}_{cardinality-1}`
     pub cardinality: u64,
-    pub skewness: f64,
+    pub skewness: f64,     // skew of each draw; see below for the series returned
 }
 ```
 
 `generate()` draws the label sets; `samples()` on the result yields
-`(&[(name, value)], timestamp_ms, value)` time-major, drawing values lazily.
-The crate depends only on serde, rand and thiserror with default features, so
-another workspace can use it as a git dependency without the benchmark.
+`Result<(&[(name, value)], timestamp_ms, value)>` time-major, drawing values
+lazily.
+
+- **Timestamps:** series `i`'s samples sit at `start_ms + k * sample_interval_ms`
+  for every `k` with `k * sample_interval_ms < duration_ms`, so the first one
+  is `start_ms` itself.
+- **Seeds:** label sets come from `seed`. Series `i`'s values come from its own
+  stream, seeded `splitmix64(s ^ splitmix64(i))` with
+  `s = seed ^ value_distribution.seed`, so the distribution's own seed changes
+  every value and leaves the label sets alone. At 0 it leaves `seed` alone in
+  charge.
+- **Label skew:** `skewness` is the skew of each draw. Series are distinct label
+  sets, so once a heavy set is taken the next series must use another one.
+  Far below the product of the cardinalities the series keep the draw skew;
+  as `series_num` approaches the product they approach uniform, and at the
+  product every set is used once. Label sets are drawn repeatedly, keeping
+  each new one; when the product is at most 4 x `series_num`, they come
+  instead from weighted sampling without replacement over every set (key
+  `u^(1/w)`, `w` the product of the set's Zipf weights), which gives the same
+  distribution in one pass and always succeeds.
+- **Counter overflow:** a counter whose running sum passes 2^53, where an `f64`
+  stops counting by ones, yields one `Err` naming the series and timestamp,
+  and the iterator ends there. A plain series never fails.
+
+With default features the crate depends only on serde, rand, rand_distr,
+rand_xoshiro and thiserror, so another workspace can use it as a git
+dependency without the benchmark. The `files` feature adds serde_json and
+serde_norway for `TableDescription::from_path`; `import` adds polars, csv,
+chrono, flate2 and anyhow for external datasets.
 
 ## What is promised
 

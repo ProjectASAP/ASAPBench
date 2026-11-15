@@ -226,19 +226,6 @@ pub fn reduce_one(
     record: &MergedRecord,
     accuracy_metric: &str,
 ) -> Result<AtomicCostEntry, SkipReason> {
-    let entry = reduce_scores(record)?;
-    if !entry.query_accuracy.contains_key(accuracy_metric) {
-        return Err(SkipReason::MissingMetric(accuracy_metric.to_string()));
-    }
-    Ok(AtomicCostEntry {
-        accuracy_metric: accuracy_metric.to_string(),
-        ..entry
-    })
-}
-
-/// [`reduce_one`] without naming the row's metric (`accuracy_metric` is
-/// empty), for a consumer that keeps every score (ERP).
-pub(crate) fn reduce_scores(record: &MergedRecord) -> Result<AtomicCostEntry, SkipReason> {
     let mem_bytes_per_instance = record
         .memory_bytes
         .ok_or(SkipReason::MissingField("memory_bytes"))? as f64;
@@ -263,6 +250,9 @@ pub(crate) fn reduce_scores(record: &MergedRecord) -> Result<AtomicCostEntry, Sk
     )?;
 
     let query_accuracy = accuracy_map("query_accuracy", record.query.accuracy.as_ref())?;
+    if !query_accuracy.contains_key(accuracy_metric) {
+        return Err(SkipReason::MissingMetric(accuracy_metric.to_string()));
+    }
 
     // A multi-subpopulation accumulator holds every group in one instance, so
     // its footprint and fold were measured at the bench spec's group count.
@@ -289,7 +279,7 @@ pub(crate) fn reduce_scores(record: &MergedRecord) -> Result<AtomicCostEntry, Sk
             ..measured_at(record, groups_measured)
         },
         query_accuracy,
-        accuracy_metric: String::new(),
+        accuracy_metric: accuracy_metric.to_string(),
     })
 }
 

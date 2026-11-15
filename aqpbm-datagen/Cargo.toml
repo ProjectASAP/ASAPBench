@@ -4,20 +4,23 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Synthetic data generator for the AQPBM benchmarks: a table description in, typed in-memory columns out. Distribution, special rule, rendering and cross-column relation are separable axes. Depends on nothing in the workspace and knows nothing about sketches -- the sketch benchmark is its first consumer, not its owner."
+description = "Synthetic data generator for the AQPBM benchmarks: a table description in, typed in-memory columns out; or a time-series description in, labelled series with lazily drawn samples out. Distribution, special rule, rendering and cross-column relation are separable axes. Depends on nothing in the workspace and knows nothing about sketches -- the sketch benchmark is its first consumer, not its owner."
 
 [features]
 # Derive `JsonSchema` on the types a `TableDescription` reaches, so
 # `aqpbm-core` can describe the `workload` field of a report record.
 # Off by default: only the schema export needs it.
 schema = ["dep:schemars"]
-import = ["dep:anyhow", "dep:chrono", "dep:csv", "dep:flate2", "dep:polars"]
+# Load a description from a YAML or JSON file (`TableDescription::from_path`).
+# Off by default: a library caller builds descriptions in code.
+files = ["dep:serde_json", "dep:serde_norway"]
+import = ["files", "dep:anyhow", "dep:chrono", "dep:csv", "dep:flate2", "dep:polars"]
 
 [dependencies]
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
-serde_norway.workspace = true
+serde_norway = { workspace = true, optional = true }
 rand.workspace = true
 rand_distr.workspace = true
 rand_xoshiro.workspace = true
@@ -27,3 +30,6 @@ chrono = { workspace = true, optional = true }
 csv = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 polars = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_norway.workspace = true
