@@ -19,3 +19,8 @@ pub enum DataGenError {
     #[error("import: {0}")]
     Import(String),
 }
+
+/// A [`DataGenError::BadParam`] with this message.
+pub(crate) fn bad(msg: String) -> DataGenError {
+    DataGenError::BadParam(msg)
+}
