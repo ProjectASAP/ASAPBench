@@ -1,6 +1,12 @@
 //! Synthetic data generation — see `docs/aqpbm-datagen.md`. In-memory only: no
 //! files, no workspace deps. Four separable axes: distribution ([`dist`]), rule
 //! ([`rule`]), rendering ([`value`]), relation ([`table`]).
+//!
+//! Two entry points: [`TableDescription::generate`] for typed columns, and
+//! [`TimeSeriesDescription::generate`] for labelled time series (see
+//! [`timeseries`] for an example). With default features the crate depends
+//! only on serde, rand and thiserror, so another workspace can use it as a
+//! git dependency without the benchmark.
 
 pub mod burst;
 pub mod column;
@@ -10,6 +16,7 @@ pub mod error;
 pub mod import;
 pub mod rule;
 pub mod table;
+pub mod timeseries;
 pub mod value;
 
 pub use burst::{inject_interval_bursts, BurstSpec};
@@ -23,6 +30,9 @@ pub use error::DataGenError;
 pub use import::{ExternalTableDescription, WindowSpec};
 pub use rule::{RULE_MASK_ALL, RULE_MONOTONIC_INCREASE, RULE_NONE};
 pub use table::{splitmix64, GeneratedTable, TableDescription};
+pub use timeseries::{
+    GeneratedTimeSeries, LabelSpec, TimeSeriesDescription, TimeSeriesSample, TimeSeriesSamples,
+};
 pub use value::{ColumnData, ColumnItem, StrCfg, StringOpts};
 
 #[cfg(test)]
