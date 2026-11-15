@@ -52,7 +52,4 @@ min_records: 10000
 ```
 
 `dataset` remains a logical path resolved below `--data-root`; it and the
-selected window are retained in ERP provenance. Profiles for a custom dataset
-are exact-matched by that descriptor unless the caller also supplies a fitted
-`erp_shape` family and parameters. An unseen dataset therefore cannot silently
-borrow evidence from an unrelated synthetic distribution.
+selected window are recorded in the report's workload descriptor.

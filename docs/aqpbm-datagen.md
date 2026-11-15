@@ -168,6 +168,36 @@ To make sure `column_num` and actual column count in `data`, helper function to 
 
 To make sure each column has the same length, helper function to check is required.
 
+## Time series
+
+`TimeSeriesDescription` generates labelled time series instead of a table:
+`series_num` distinct label sets, each sampled every `sample_interval_ms` for
+`duration_ms` from `start_ms`.
+
+```rust
+pub struct TimeSeriesDescription {
+    pub labels: Vec<LabelSpec>,     // label name, cardinality, Zipf skewness (0 = uniform)
+    pub series_num: u64,            // distinct label sets; at most the product of the cardinalities
+    pub start_ms: i64,              // first timestamp (default 0)
+    pub sample_interval_ms: u64,    // milliseconds between two samples of one series
+    pub duration_ms: u64,           // ceil(duration_ms / sample_interval_ms) samples per series
+    pub value: DataDistribution,    // drawn independently per series; its own seed is unused
+    pub counter: bool,              // value = running sum of the draws, each floored at 0
+    pub seed: u64,                  // fixes the label sets and every value
+}
+
+pub struct LabelSpec {
+    pub name: String,      // values are `{name}_0` .. `{name}_{cardinality-1}`
+    pub cardinality: u64,
+    pub skewness: f64,
+}
+```
+
+`generate()` draws the label sets; `samples()` on the result yields
+`(&[(name, value)], timestamp_ms, value)` time-major, drawing values lazily.
+The crate depends only on serde, rand and thiserror with default features, so
+another workspace can use it as a git dependency without the benchmark.
+
 ## What is promised
 
 - **Determinism:** The same description always produces the same column.
