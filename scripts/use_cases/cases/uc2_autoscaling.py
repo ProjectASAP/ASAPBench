@@ -80,8 +80,15 @@ def derive(rows, queries, policy=bounds.PLAIN, widen=None):
     return out + rules.derive(rows, RULES, policy, widen)
 
 
-DASHBOARD = {"uid": "autoscaling", "title": "2 · Autoscaling",
-             "parts": ("overview", "cost", "stage1", "decision", "rules", "rule_error"),
+DASHBOARD = {"uid": "autoscaling", "title": "2 · Autoscaling", "figure": "uc2-resource-scaling.svg",
+             "entity": "container",
+             "data": {"summary": "CPU and memory use of each container; one series per container.",
+                      "columns": {"container": "Container name, in four groups: steady (no change), surge (CPU "
+                                               "rises), leak (memory grows), idle (low CPU that later rises)",
+                                  "dimension": "Always used: the queries read used CPU and memory",
+                                  "container_cpu": "CPU used, in cores",
+                                  "container_memory": "Memory used, in bytes"}},
+             "parts": ("overview", "runs", "decision", "rules", "rule_error", "cost", "stage1"),
              "rule_error": {"metrics": ("relative_error", "rank_error"), "file_var": "entity_in_run"}}
 
 CASE = {

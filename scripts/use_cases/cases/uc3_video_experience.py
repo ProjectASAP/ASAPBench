@@ -70,8 +70,20 @@ def supported_rules(rows, queries):
     return rules.derive(rows, usable) if usable else []
 
 
-DASHBOARD = {"uid": "video-experience", "title": "3 · Video experience",
-             "parts": ("overview", "cost", "stage1", "rules", "rule_error"),
+DASHBOARD = {"uid": "video-experience", "title": "3 · Video experience", "figure": "uc3-video-experience.svg",
+             "entity": "subpopulation",
+             "data": {"summary": "Video sessions grouped into subpopulations, one per city, ISP, CDN and device; each "
+                                 "sample is one session's measurement, and larger subpopulations send samples more "
+                                 "often.",
+                      "columns": {"city": "City of the viewer", "isp": "Internet service provider of the viewer",
+                                  "cdn": "Content delivery network serving the video",
+                                  "device": "Device type of the viewer",
+                                  "bitrate": "Bitrate level of the session, one of 10 levels",
+                                  "buffering": "Rebuffering time of the session, in seconds",
+                                  "play_time": "Play time of the session, in seconds",
+                                  "startup_time": "Time until the video starts, in seconds",
+                                  "device_id": "ID of the viewer's device"}},
+             "parts": ("overview", "runs", "rules", "rule_error", "cost", "stage1"),
              "rule_error": {"metrics": ("relative_error", "rank_error"), "file_var": "city", "subpopulation": DIMENSIONS}}
 
 CASE = {

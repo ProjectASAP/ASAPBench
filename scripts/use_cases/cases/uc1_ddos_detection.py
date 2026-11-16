@@ -90,8 +90,13 @@ def derive(rows, queries, policy=bounds.PLAIN, widen=None):
     return out + (rules.derive(rows, usable, policy, widen) if usable else [])
 
 
-DASHBOARD = {"uid": "ddos-detection", "title": "1 · DDoS detection",
-             "parts": ("overview", "cost", "stage1", "alert", "rules", "rule_error"),
+DASHBOARD = {"uid": "ddos-detection", "title": "1 · DDoS detection", "figure": "uc1-ddos-detection.svg",
+             "entity": "server",
+             "data": {"summary": "One stream of SYN packets to one server; each sample is one packet, and its value is "
+                                 "the packet's source IP address.",
+                      "columns": {"vm": "The server under attack; there is only one, instance1",
+                                  "src_ip": "Source IP address of the packet, as an integer"}},
+             "parts": ("overview", "runs", "alert", "rules", "rule_error", "cost", "stage1"),
              "rule_error": {"metrics": ("relative_error",)}}
 
 CASE = {

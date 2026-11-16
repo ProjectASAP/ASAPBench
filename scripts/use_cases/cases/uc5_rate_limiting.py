@@ -63,7 +63,10 @@ def supported_rules(rows, queries):
 
 
 DASHBOARD = {"uid": "rate-limiting", "title": "5 · Top clients and rate limiting",
-             "parts": ("overview", "cost", "stage1", "topk", "rules")}
+             "figure": "uc5-rate-limiting.svg",
+             "entity": "client",
+             "data": {"summary": "One stream of requests; each sample is one request, and its value is the client ID.",
+                      "columns": {"requests": "ID of the client that sent the request"}}, "parts": ("overview", "runs", "topk", "rules", "cost", "stage1")}
 
 CASE = {
     "spec": "uc5_top_clients.json",

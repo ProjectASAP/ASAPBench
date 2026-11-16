@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 
+import argparse
+import glob
 import json
 import os
 import sys
+from datetime import datetime, timezone
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(REPO, "scripts", "use_cases"))
@@ -14,7 +17,13 @@ DATA = "http://localhost:8000/runs/"
 PHASE3_DATA = "http://localhost:8000/phase3/runs/"
 RUN = DATA + "${run}/"
 INDEX = DATA + "index.json"
+FIGURES = "http://localhost:8001/"
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboards")
+REAL_DATA = False
+
+
+def synthetic_only():
+    return "" if REAL_DATA else ' and $not($contains(run_id, "-real"))'
 
 
 def iq(ref, url, root="", columns=None, empty="[]"):
@@ -179,6 +188,9 @@ class Board:
     def panel(self, p, x, y, w, h):
         p.update(id=self._id(), gridPos={"x": x, "y": y, "w": w, "h": h})
         p.setdefault("datasource", DS)
+        if p["type"] == "table":
+            p.setdefault("fieldConfig", {"defaults": {}, "overrides": []})["defaults"].setdefault(
+                "custom", {})["wrapHeaderText"] = True
         self.panels.append(p)
 
     def row(self, title, y):
@@ -186,15 +198,28 @@ class Board:
                             "gridPos": {"x": 0, "y": y, "w": 24, "h": 1}, "panels": []})
 
 
+RUN_FIELDS = ("run_id", "dataset", "configuration", "policy", "use_case", "start", "end", "planner_rev")
+
+
 def runs_panel(board, uid, use_cases, x, y, w, h):
+    runs = (f'$[use_case in {in_list(use_cases)}{synthetic_only()}].{{"run_id": run_id, "use_case": use_case, "start": start, '
+            '"end": end, "planner_rev": details.planner_rev, '
+            '"dataset": $contains(run_id, "-real") ? ( $d := $substringAfter(run_id, "-"); '
+            '$d := $substringBefore($d, "-systems"); $d := $substringBefore($d, "-noraw"); '
+            '$d := $substringBefore($d, "-raw"); $replace($d, "-", " ", 1) ) : "synthetic", '
+            '"configuration": "error target " & $string(details.arm.max_error * 100) & "%" '
+            '& (details.arm.raw_data_retained ? ", raw samples kept" : ", raw samples not kept") '
+            '& (details.arm.ignore_guarantees ? ", plans without an accuracy guarantee allowed" : ""), '
+            '"policy": $contains(run_id, "-rerun") ? "rerun" : ($contains(run_id, "-bound") ? "bound" : "plain")}')
     board.panel({"type": "table", "title": "Runs",
-                 "targets": [iq("A", INDEX, f"$[use_case in {in_list(use_cases)}]",
-                                [col("run_id", "run_id", "string"), col("use_case", "use_case", "string"),
-                                 col("start", "start", "number"), col("end", "end", "number"),
-                                 col("details.arm.max_error", "max_error", "string"),
-                                 col("details.arm.raw_data_retained", "raw_data_retained", "string"),
-                                 col("details.arm.ignore_guarantees", "ignore_guarantees", "string"),
-                                 col("details.planner_rev", "planner_rev", "string")])],
+                 "description": "Dataset: the Data section above describes it. Configuration: the largest "
+                                "relative error the approximate plan may have, whether raw samples are kept so a "
+                                "query can still read them, and whether the planner may pick a plan that cannot "
+                                "promise that error target. Policy: what a rule does when an answer's error bound "
+                                "leaves its check open (plain ignores the bound, bound takes no action, rerun "
+                                "asks the exact plan).",
+                 "targets": [iq("A", INDEX, runs,
+                                [col(k, k, "number" if k in ("start", "end") else "string") for k in RUN_FIELDS])],
                  "fieldConfig": {"defaults": {}, "overrides": [
                      {"matcher": {"id": "byRegexp", "options": "start|end"},
                       "properties": [{"id": "unit", "value": "dateTimeAsIso"}]},
@@ -203,24 +228,32 @@ def runs_panel(board, uid, use_cases, x, y, w, h):
                           "title": "Open this run",
                           "url": f"/d/{uid}/{uid}?var-run=${{__data.fields.run_id}}"
                                  "&from=${__data.fields.start}&to=${__data.fields.end}"}]}]}]},
-                 "transformations": order("run_id", "max_error", "raw_data_retained", "ignore_guarantees",
-                                          "use_case", "start", "end", "planner_rev"),
+                 "transformations": order(*RUN_FIELDS),
                  "options": {"showHeader": True}}, x, y, w, h)
+
+
+def plan_fields(plan):
+    return (f'"sketch": $type({plan}) = "string" ? $substringBefore({plan}, " ") : "", '
+            f'"parameters": $type({plan}) = "string" ? ($contains({plan}, "{{") ? '
+            f'$replace($replace($substringBefore($substringAfter({plan}, ":{{"), "}}}}"), "\\"", ""), ",", ", ") '
+            ': "") : ""')
 
 
 def plans_panel(board, x, y, w, h):
     each = ('( $e := $[run_id="${run}"]; $append('
-            '$e.details.plans ~> $each(function($v, $k) { {"query": $k, "approx plan": $v, '
+            '$e.details.plans ~> $each(function($v, $k) { {"query": $k, ' + plan_fields("$v") + ', '
             '"exact plan": $lookup($e.details.exact_plans, $k), "promql": $lookup($e.details.promql, $k)} }), '
             '$e.details.unsupported ~> $each(function($v, $k) { {"query": $k, "why no approx plan": $v, '
             '"promql": $lookup($e.details.promql, $k)} })) )')
     board.panel({"type": "table", "title": "Plans in ${run}",
                  "targets": [iq("A", INDEX, each,
-                                [col("query", "query", "string"), col("approx plan", "approx plan", "string"),
+                                [col("query", "query", "string"), col("sketch", "sketch", "string"),
+                                 col("parameters", "parameters", "string"),
                                  col("exact plan", "exact plan", "string"),
                                  col("why no approx plan", "why no approx plan", "string"),
                                  col("promql", "promql", "string")])],
-                 "transformations": order("query", "approx plan", "exact plan", "why no approx plan", "promql"),
+                 "transformations": order("query", "sketch", "parameters", "exact plan", "why no approx plan",
+                                          "promql"),
                  "fieldConfig": {"defaults": {"custom": {"cellOptions": {"type": "auto", "wrapText": True}}},
                                  "overrides": []},
                  "options": {"showHeader": True}}, x, y, w, h)
@@ -229,17 +262,17 @@ def plans_panel(board, x, y, w, h):
 def run_variable(use_cases):
     return {"name": "run", "label": "run", "type": "query", "datasource": DS, "refresh": 1,
             "query": {"queryType": "infinity", "query": "", "refId": "variable",
-                      "infinityQuery": iq("variable", INDEX, f"$[use_case in {in_list(use_cases)}]",
+                      "infinityQuery": iq("variable", INDEX, f"$[use_case in {in_list(use_cases)}{synthetic_only()}]",
                                           [col("run_id", "run_id", "string")])}}
 
 
-def variable(name, url, root, selector):
+def variable(name, url, root, selector, empty="[]"):
     return {"name": name, "label": name, "type": "query", "datasource": DS, "refresh": 1,
             "query": {"queryType": "infinity", "query": "", "refId": "variable",
-                      "infinityQuery": iq("variable", url, root, [col(selector, name, "string")])}}
+                      "infinityQuery": iq("variable", url, root, [col(selector, name, "string")], empty)}}
 
 
-def dashboard(uid, title, board, variables, annotations=(), to="2026-01-01T01:00:00.000Z"):
+def dashboard(uid, title, board, variables, annotations, time_range):
     return {
         "uid": uid,
         "title": title,
@@ -247,7 +280,7 @@ def dashboard(uid, title, board, variables, annotations=(), to="2026-01-01T01:00
         "timezone": "utc",
         "editable": False,
         "schemaVersion": 41,
-        "time": {"from": "2026-01-01T00:00:00.000Z", "to": to},
+        "time": time_range,
         "templating": {"list": variables},
         "annotations": {"list": [
             {"name": "Annotations & Alerts", "builtIn": 1, "enable": True, "hide": True,
@@ -256,6 +289,401 @@ def dashboard(uid, title, board, variables, annotations=(), to="2026-01-01T01:00
             *annotations]},
         "panels": board.panels,
     }
+
+
+def part(board, variables=(), annotations=()):
+    return {"panels": board.panels, "variables": list(variables), "annotations": list(annotations)}
+
+
+def runs_part(uid, use_case):
+    b = Board()
+    b.row("Runs", 0)
+    runs_panel(b, uid, [use_case], 0, 1, 12, 7)
+    plans_panel(b, 12, 1, 12, 7)
+    return part(b, [run_variable([use_case])])
+
+
+def figure_part(figure):
+    b = Board()
+    b.row("Scenario", 0)
+    b.panel({"type": "text", "title": "", "transparent": True,
+             "options": {"mode": "html",
+                         "content": f'<img src="{FIGURES}{figure}" style="height: 100%; max-width: 100%">'}},
+            0, 1, 24, 13)
+    return part(b)
+
+
+def number(v):
+    if isinstance(v, (int, float)) and float(v).is_integer() and abs(v) < 1e15:
+        return f"{int(v):,}"
+    return f"{v:g}"
+
+
+def distribution(d, whole=False):
+    kind = d["kind"]
+    if kind == "zipf":
+        return f"Zipf distribution (skew {number(d['skewness'])}) over {number(d['population_size'])} values"
+    if kind == "normal":
+        return (f"normal distribution (mean {number(d['mean'])}, standard deviation "
+                f"{number(d['standard_deviation'])})")
+    if kind == "uniform":
+        low, high = d["lower_bound"], d["upper_bound"]
+        if whole and high - low == 1 and float(low).is_integer():
+            return f"always {number(low)}"
+        if whole:
+            return f"uniform over the whole numbers {number(low)} to {number(-(-high // 1) - 1)}"
+        return f"uniform between {number(low)} and {number(high)}"
+    if kind == "pareto":
+        return f"Pareto distribution (alpha {number(d['alpha'])}, scale {number(d['scale'])})"
+    return json.dumps(d)
+
+
+def span(ms):
+    seconds = ms / 1000
+    return f"{number(seconds)} s" if seconds < 120 else f"{number(round(seconds / 60, 1))} minutes"
+
+
+def interval(ms):
+    return f"{number(ms)} ms" if ms < 1000 else f"{number(round(ms / 1000, 2))} s"
+
+
+def values_between(d, whole):
+    text = distribution(d, whole)
+    if text.startswith("always "):
+        return text[len("always "):]
+    if d["kind"] == "uniform":
+        return "random values, " + text
+    return "drawn from a " + text
+
+
+def change_text(change, whole=False):
+    out = []
+    for kind, c in change.items():
+        if kind == "mix":
+            out.append(f"{number(round(c['share'] * 100, 3))}% of samples are "
+                       f"{values_between(c['distribution'], whole)}")
+        elif kind == "rate":
+            out.append(f"{number(c['factor'])}× as many samples per second")
+        elif kind == "scale":
+            out.append(f"values multiplied by {number(c['factor'])}")
+        else:
+            out.append(f"{kind} {json.dumps(c)}")
+    return ", ".join(out)
+
+
+def minutes(ms):
+    value = ms / 60000
+    return f"{value:g} min" if value.is_integer() else f"{value:.1f} min"
+
+
+def shown(value, count):
+    if count > 1 and "{i}" in str(value):
+        return f"{value.replace('{i}', '0')} to {value.replace('{i}', str(count - 1))}"
+    return str(value)
+
+
+def groups(metric):
+    return [(s.get("labels", {}), s.get("count", 1), s) for s in metric["series"]]
+
+
+def who(members, everyone):
+    total = sum(c for _, c, _ in everyone)
+    count = sum(c for _, c, _ in members)
+    if count == total:
+        return ""
+    if len(members) == 1:
+        labels, n, _ = members[0]
+        return " on " + ", ".join(f"{k} {shown(v, n)}" for k, v in labels.items()
+                                  if any(l.get(k) != v for l, _, _ in everyone))
+    if len(members) <= 3:
+        names = [who([m], everyone)[len(" on "):] for m in members]
+        return " on " + (names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1])
+    shared = set(members[0][0].items()).intersection(*(l.items() for l, _, _ in members[1:]))
+    shared -= set(everyone[0][0].items()).intersection(*(l.items() for l, _, _ in everyone[1:]))
+    return f" on the {count} series" + (" where " + " and ".join(f"{k} is {v}" for k, v in sorted(shared))
+                                         if shared else "")
+
+
+def events(metric, duration_ms):
+    found = {}
+    for labels, count, s in groups(metric):
+        for p in s.get("phases", []):
+            key = (p["start_offset_ms"], p["end_offset_ms"], p.get("ramp_ms", 0), p.get("stagger_ms", 0))
+            found.setdefault(key, {}).setdefault(change_text(p["change"], bool(metric.get("floor"))),
+                                                 []).append((labels, count, s))
+    everyone = groups(metric)
+    out = []
+    for (start, end, ramp, stagger), texts in sorted(found.items()):
+        when_text = (("Throughout" if start == 0 and end >= duration_ms else
+                      f"Minutes {number(round(start / 60000, 1))} to "
+                      + ("the end" if end >= duration_ms else number(round(end / 60000, 1))))
+                     + (f", ramping in and out over {span(ramp)}" if ramp else "")
+                     + (f", each series starting {span(stagger)} after the previous one" if stagger else ""))
+        out.append((start, min(end, duration_ms), when_text + ": "
+                    + "; ".join(t + who(m, everyone) for t, m in texts.items())))
+    return out
+
+
+def baselines(metric):
+    whole = bool(metric.get("floor"))
+    everyone = groups(metric)
+    by_kind = {}
+    for labels, count, s in everyone:
+        b = {k: v for k, v in s["baseline"].items() if k != "seed"}
+        by_kind.setdefault(b["kind"], []).append((labels, count, b))
+    out = []
+    for kind, found in by_kind.items():
+        members = [(l, c, None) for l, c, _ in found]
+        distinct = {json.dumps(b, sort_keys=True): (l, c, b) for l, c, b in found}
+        if len(distinct) == 1:
+            out.append(distribution(found[0][2], whole) + who(members, everyone))
+        elif len(distinct) <= 3:
+            for text in dict.fromkeys(distribution(b, whole) for _, _, b in found):
+                out.append(text + who([(l, c, None) for l, c, b in found if distribution(b, whole) == text],
+                                      everyone))
+        else:
+            keys = [k for k in found[0][2] if k != "kind" and len({json.dumps(b.get(k)) for _, _, b in found}) > 1]
+            ranges = ", ".join(f"{k.replace('_', ' ')} from {number(min(b[k] for _, _, b in found))} to "
+                               f"{number(max(b[k] for _, _, b in found))}" for k in keys)
+            out.append(f"{kind}, {ranges} depending on the series" + who(members, everyone))
+    return out
+
+
+def label_values(metrics):
+    values = {}
+    for m in metrics:
+        for labels, count, _ in groups(m):
+            for k, v in labels.items():
+                values.setdefault(k, {})[v] = count
+    out = {}
+    for k, found in values.items():
+        templated = {v: c for v, c in found.items() if c > 1 and "{i}" in str(v)}
+        items = [shown(v, c) + (f" ({c})" if v in templated else "") for v, c in found.items()]
+        total = sum(templated.values()) + len(found) - len(templated)
+        listed = ", ".join(items) if len(items) <= 6 else ", ".join(items[:3]) + f" and {len(items) - 3} more"
+        out[k] = listed if total == 1 else f"{total} values: {listed}"
+    return out
+
+
+def notes(metric):
+    out = [text for key, text in (("floor", "whole numbers"), ("non_negative", "never below 0")) if metric.get(key)]
+    if metric.get("label_from_value"):
+        out.append(f"each sample's value is stored as the label {metric['label_from_value']}")
+    if metric.get("max_distinct_per_evaluation"):
+        out.append(f"the planner is told to expect at most {number(metric['max_distinct_per_evaluation'])} "
+                   "distinct values per evaluation")
+    return out
+
+
+def rates(metrics):
+    def every(ms):
+        return f"one sample every {interval(ms)} ({number(round(1000 / ms, 2))} per second)"
+
+    def text(m):
+        found = [(l, c, s, s.get("sample_interval_ms", m["sample_interval_ms"])) for l, c, s in groups(m)]
+        ms = sorted({f[3] for f in found})
+        if len(ms) == 1:
+            return every(ms[0]) + (" per series" if sum(f[1] for f in found) > 1 else "")
+        if len(found) <= 3:
+            return "; ".join(every(i) + who([(l, c, s)], groups(m)) for l, c, s, i in found)
+        return f"one sample every {interval(ms[0])} to {interval(ms[-1])}, depending on the series"
+    texts = {m["name"]: text(m) for m in metrics}
+    if len(set(texts.values())) == 1:
+        return [next(iter(texts.values())).capitalize()]
+    return [f"{name}: {t}" for name, t in texts.items()]
+
+
+def real_datasets(module):
+    stem = module.CASE["spec"][:-len(".json")]
+    out = []
+    for path in sorted(glob.glob(os.path.join(cases.WORKLOADS, stem + "_real*.json"))):
+        suffix = os.path.basename(path)[len(stem) + 1:-len(".json")].split("_", 1)
+        name = " ".join([suffix[0], suffix[1].replace("_", "-")]) if len(suffix) > 1 else suffix[0]
+        with open(path) as f:
+            out.append((name, json.load(f)))
+    return out
+
+
+def cell(text):
+    return str(text).replace("|", "\\|").replace("\n", " ")
+
+
+def data_markdown(module):
+    spec = cases.spec_of(module)
+    about = module.DASHBOARD["data"]
+    meaning = about["columns"]
+    metrics = spec["metrics"]
+    series = sum(c for m in metrics[:1] for _, c, _ in groups(m))
+    lines = [f"{about['summary']} The synthetic data runs {number(spec['duration_ms'] / 60000)} minutes "
+             f"with {series} series per metric.", "",
+             "| column | what it is | values |", "|---|---|---|",
+             f"| time | Time of the sample | {'<br>'.join(rates(metrics))} |"]
+    for k, v in label_values(metrics).items():
+        lines.append(f"| {k} | {cell(meaning.get(k, 'label'))} | {cell(v)} |")
+    for m in metrics:
+        normal = "Usual values: " + "; ".join(baselines(m))
+        rows = ([normal] + [text for _, _, text in events(m, spec["duration_ms"])]
+                + (["Note: " + "; ".join(notes(m))] if notes(m) else []))
+        lines.append(f"| {m['name']} | {cell(meaning.get(m['name'], 'value'))} | {cell('<br>'.join(rows))} |")
+    if REAL_DATA:
+        lines += ["", "**Real data**: the same columns read from a recorded trace, with no injected events.", ""]
+        for name, real in real_datasets(module):
+            sources = []
+            for m in real["metrics"]:
+                table = m.get("import", {}).get("table")
+                if table:
+                    sources.append(f"{m['name']} from column {table['value_column']} of {table['dataset']}"
+                                   + (f", time stretched {number(m['import']['time_scale'])}×"
+                                      if m["import"].get("time_scale", 1) != 1 else ""))
+                else:
+                    sources.append(f"{m['name']} generated as in the synthetic data")
+            lines.append(f"- {name}: {number(round(real['duration_ms'] / 60000, 1))} minutes; " + "; ".join(sources))
+    return "\n".join(lines)
+
+
+def query_lines(spec):
+    lines = ["| query | PromQL | computed |", "|---|---|---|"]
+    for q in spec["queries"]:
+        lines.append(f"| {q['id']} | `{cell(q['promql'])}` | every {number(q['interval_ms'] / 1000)} s over "
+                     f"the last {number(q['window_ms'] / 1000)} s |")
+    return lines
+
+
+def rule_catalog(module):
+    spec = cases.spec_of(module)
+    out = []
+    if module.CASE["dashboard"] == "threshold-alert":
+        for q in spec["queries"]:
+            if "threshold" in q:
+                unit = q.get("unit", "")
+                limit = number(q["threshold"]) + (f" {unit}" if unit and unit != "entropy" else "")
+                source = ("one of the PromSketch thresholds, taken one query at a time"
+                          if q["id"] in getattr(module, "THRESHOLDS", {}) else "threshold ours")
+                out.append({"rule": q["id"], "name": f"{q['id']} > {number(q['threshold'])}", "uses": q["id"],
+                            "does": f"Fires at every evaluation where {q['id']} is above {limit}, with no waiting "
+                                    f"period ({source})"})
+    decision = getattr(module, "DECISION", None)
+    if decision:
+        r = decision["rule"]
+        out.append({"rule": decision["signal"], "name": decision["signal"],
+                    "uses": f"{decision['cpu']}, {decision['memory']}",
+                    "does": f"Scale a container up when its p95 CPU > {number(r['cpu_up'])} cores or p95 memory > "
+                            f"{number(r['memory_up'] / 1e9)} GB; scale it down when p95 CPU < {number(r['cpu_down'])} "
+                            f"cores and p95 memory < {number(r['memory_down'] / 1e9)} GB"})
+    if module.CASE["dashboard"] == "topk":
+        out.append({"rule": "top_clients", "name": "top_clients", "uses": "top10_clients",
+                    "does": "A client is capped while it is in the top 10 list"})
+    if module.CASE["dashboard"] == "rollout":
+        for row in rule_descriptions().split("\n")[4:]:
+            name, uses, fails, decides = [c.strip() for c in row.strip("| ").split(" | ")]
+            out.append({"rule": name, "name": name, "uses": uses,
+                        "does": f"A check fails when {fails}. A rollout rolls back when {decides}; otherwise it "
+                                "promotes."})
+    else:
+        for name, rule in module.RULES.items():
+            out.append({"rule": name, "name": name, "uses": ", ".join(rule["queries"]), "does": rule["description"]})
+    return out
+
+
+def rule_lines(module):
+    return ["| rule | queries it uses | what it does |", "|---|---|---|"] + [
+        f"| {r['name']} | {r['uses']} | {cell(r['does'])} |" for r in rule_catalog(module)]
+
+
+def rule_variable_name(module):
+    return "rule" if module.CASE["dashboard"] == "rollout" else "signal"
+
+
+def rule_note_part(module):
+    name = rule_variable_name(module)
+    fields = ("rule", "queries it uses", "what it does")
+    target = iq("A", "", f'$[rule="${{{name}}}"].{{"rule": name, "queries it uses": uses, "what it does": does}}',
+                [col(k, k, "string") for k in fields])
+    target.update(source="inline", data=json.dumps(rule_catalog(module)), url="")
+    b = Board()
+    b.panel({"type": "table", "title": "What the selected rule does",
+             "targets": [target], "transformations": order(*fields),
+             "fieldConfig": {"defaults": {"custom": {"cellOptions": {"type": "auto", "wrapText": True}}},
+                             "overrides": [{"matcher": {"id": "byRegexp", "options": "^(rule|queries it uses)$"},
+                                            "properties": [{"id": "custom.width", "value": 200}]}]},
+             "options": {"showHeader": True}}, 0, 0, 24, 5)
+    return part(b)
+
+
+TEXT_WIDTH, CHAR, LINE, CELL_PAD, BLOCK_GAP = 979, 7.0, 21, 16, 16
+
+
+def table_height(rows):
+    cells = [[c.strip() for c in r.strip().strip("|").split(" | ")] for r in rows]
+    columns = range(max(len(r) for r in cells))
+    longest = [max(len(r[i]) if i < len(r) else 0 for r in cells) * CHAR + CELL_PAD for i in columns]
+    shortest = [max(max((len(w) for w in r[i].split()), default=0) if i < len(r) else 0 for r in cells) * CHAR
+                + CELL_PAD for i in columns]
+    if sum(longest) <= TEXT_WIDTH:
+        widths = longest
+    else:
+        room = max(TEXT_WIDTH - sum(shortest), 0)
+        slack = sum(l - m for l, m in zip(longest, shortest)) or 1
+        widths = [m + room * (l - m) / slack for l, m in zip(longest, shortest)]
+    return sum(max(-(-len(c) * CHAR // max(w - CELL_PAD, CHAR)) for c, w in zip(r, widths)) * LINE
+               + CELL_PAD + 1 for r in cells)
+
+
+def markdown_rows(text):
+    pixels, table = 0, []
+    for line in text.split("\n") + [""]:
+        if line.startswith("|"):
+            if not line.startswith("|---"):
+                table.append(line)
+            continue
+        if table:
+            pixels += table_height(table) + BLOCK_GAP
+            table = []
+        if line.strip():
+            pixels += -(-len(line) * CHAR // TEXT_WIDTH) * LINE + BLOCK_GAP
+    return int(-(-(pixels * 1.1 + 60) // 38))
+
+
+def about_part(module):
+    spec = cases.spec_of(module)
+    b = Board()
+    data = data_markdown(module)
+    height = markdown_rows(data)
+    b.row("Data", 0)
+    b.panel({"type": "text", "title": "", "options": {"mode": "markdown", "content": data}}, 0, 1, 24, height)
+    rules = "\n".join(["Each query runs twice, once with the exact plan and once with the approximate plan. "
+                       "A rule reads query results and decides an action; exact and approx decide separately, "
+                       "and the dashboard compares their decisions. On the time charts below, shaded areas are "
+                       "the problem periods injected into the synthetic data, and vertical marks are the times "
+                       "when the selected rule decided differently on approx than on exact; a rule that always "
+                       "decides the same has no marks.", "", "**Queries**", ""]
+                      + query_lines(spec) + ["", "**Rules**", ""] + rule_lines(module))
+    b.row("Queries and rules", 1 + height)
+    b.panel({"type": "text", "title": "", "options": {"mode": "markdown", "content": rules}},
+            0, 2 + height, 24, markdown_rows(rules))
+    return part(b, annotations=[change_annotation(spec), disagreement_annotation(module)])
+
+
+def change_annotation(spec):
+    found = []
+    for m in spec["metrics"]:
+        for start, end, text in events(m, spec["duration_ms"]):
+            found.append({"time": spec["start_ms"] + start, "timeEnd": spec["start_ms"] + end,
+                          "text": f"{m['name']}: {text}"})
+    root = (f'( $e := $[run_id="${{run}}" and $not($contains(run_id, "-real"))]; '
+            f'$exists($e) ? {json.dumps(found)} : [] )')
+    return {"name": "problem periods", "enable": True, "hide": True, "iconColor": "#8AB8FF", "datasource": DS,
+            "target": iq("Anno", INDEX, root, [T, col("timeEnd", "timeEnd", "timestamp_epoch"),
+                                                col("text", "text", "string")])}
+
+
+def disagreement_annotation(module):
+    name = rule_variable_name(module)
+    root = (f'$[labels.signal="${{{name}}}"].{{"time": time, "text": "approx ≠ exact: " & $replace(metric, "_", " ")'
+            ' & ( $w := (labels.entity ? labels.entity : (labels.container ? labels.container : labels.client_id)); '
+            '$w ? " on " & $w : "" ) & ", " & $string(value) & " evaluations"}')
+    return {"name": "approx ≠ exact", "enable": True, "hide": True, "iconColor": "#FF9830", "datasource": DS,
+            "target": iq("Anno", RUN + "fidelity_event.json", root, [T, col("text", "text", "string")])}
 
 
 def by_metric_columns(*pairs):
@@ -267,25 +695,25 @@ def sort_limit(field, limit):
             {"id": "limit", "options": {"limitField": limit}}]
 
 
-def alert_dashboard(uid, module):
-    use_cases = [cases.spec_of(module)["use_case"]]
+def alert_dashboard(module):
     sel = 'labels.signal="${signal}"'
     b = Board()
-    b.row("Runs", 0)
-    runs_panel(b, uid, use_cases, 0, 1, 12, 7)
-    plans_panel(b, 12, 1, 12, 7)
 
+    uses = {r["rule"]: [q.strip() for q in r["uses"].split(",")] for r in rule_catalog(module)}
+    of_rule = f'labels.query in $lookup({json.dumps(uses)}, "${{signal}}")'
     b.row("Query result", 8)
     b.panel({"type": "timeseries", "title": "Queries behind ${signal}: exact vs approx",
-             "targets": [rows_of("A", "query_result", f'{sel} and labels.arm="exact"', "exact", by="query"),
-                         rows_of("B", "query_result", f'{sel} and labels.arm="approx"', "approx", by="query"),
+             "targets": [rows_of("A", "query_result", f'{of_rule} and labels.arm="exact"', "exact", by="query"),
+                         rows_of("B", "query_result", f'{of_rule} and labels.arm="approx"', "approx", by="query"),
                          rows_of("C", "app_state", f'{sel} and metric="threshold"', "threshold")],
-             "fieldConfig": {"defaults": {**LINES, "displayName": "${__field.labels.query} ${__field.name}"},
+             "fieldConfig": {"defaults": {**LINES, "displayName": "${__field.labels.query} ${__field.name}",
+                                          "custom": {**LINES["custom"], "scaleDistribution": {"type": "log", "log": 10}}},
                              "overrides": [by_ref("A", "blue", 2), by_ref("B", "orange"), dashed("C", "red")]
                              + named("threshold")},
              "options": LEGEND}, 0, 9, 24, 9)
     b.panel({"type": "timeseries", "title": "Relative error of approx",
-             "targets": [rows_of("A", "low_level", f'{sel} and metric="relative_error"', "relative_error", by="query")],
+             "targets": [rows_of("A", "low_level", f'{of_rule} and metric="relative_error"', "relative_error",
+                                 by="query")],
              "fieldConfig": {"defaults": {**LINES, "unit": "percentunit", "displayName": "${__field.labels.query}"},
                              "overrides": []},
              "options": LEGEND}, 0, 18, 24, 6)
@@ -325,7 +753,7 @@ def alert_dashboard(uid, module):
              "transformations": order("exact", "approx firing", "approx ok"),
              "fieldConfig": {"defaults": {"custom": {"minWidth": 60}}, "overrides": []},
              "options": {"showHeader": True}}, 12, 33, 6, 8)
-    b.panel({"type": "table", "title": "Fidelity events",
+    b.panel({"type": "table", "title": "Where approx ≠ exact for ${signal}",
              "targets": [iq("A", RUN + "fidelity_event.json",
                             f"$[{sel}]",
                             [T, col("metric", "event", "string"), col("value", "evaluations", "number")])],
@@ -333,26 +761,15 @@ def alert_dashboard(uid, module):
              "fieldConfig": {"defaults": {"custom": {"minWidth": 60}}, "overrides": []},
              "options": {"showHeader": True}}, 18, 33, 6, 8)
 
-    variables = [run_variable(use_cases),
-                 variable("signal", summary, '$[metric="episodes"].labels', "signal")]
-    annotations = [{"name": "fidelity events", "enable": True, "iconColor": "purple", "datasource": DS,
-                    "target": iq("Anno", RUN + "fidelity_event.json",
-                                 f'$[{sel}].{{"time": time, "text": metric & ": " & $string(value) & " evaluations"}}',
-                                 [T, col("text", "text", "string")])}]
-    return dashboard(uid, "Threshold alert", b, variables, annotations)
+    return part(b, [variable("signal", summary, '$[metric="episodes"].labels', "signal")])
 
 
 def decision_dashboard(uid, module):
-    use_cases = [cases.spec_of(module)["use_case"]]
     scale = module.DECISION
     here = 'labels.container="${container}"'
     overall = 'labels.app="autoscaler" and $not($exists(labels.container))'
     summary = RUN + "fidelity_summary.json"
     b = Board()
-    b.row("Runs", 0)
-    runs_panel(b, uid, use_cases, 0, 1, 12, 7)
-    plans_panel(b, 12, 1, 12, 7)
-
     b.row("Query result for ${container}", 8)
     for i, (query, title, unit, low, high) in enumerate(((scale["cpu"], "p95 CPU", "none", scale["rule"]["cpu_down"],
                                                           scale["rule"]["cpu_up"]),
@@ -418,7 +835,7 @@ def decision_dashboard(uid, module):
              "fieldConfig": {"defaults": {"custom": {"minWidth": 60}}, "overrides": []},
              "options": {"showHeader": True}}, 13, 36, 6, 7)
     b.panel(disagreement_panel(uid, "container", "container", "Containers with the most action disagreements"), 19, 36, 5, 7)
-    b.panel({"type": "table", "title": "Fidelity events of ${container}",
+    b.panel({"type": "table", "title": "Where approx ≠ exact for scale_decision on ${container}",
              "targets": [iq("A", RUN + "fidelity_event.json", f"$[{here}]",
                             [T, col("labels.action", "action", "string"), col("metric", "event", "string"),
                              col("value", "evaluations", "number")])],
@@ -426,14 +843,9 @@ def decision_dashboard(uid, module):
              "fieldConfig": {"defaults": {"custom": {"minWidth": 60}}, "overrides": []},
              "options": {"showHeader": True}}, 0, 43, 24, 6)
 
-    annotations = [{"name": "fidelity events", "enable": True, "iconColor": "purple", "datasource": DS,
-                    "target": iq("Anno", RUN + "fidelity_event.json",
-                                 f'$[{here}].{{"time": time, "text": labels.action & " " & metric & ": " '
-                                 '& $string(value) & " evaluations"}',
-                                 [T, col("text", "text", "string")])}]
-    return dashboard(uid, "Autoscaler decision", b,
-                     [run_variable(use_cases), by_disagreements("container", "container"),
-                      in_run("container_in_run", "container", "container")], annotations)
+    container = by_disagreements("container", "container")
+    container["label"] = "container (scale_decision)"
+    return part(b, [container, in_run("container_in_run", "container", "container")])
 
 
 DECISION_MARKS = {"failed check": ("#FF9830", 5), "rollback": ("red", 14), "promote": ("green", 14)}
@@ -540,24 +952,19 @@ def cost_panel(colors, metric, title, unit, note):
             "options": LEGEND}
 
 
-def cost_dashboard(uid, module):
+def cost_dashboard(module):
     colors = dict(zip((q["id"] for q in cases.spec_of(module)["queries"]), PALETTE))
     b = Board()
     b.row("Query cost", 0)
     for i, cost in enumerate(COST_PANELS):
         b.panel(cost_panel(colors, *cost), 12 * i, 1, 12, 8)
-    return dashboard(uid, "Query cost", b, [])
+    return part(b)
 
 
-def rollout_dashboard(uid, module):
-    use_cases = [cases.spec_of(module)["use_case"]]
+def rollout_dashboard(module):
     app = 'labels.app="rollout_controller" and labels.signal="${rule}"'
     summary = RUN + "fidelity_summary.json"
     b = Board()
-    b.row("Runs", 0)
-    runs_panel(b, uid, use_cases, 0, 1, 12, 7)
-    plans_panel(b, 12, 1, 12, 7)
-
     b.row("Query result", 8)
     for x, w, title, queries, unit in ((0, 16, "p99 latency of canary and stable", ("p99_canary", "p99_stable"), "s"),
                                        (16, 8, "Success rate of canary", ("success_rate_canary",), "percentunit")):
@@ -576,8 +983,6 @@ def rollout_dashboard(uid, module):
         b.panel(cost_panel(module.QUERY_COLORS, *cost), x, y, w, 6)
 
     b.row("Application: rollout controller, rule ${rule}", 29)
-    b.panel({"type": "text", "title": "Decision rules (selected: ${rule})",
-             "options": {"mode": "markdown", "content": rule_descriptions()}}, 0, 30, 24, 6)
     ratio = 'labels.app="rollout_controller"'
     b.panel({"type": "timeseries", "title": "Canary p99 over stable p99 (rule ours compares it with the tolerance)",
              "targets": [rows_of("A", "app_state", f'{ratio} and metric="ratio" and labels.arm="exact"', "exact"),
@@ -624,28 +1029,21 @@ def rollout_dashboard(uid, module):
                   "properties": [{"id": "mappings", "value": [{"type": "value", "options": {
                       value: {"text": text, "index": i} for i, (value, text) in enumerate(OUTCOMES.items())}}]}]}]},
              "options": {"showHeader": True}}, 12, 66, 7, 8)
-    b.panel({"type": "table", "title": "Fidelity events",
+    b.panel({"type": "table", "title": "Where approx ≠ exact for rule ${rule}",
              "targets": [iq("A", RUN + "fidelity_event.json", f'$[{app} and metric!="rollout"]',
                             [T, col("metric", "event", "string"), col("value", "evaluations", "number")])],
              "transformations": order("time", "event", "evaluations"),
              "fieldConfig": {"defaults": {"custom": {"minWidth": 60}}, "overrides": []},
              "options": {"showHeader": True}}, 19, 66, 5, 8)
-    return dashboard(uid, "Canary rollout", b,
-                     [run_variable(use_cases), variable("rule", summary, '$[metric="rollouts"].labels', "signal")],
-                     to="2026-01-01T04:10:00.000Z")
+    return part(b, [variable("rule", summary, '$[metric="rollouts"].labels', "signal")])
 
 
-def topk_dashboard(uid, module):
-    use_cases = [cases.spec_of(module)["use_case"]]
+def topk_dashboard(uid):
     app = 'labels.app="topk_set"'
     here = f'{app} and labels.client_id="${{client_in_run}}"'
     overall = f'{app} and $not($exists(labels.client_id))'
     summary = RUN + "fidelity_summary.json"
     b = Board()
-    b.row("Runs", 0)
-    runs_panel(b, uid, use_cases, 0, 1, 12, 7)
-    plans_panel(b, 12, 1, 12, 7)
-
     b.row("Query result", 8)
     b.panel({"type": "table", "title": "Top clients by evaluation, highest count first",
              "targets": [rows_of("A", "app_state", f'{app} and metric="ranking" and labels.arm="exact"', "exact", "string"),
@@ -702,7 +1100,7 @@ def topk_dashboard(uid, module):
                                       "approx-only spans"),
              "fieldConfig": {"defaults": TEXT, "overrides": []},
              "options": STAT}, 12, 32, 6, 8)
-    b.panel({"type": "table", "title": "Fidelity events",
+    b.panel({"type": "table", "title": "Where approx ≠ exact for top_clients",
              "targets": [iq("A", RUN + "fidelity_event.json", f"$[{app}]",
                             [T, col("labels.client_id", "client", "string"), col("metric", "event", "string"),
                              col("value", "evaluations", "number")])],
@@ -710,69 +1108,59 @@ def topk_dashboard(uid, module):
              "fieldConfig": {"defaults": {"custom": {"minWidth": 60}}, "overrides": []},
              "options": {"showHeader": True}}, 18, 32, 6, 8)
     client = by_disagreements("client", "client_id")
+    client["label"] = "client (top_clients)"
     client.update(multi=True, includeAll=False)
     shown = in_run("client_in_run", "client_id", "client")
     shown.update(multi=True, includeAll=True, current={"text": ["All"], "value": ["$__all"]})
-    return dashboard(uid, "Top clients", b, [run_variable(use_cases), client, shown])
+    return part(b, [client, shown])
 
 
-def rules_dashboard(uid, use_cases):
+def rules_dashboard(uid, noun):
     app = 'labels.app="rule" and labels.signal="${signal}"'
     overall = f'{app} and $not($exists(labels.entity))'
     here = f'{app} and labels.entity="${{entity_in_run}}"'
     summary = RUN + "fidelity_summary.json"
     b = Board()
-    b.row("Runs", 0)
-    runs_panel(b, uid, use_cases, 0, 1, 12, 7)
-    plans_panel(b, 12, 1, 12, 7)
-
     b.row("Rules in ${run}", 8)
     columns = (("agreement", "agreement"), ("true_positive", "true positive"),
                ("false_positive", "false positive"), ("false_negative", "false negative"),
                ("entries", "exact episodes"), ("missed_entries", "missed episodes"), ("gaps", "gaps"),
-               ("mean_onset_delay", "mean onset delay (evaluations)"), ("entities", "entities"))
+               ("mean_onset_delay", "mean onset delay (evaluations)"), ("entities", f"{noun}s"))
     every_rule = ('( $m := $[labels.app="rule" and $not($exists(labels.entity))]; '
                   '$m[metric="agreement"].( $s := labels.signal; '
-                  '$merge([{"signal": $s}, $m[labels.signal=$s]{metric: value}]) ) )')
-    b.panel({"type": "table", "title": "Every rule: exact against approx, over entity-evaluations",
+                  '$merge([{"rule": $s}, $m[labels.signal=$s]{metric: value}]) ) )')
+    b.panel({"type": "table", "title": f"Every rule: exact against approx, counted per {noun} and evaluation",
              "targets": [iq("A", summary, every_rule,
-                            [col("signal", "signal", "string")] + by_metric_columns(*columns))],
-             "transformations": order("signal", *[text for _, text in columns]),
+                            [col("rule", "rule", "string")] + by_metric_columns(*columns))],
+             "transformations": order("rule", *[text for _, text in columns]),
              "fieldConfig": {"defaults": {"custom": {"minWidth": 60}}, "overrides": [
                  {"matcher": {"id": "byName", "options": "agreement"},
                   "properties": [{"id": "unit", "value": "percentunit"}, {"id": "decimals", "value": 2}]}]},
-             "options": {"showHeader": True}}, 0, 9, 14, 8)
-    described = ('$[run_id="${run}"].details.rules ~> $each(function($v, $k) { {"signal": $k, "rule": $v} })')
-    b.panel({"type": "table", "title": "What each rule does",
-             "targets": [iq("A", INDEX, described, [col("signal", "signal", "string"), col("rule", "rule", "string")])],
-             "transformations": order("signal", "rule"),
-             "fieldConfig": {"defaults": {"custom": {"cellOptions": {"type": "auto", "wrapText": True}}},
-                             "overrides": []},
-             "options": {"showHeader": True}}, 14, 9, 10, 8)
+             "options": {"showHeader": True}}, 0, 9, 24, 8)
 
-    b.row("Rule ${signal}: entities", 17)
-    b.panel({"type": "table", "title": "Entities with the most disagreements",
+    b.row(f"Rule ${{signal}}, {noun} by {noun}", 17)
+    b.panel({"type": "table", "title": f"{noun.capitalize()}s where approx and exact disagree most",
              "targets": [iq("A", summary,
                             f'$[{app} and metric="disagreements" and value > 0].'
                             '{"entity": labels.entity, "disagreements": value}',
-                            [col("entity", "entity", "string"), col("disagreements", "disagreements", "number")])],
+                            [col("entity", noun, "string"), col("disagreements", "disagreements", "number")])],
              "transformations": sort_limit("disagreements", 20),
              "fieldConfig": {"defaults": {"custom": {"minWidth": 60}}, "overrides": [
-                 {"matcher": {"id": "byName", "options": "entity"},
+                 {"matcher": {"id": "byName", "options": noun},
                   "properties": [{"id": "links", "value": [{
-                      "title": "Show this entity",
+                      "title": f"Show this {noun}",
                       "url": f"/d/{uid}/{uid}?var-run=${{run}}&var-signal=${{signal}}"
-                             "&var-entity=${__data.fields.entity}&${__url_time_range}"}]}]}]},
+                             f"&var-entity=${{__data.fields.{noun}}}&${{__url_time_range}}"}]}]}]},
              "options": {"showHeader": True}}, 0, 18, 8, 8)
-    b.panel({"type": "table", "title": "Fidelity events",
+    b.panel({"type": "table", "title": "Where approx ≠ exact for rule ${signal}",
              "targets": [iq("A", RUN + "fidelity_event.json", f"$[{app}]",
-                            [T, col("labels.entity", "entity", "string"), col("metric", "event", "string"),
+                            [T, col("labels.entity", noun, "string"), col("metric", "event", "string"),
                              col("value", "evaluations", "number")])],
-             "transformations": order("time", "entity", "event", "evaluations"),
+             "transformations": order("time", noun, "event", "evaluations"),
              "fieldConfig": {"defaults": {"custom": {"minWidth": 60}}, "overrides": []},
              "options": {"showHeader": True}}, 8, 18, 10, 8)
-    b.panel(outcome_stat("Entity-evaluations by outcome", summary, overall), 18, 18, 6, 8)
-    strip = strip_panel("${signal} on ${entity_in_run}: state per evaluation, with what differs",
+    b.panel(outcome_stat(f"Evaluations by outcome, counted per {noun}", summary, overall), 18, 18, 6, 8)
+    strip = strip_panel(f"${{signal}} on {noun} ${{entity_in_run}}: state per evaluation, with what differs",
                         [(f'{here} and metric="state" and labels.arm="exact"', "exact"),
                          (f'{here} and metric="state" and labels.arm="approx"', "approx"),
                          (f'{here} and metric="annotation"', "annotation")],
@@ -785,11 +1173,12 @@ def rules_dashboard(uid, use_cases):
     ranked = ('( $s := $sort($[labels.app="rule" and labels.signal="${signal}" and metric="disagreements"], '
               'function($a, $b) { $a.value < $b.value or '
               '($a.value = $b.value and $a.labels.entity > $b.labels.entity) }); $s.labels )')
-    entity = variable("entity", summary, ranked, "entity")
+    entity = variable("entity", summary, ranked, "entity", f'[{{"entity": "none for this rule"}}]')
+    entity["label"] = noun
     entity.update(sort=0, multi=True, includeAll=False)
     shown = in_run("entity_in_run", "entity", "entity")
     shown.update(multi=True, includeAll=True, current={"text": ["All"], "value": ["$__all"]})
-    return dashboard(uid, "Rules on entities", b, [run_variable(use_cases), signal, entity, shown])
+    return part(b, [signal, entity, shown])
 
 
 AGREEMENT = ("Defined per application. Threshold alert: evaluations where exact and approx agree on firing. "
@@ -808,14 +1197,14 @@ SAME, FALSE_ROLLBACK, MISSED_ROLLBACK = "same decision", "false rollback", "miss
 
 
 def rollouts_by_error(ref, use_case, outcomes, name, y):
-    root = (f'$[use_case="{use_case}" and $exists(details.stage2)].details.stage2'
+    root = (f'$[use_case="{use_case}"{synthetic_only()} and $exists(details.stage2)].details.stage2'
             f'[rule="${{rule}}" and outcome in {in_list(outcomes)}]'
             f'.{{"max error": $lookup(`max error`, "${{query}}"), "{name}": {y}}}')
     return iq(ref, INDEX, root, [col("max error", "max error", "number"), col(name, name, "number")])
 
 
 def stage1_panel(uid, use_case):
-    stage1 = (f'$[use_case="{use_case}" and $exists(details.stage1)].( $e := $; $e.details.stage1.( '
+    stage1 = (f'$[use_case="{use_case}"{synthetic_only()} and $exists(details.stage1)].( $e := $; $e.details.stage1.( '
               '$merge([$, {"run_id": $e.run_id, "trial": $e.details.trial}]) ) )')
     text = ("run_id", "query", "error metric")
     return {"type": "table",
@@ -845,7 +1234,7 @@ def stage1_dashboard(uid, use_case):
     b = Board()
     b.row("Stage 1: sketch configuration to approx query result", 0)
     b.panel(stage1_panel(uid, use_case), 0, 1, 24, 14)
-    return dashboard(uid, "Stage 1", b, [])
+    return part(b)
 
 
 def two_stages_dashboard(uid, module):
@@ -877,15 +1266,15 @@ def two_stages_dashboard(uid, module):
                   "y": {"matcher": {"id": "byName", "options": name}}}
                  for i, name in enumerate((SAME, FALSE_ROLLBACK, MISSED_ROLLBACK))], **LEGEND}},
             0, 16, 12, 12)
-    stage2 = f'$[use_case="{use_case}" and $exists(details.stage2)].details.stage2'
+    stage2 = f'$[use_case="{use_case}"{synthetic_only()} and $exists(details.stage2)].details.stage2'
     rules = f'$map($distinct({stage2}.rule), function($v) {{ {{"rule": $v}} }})'
     queries = f'$map($distinct({stage2}[rule="${{rule}}"].$keys(`max error`)), function($v) {{ {{"query": $v}} }})'
     query = variable("query", INDEX, queries, "query")
     query.update(multi=True, includeAll=True, current={"text": ["All"], "value": ["$__all"]})
-    return dashboard("two-stages", "Canary release in two stages", b, [variable("rule", INDEX, rules, "rule"), query])
+    return part(b, [variable("rule", INDEX, rules, "rule"), query])
 
 
-def rule_error_dashboard(uid, rule_set, metrics, file_var=None, subpopulation=None):
+def rule_error_dashboard(rule_set, metrics, file_var=None, subpopulation=None):
     queries = json.dumps({name: list(rule["queries"]) for name, rule in rule_set.items()})
     sel = f'labels.query in $lookup({queries}, "${{signal}}")'
     series = "labels.query"
@@ -919,42 +1308,56 @@ def rule_error_dashboard(uid, rule_set, metrics, file_var=None, subpopulation=No
         city.update(hide=2, multi=True, includeAll=True, skipUrlSync=True,
                     current={"text": ["All"], "value": ["$__all"]})
         variables.append(city)
-    return dashboard(uid, "Rule query error", b, variables)
+    return part(b, variables)
 
 
 ERRORS = (("relative_error", "Relative error"), ("rank_error", "Rank error"))
 
 
-def overview_dashboard(uid, use_case, sketch_bounds=True):
-    rows = (f'$[use_case="{use_case}" and $exists(details.fidelity)].( $e := $; '
+OVERVIEW = ("Each row is one query in one run, paired with one rule or alert that reads it; a query read by "
+            "three rules has three rows. Sketch and parameters are the approximate plan the planner chose: the sketch type and its size (for "
+            "KMV, k is how many hashes it keeps; for HLL, precision p means 2^p registers). Fidelity compares the rule's decisions on the exact "
+            "and approx answers: an episode is a stretch of consecutive evaluations where the exact rule fires, "
+            "an incident is an attack or change the data generator injected (synthetic data only). Hover a "
+            "fidelity cell to read all of it.")
+
+
+def overview_dashboard(uid, use_case, names, sketch_bounds=True):
+    rows = (f'$[use_case="{use_case}"{synthetic_only()} and $exists(details.fidelity)].( $e := $; '
             '$append($keys($e.details.plans), $keys($e.details.unsupported)).( $q := $; '
+            '$p := $lookup($e.details.plans, $q); '
             '$lookup($e.details.signals, $q).( $s := $; $f := $lookup($e.details.fidelity, $s); '
             '{"run_id": $e.run_id, "use_case": $e.use_case, "start": $e.start, "end": $e.end, "query": $q, '
-            '"approx plan": $lookup($e.details.plans, $q), '
+            + plan_fields("$p") + ', '
             '"why no approx plan": $lookup($e.details.unsupported, $q), '
-            '"max relative error": $lookup($e.details.max_relative_error, $q), '
-            '"signal": $s, "agreement": $f.agreement, "fidelity": $f.fidelity, '
+            '"target error": $e.details.arm.max_error, '
+            '"measured max error": $lookup($e.details.max_relative_error, $q), '
+            '"rule_id": $s, "rule": ( $t := $lookup(' + json.dumps(names) + ', $s); $exists($t) ? $t : $s ), '
+            '"agreement": $f.agreement, "fidelity": $f.fidelity, '
             '"dashboard": ( $d := $lookup($e.details.signal_dashboards, $s); $exists($d) ? $d : $e.details.dashboard )'
             '} ) ) )')
-    text = ("use_case", "run_id", "query", "approx plan", "why no approx plan", "signal", "fidelity", "dashboard")
-    numbers = ("start", "end", "max relative error", "agreement")
-    shown = ("use_case", "run_id", "query", "approx plan", "why no approx plan", "max relative error", "signal",
-             "agreement", "fidelity")
+    text = ("use_case", "run_id", "query", "sketch", "parameters", "why no approx plan", "rule", "fidelity",
+            "dashboard", "rule_id")
+    numbers = ("start", "end", "target error", "measured max error", "agreement")
+    shown = ("use_case", "run_id", "query", "sketch", "parameters", "why no approx plan", "target error",
+             "measured max error", "rule", "agreement", "fidelity")
     b = Board()
+    b.row("Every run", 0)
     b.panel({"type": "table", "title": "Every run and query: plan, query error, and what the application saw",
+             "description": OVERVIEW,
              "targets": [iq("A", INDEX, rows, [col(k, k, "string") for k in text]
                             + [col(k, k, "number") for k in numbers])],
              "transformations": [{"id": "organize", "options": {
                  "indexByName": {k: i for i, k in enumerate(shown)},
                  "excludeByName": {}, "renameByName": {}}},
                  {"id": "sortBy", "options": {"sort": [{"field": "run_id"}]}}],
-             "fieldConfig": {"defaults": {"custom": {"minWidth": 60, "cellOptions": {"type": "auto", "wrapText": True}}},
+             "fieldConfig": {"defaults": {"custom": {"minWidth": 60, "cellOptions": {"type": "auto"}}},
                              "overrides": [
-                 {"matcher": {"id": "byRegexp", "options": "^(dashboard|start|end|use_case)$"},
+                 {"matcher": {"id": "byRegexp", "options": "^(dashboard|start|end|use_case|rule_id)$"},
                   "properties": [{"id": "custom.hidden", "value": True}]},
-                 {"matcher": {"id": "byName", "options": "max relative error"},
+                 {"matcher": {"id": "byRegexp", "options": "^(target error|measured max error)$"},
                   "properties": [{"id": "unit", "value": "percentunit"}, {"id": "decimals", "value": 1},
-                                 {"id": "custom.width", "value": 110}]},
+                                 {"id": "custom.width", "value": 90}]},
                  {"matcher": {"id": "byName", "options": "agreement"},
                   "properties": [{"id": "description", "value": AGREEMENT},
                                  {"id": "unit", "value": "percentunit"}, {"id": "decimals", "value": 1},
@@ -963,23 +1366,24 @@ def overview_dashboard(uid, use_case, sketch_bounds=True):
                                  {"id": "custom.cellOptions", "value": {"type": "color-background", "mode": "basic"}},
                                  {"id": "color", "value": {"mode": "continuous-RdYlGr"}},
                                  {"id": "mappings", "value": [{"type": "special", "options": {
-                                     "match": "null+nan", "result": {"text": "no plan", "color": "transparent", "index": 0}}}]}]},
-                 {"matcher": {"id": "byName", "options": "approx plan"},
-                  "properties": [{"id": "custom.width", "value": 210}]},
+                                     "match": "null+nan", "result": {"text": "not run: a query it uses has no approximate plan",
+                                                                     "color": "transparent", "index": 0}}}]}]},
+                 {"matcher": {"id": "byName", "options": "parameters"},
+                  "properties": [{"id": "custom.width", "value": 230}]},
                  {"matcher": {"id": "byName", "options": "why no approx plan"},
                   "properties": [{"id": "custom.width", "value": 150}]},
-                 {"matcher": {"id": "byRegexp", "options": "query|signal"},
+                 {"matcher": {"id": "byRegexp", "options": "^(query|rule|sketch)$"},
                   "properties": [{"id": "custom.width", "value": 115}]},
                  {"matcher": {"id": "byName", "options": "run_id"},
                   "properties": [{"id": "custom.width", "value": 170}, {"id": "links", "value": [{
                       "title": "Open this run",
                       "url": f"/d/{uid}/{uid}?var-run=${{__data.fields.run_id}}"
-                             "&var-signal=${__data.fields.signal}"
+                             "&var-signal=${__data.fields.rule_id}"
                              "&from=${__data.fields.start}&to=${__data.fields.end}"}]}]}]},
-             "options": {"showHeader": True}}, 0, 0, 24, 30)
+             "options": {"showHeader": True}}, 0, 1, 24, 16)
     if not sketch_bounds:
-        return dashboard("overview", "Approximate query fidelity overview", b, [])
-    bounds = (f'$[use_case="{use_case}" and $exists(details.sketch_bounds)].( $e := $; $e.details.sketch_bounds.( '
+        return part(b)
+    bounds = (f'$[use_case="{use_case}"{synthetic_only()} and $exists(details.sketch_bounds)].( $e := $; $e.details.sketch_bounds.( '
               '$merge([$, {"run_id": $e.run_id, '
               '"max relative error": $lookup($e.details.max_relative_error, query)}]) ) )')
     text = ("run_id", "query", "sketch", "statistic", "bound metric", "merged error")
@@ -1003,8 +1407,8 @@ def overview_dashboard(uid, use_case, sketch_bounds=True):
                   "properties": [{"id": "unit", "value": "bytes"}]},
                  {"matcher": {"id": "byName", "options": "sketch"},
                   "properties": [{"id": "custom.width", "value": 230}]}]},
-             "options": {"showHeader": True}}, 0, 30, 24, 15)
-    return dashboard("overview", "Approximate query fidelity overview", b, [])
+             "options": {"showHeader": True}}, 0, 17, 24, 12)
+    return part(b)
 
 
 SYSTEM_TEXT = ("run_id", "system", "write mode", "unsupported", "failed evaluations", "samples dropped")
@@ -1016,7 +1420,7 @@ TRUTH_NUMBERS = ("max relative error", "answers differing", "answers")
 
 
 def systems_dashboard(uid, use_case):
-    each = (f'( $runs := $[use_case="{use_case}" and $exists(details.systems)]; '
+    each = (f'( $runs := $[use_case="{use_case}"{synthetic_only()} and $exists(details.systems)]; '
             '$reduce($runs, function($acc, $e) { $append($acc, $each($e.details.systems, function($v, $k) { '
             '$merge([$v, {"run_id": $e.run_id, "system": $k, '
             '"write mode": $lookup($e.details, "write mode"), '
@@ -1051,7 +1455,7 @@ def systems_dashboard(uid, use_case):
                                      "title": "Open this run",
                                      "url": f"/d/{uid}/{uid}?var-run=${{__data.fields.run_id}}"}]}]}]},
              "options": {"showHeader": True}}, 0, 1, 24, 14)
-    truth = (f'( $runs := $[use_case="{use_case}" and $exists(details.victoriametrics_vs_truth)]; '
+    truth = (f'( $runs := $[use_case="{use_case}"{synthetic_only()} and $exists(details.victoriametrics_vs_truth)]; '
              '$reduce($runs, function($acc, $e) { $append($acc, $each($e.details.victoriametrics_vs_truth, '
              'function($v, $k) { $merge([$v, {"run_id": $e.run_id, "query": $k}]) })) }, []) )')
     b.panel({"type": "table",
@@ -1066,32 +1470,42 @@ def systems_dashboard(uid, use_case):
                  {"matcher": {"id": "byName", "options": "max relative error"},
                   "properties": [{"id": "unit", "value": "percentunit"}, {"id": "decimals", "value": 2}]}]},
              "options": {"showHeader": True}}, 0, 15, 24, 8)
-    return dashboard(uid, "VictoriaMetrics vs ASAPQuery-backend", b, [])
+    return part(b)
 
 
 PHASE3_SKIPS = ("stage1", "two_stages")
 
 
-def parts_of(module, phase3=False):
+def parts_of(module, phase3=False, figure=True):
     use_case = cases.spec_of(module)["use_case"]
     board = module.DASHBOARD
     rule_error = board.get("rule_error", {})
     builders = {
-        "overview": lambda uid: overview_dashboard(uid, use_case, sketch_bounds=not phase3),
-        "cost": lambda uid: cost_dashboard(uid, module),
+        "overview": lambda uid: overview_dashboard(
+            uid, use_case, {r["rule"]: r["name"] for r in rule_catalog(module) if r["name"] != r["rule"]},
+            sketch_bounds=not phase3),
+        "cost": lambda uid: cost_dashboard(module),
         "stage1": lambda uid: stage1_dashboard(uid, use_case),
-        "alert": lambda uid: alert_dashboard(uid, module),
+        "runs": lambda uid: runs_part(uid, use_case),
+        "rule_note": lambda uid: rule_note_part(module),
+        "alert": lambda uid: alert_dashboard(module),
         "decision": lambda uid: decision_dashboard(uid, module),
-        "rollout": lambda uid: rollout_dashboard(uid, module),
+        "rollout": lambda uid: rollout_dashboard(module),
         "two_stages": lambda uid: two_stages_dashboard(uid, module),
-        "topk": lambda uid: topk_dashboard(uid, module),
-        "rules": lambda uid: rules_dashboard(uid, [use_case]),
+        "topk": lambda uid: topk_dashboard(uid),
+        "rules": lambda uid: rules_dashboard(uid, board.get("entity", "entity")),
         "rule_error": lambda uid: rule_error_dashboard(
-            uid, module.RULES, tuple(e for e in ERRORS if e[0] in rule_error.get("metrics", ())),
+            module.RULES, tuple(e for e in ERRORS if e[0] in rule_error.get("metrics", ())),
             rule_error.get("file_var"), rule_error.get("subpopulation")),
     }
-    parts = tuple(builders[name] for name in board["parts"] if not (phase3 and name in PHASE3_SKIPS))
-    return ((lambda uid: systems_dashboard(uid, use_case)),) + parts if phase3 else parts
+    names = [n for name in board["parts"] for n in ((name, "rule_note") if name == "runs" else (name,))]
+    parts = tuple(builders[name] for name in names if not (phase3 and name in PHASE3_SKIPS))
+    if phase3:
+        parts = (lambda uid: systems_dashboard(uid, use_case),) + parts
+    parts = (lambda uid: about_part(module),) + parts
+    if figure and "figure" in board:
+        parts = (lambda uid: figure_part(board["figure"]),) + parts
+    return parts
 
 
 def merged_variable(first, other):
@@ -1103,48 +1517,73 @@ def merged_variable(first, other):
     return out
 
 
-def use_case_dashboard(uid, title, parts):
+def time_range(spec):
+    iso = lambda ms: datetime.fromtimestamp(ms / 1000, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    return {"from": iso(spec["start_ms"]), "to": iso(spec["start_ms"] + spec["duration_ms"])}
+
+
+def use_case_dashboard(uid, title, parts, spec, module):
     b = Board()
-    variables, annotations, y, end = {}, [], 0, "2026-01-01T01:00:00.000Z"
-    kept = set()
+    variables, annotations, y = {}, [], 0
     for build in parts:
-        part = build(uid)
-        end = max(end, part["time"]["to"])
-        panels = []
-        for p in part["panels"]:
-            key = (p["type"], p.get("title"))
-            if p.get("title") in ("Runs", "Plans in ${run}"):
-                if key in kept:
-                    continue
-                kept.add(key)
-            panels.append(p)
-        top = min(p["gridPos"]["y"] for p in panels)
-        for p in panels:
+        built = build(uid)
+        top = min(p["gridPos"]["y"] for p in built["panels"])
+        for p in built["panels"]:
             p["gridPos"]["y"] += y - top
             p["id"] = len(b.panels) + 1
             b.panels.append(p)
         y = max(p["gridPos"]["y"] + p["gridPos"]["h"] for p in b.panels)
-        for v in part["templating"]["list"]:
+        for v in built["variables"]:
             variables[v["name"]] = merged_variable(variables[v["name"]], v) if v["name"] in variables else v
-        annotations += [a for a in part["annotations"]["list"] if not a.get("builtIn")]
-    return dashboard(uid, title, b, list(variables.values()), annotations, to=end)
+        annotations += built["annotations"]
+    signal = variables.get("signal")
+    if signal:
+        names = {r["rule"]: r["name"] for r in rule_catalog(module) if r["name"] != r["rule"]}
+        query = signal["query"]["infinityQuery"]
+        query["root_selector"] = (f'( $n := {json.dumps(names)}; ({query["root_selector"]}).{{"__value": signal, '
+                                  '"__text": ( $t := $lookup($n, signal); $exists($t) ? $t : signal )} )')
+        query["columns"] = [col("__text", "__text", "string"), col("__value", "__value", "string")]
+        signal["label"] = "rule"
+        for p in b.panels:
+            if p.get("title"):
+                p["title"] = p["title"].replace("${signal}", "${signal:text}")
+    return dashboard(uid, title, b, list(variables.values()), annotations, time_range(spec))
+
+
+def phase_boards(phase, figure):
+    for m in cases.load().values():
+        uid, title = m.DASHBOARD["uid"], m.DASHBOARD["title"]
+        if phase == 2:
+            yield uid, use_case_dashboard(uid, title, parts_of(m, figure=figure), cases.spec_of(m), m)
+        else:
+            board = use_case_dashboard("phase3-" + uid, "Phase 3 · " + title, parts_of(m, phase3=True, figure=figure),
+                                       cases.spec_of(m), m)
+            yield "phase3-" + uid, json.loads(json.dumps(board).replace(DATA, PHASE3_DATA))
 
 
 def main():
-    for name in os.listdir(OUT):
-        if name.endswith(".json"):
-            os.remove(os.path.join(OUT, name))
-    modules = cases.load().values()
-    boards = [(m.DASHBOARD["uid"], use_case_dashboard(m.DASHBOARD["uid"], m.DASHBOARD["title"], parts_of(m)))
-              for m in modules]
-    boards += [("phase3-" + m.DASHBOARD["uid"],
-                json.loads(json.dumps(use_case_dashboard("phase3-" + m.DASHBOARD["uid"], "Phase 3 · " + m.DASHBOARD["title"],
-                                                         parts_of(m, phase3=True))).replace(DATA, PHASE3_DATA)))
-               for m in modules]
-    for uid, board in boards:
-        with open(os.path.join(OUT, uid + ".json"), "w") as f:
-            json.dump(board, f, indent=2)
-            f.write("\n")
+    parser = argparse.ArgumentParser(description="Write the Grafana dashboards of the five use cases.")
+    parser.add_argument("--phase", type=int, choices=(2, 3), action="append",
+                        help="repeatable; the phase whose dashboards to write; default both")
+    parser.add_argument("--no-figure", action="store_true",
+                        help="leave out the scenario figure at the top of each dashboard")
+    parser.add_argument("--out", default=OUT, help=f"directory to write into; default {OUT}")
+    parser.add_argument("--real-data", action="store_true",
+                        help="also show runs on real datasets and describe those datasets; by default the dashboards "
+                             "show synthetic data only")
+    args = parser.parse_args()
+    global REAL_DATA
+    REAL_DATA = args.real_data
+    phases = sorted(set(args.phase or (2, 3)))
+    os.makedirs(args.out, exist_ok=True)
+    for name in os.listdir(args.out):
+        if name.endswith(".json") and (3 if name.startswith("phase3-") else 2) in phases:
+            os.remove(os.path.join(args.out, name))
+    for phase in phases:
+        for uid, board in phase_boards(phase, not args.no_figure):
+            with open(os.path.join(args.out, uid + ".json"), "w") as f:
+                json.dump(board, f, indent=2)
+                f.write("\n")
 
 
 if __name__ == "__main__":

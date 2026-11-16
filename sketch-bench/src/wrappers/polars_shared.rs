@@ -245,13 +245,13 @@ impl<T: PolarsColumnItem> PolarsQuantileCore<T> {
             .select(exprs)
             .collect()
             .expect("polars quantile collect");
-        for i in 0..=100 {
+        for (i, quantile) in self.quantiles.iter_mut().enumerate() {
             let c = result
                 .column(&format!("q{i}"))
                 .expect("quantile column")
                 .cast(&DataType::Float64)
                 .expect("cast to f64");
-            self.quantiles[i] = c.f64().expect("f64 chunked").get(0).unwrap_or(0.0);
+            *quantile = c.f64().expect("f64 chunked").get(0).unwrap_or(0.0);
         }
     }
     pub fn query(&self, p: f64) -> f64 {
