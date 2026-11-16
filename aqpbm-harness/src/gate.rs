@@ -30,7 +30,7 @@ pub struct GateRow {
 impl GateRow {
     /// Selected over exact query CPU, for the summary; `None` when either is missing.
     pub fn raw_cpu_ratio(&self) -> Option<f64> {
-        todo!("implemented after test approval")
+        Some(self.selected_query_cpu_ns? as f64 / self.exact_query_cpu_ns? as f64)
     }
 }
 
@@ -91,6 +91,72 @@ pub fn gate_verdict(
     rows: &[GateRow],
     cost_gate: bool,
 ) -> GateVerdict {
-    let _ = (expected, rows, cost_gate);
-    todo!("implemented after test approval")
+    let mut failures = Vec::new();
+    for (workload, setting) in expected {
+        if !rows
+            .iter()
+            .any(|row| &row.workload == workload && &row.setting == setting)
+        {
+            failures.push(GateFailure::MissingRow {
+                workload: workload.clone(),
+                setting: setting.clone(),
+            });
+        }
+    }
+    for row in rows {
+        let (workload, setting) = (row.workload.clone(), row.setting.clone());
+        if !expected
+            .iter()
+            .any(|(w, s)| *w == row.workload && *s == row.setting)
+        {
+            failures.push(GateFailure::ExtraRow { workload, setting });
+            continue;
+        }
+        let selected = match &row.selected_engine_cost_per_second {
+            Err(reason) => {
+                failures.push(GateFailure::SelectedArmFailed {
+                    workload,
+                    setting,
+                    reason: reason.clone(),
+                });
+                continue;
+            }
+            Ok(selected) => *selected,
+        };
+        if row.measured_error.is_nan() {
+            failures.push(GateFailure::ErrorNotANumber {
+                workload: workload.clone(),
+                setting: setting.clone(),
+            });
+        } else if row.measured_error > row.target_error {
+            failures.push(GateFailure::ErrorAboveTarget {
+                workload: workload.clone(),
+                setting: setting.clone(),
+                measured_error: row.measured_error,
+                target_error: row.target_error,
+            });
+        }
+        if !cost_gate {
+            continue;
+        }
+        match (row.exact_engine_cost_per_second, selected) {
+            (None, _) => failures.push(GateFailure::ExactArmMissing { workload, setting }),
+            (Some(_), None) => failures.push(GateFailure::EngineCostMissing { workload, setting }),
+            (Some(exact), Some(selected)) => {
+                if selected > GATE_MAX_COST_RATIO * exact {
+                    failures.push(GateFailure::CostAboveExact {
+                        workload,
+                        setting,
+                        selected,
+                        exact,
+                    });
+                }
+            }
+        }
+    }
+    if failures.is_empty() {
+        GateVerdict::Pass
+    } else {
+        GateVerdict::Fail(failures)
+    }
 }

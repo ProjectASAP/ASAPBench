@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use aqpbm_datagen::TimeSeriesDescription;
+use aqpbm_datagen::{GeneratedTimeSeries, TimeSeriesCursor, TimeSeriesDescription};
 use serde::{Deserialize, Serialize};
 
 /// A series' labels, `__name__` included, such as
@@ -26,8 +26,16 @@ pub struct Sample {
 /// Reads one sample per line, `{"labels": {...}, "ts_ms": 1, "value": 2.0}`;
 /// blank lines are skipped. A bad line is an error naming its 0-based index.
 pub fn read_samples_jsonl(text: &str) -> Result<Vec<Sample>, SampleReadError> {
-    let _ = text;
-    todo!("implemented after test approval")
+    text.lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+        .map(|(line, text)| {
+            serde_json::from_str(text).map_err(|error| SampleReadError {
+                line,
+                message: error.to_string(),
+            })
+        })
+        .collect()
 }
 
 /// A JSONL line that is not a sample.
@@ -62,14 +70,156 @@ pub struct SampleChunk {
 /// with ends `start + refresh_ms`, `start + 2 refresh_ms`, ... A sample on a
 /// chunk end belongs to the chunk it ends. A generator error ends the chunks
 /// with that error.
+/// Example: 2 series every 10 s over 60 s from `start`, refresh 30 s: a chunk
+/// ending at `start + 30 s` with the samples at 10, 20 and 30 s, and one
+/// ending at `start + 60 s` with those at 40, 50 and 60 s. When the
+/// duration is not a multiple of the refresh, the last chunk ends on the
+/// next refresh end after it.
 pub fn refresh_chunks(
     record: &DataRecord,
     refresh_ms: u64,
 ) -> Result<impl Iterator<Item = Result<SampleChunk, DataError>>, DataError> {
-    let _ = (record, refresh_ms);
-    todo!("implemented after test approval");
-    #[allow(unreachable_code)]
-    Ok(std::iter::empty())
+    if refresh_ms == 0 {
+        return Err(DataError::ZeroRefresh);
+    }
+    let generated = record
+        .description
+        .generate()
+        .map_err(|error| DataError::Generator {
+            metric: record.metric.clone(),
+            message: error.to_string(),
+        })?;
+    let labels = generated
+        .labels
+        .iter()
+        .map(|pairs| {
+            let mut labels: SeriesLabels = pairs.iter().cloned().collect();
+            labels.insert("__name__".into(), record.metric.clone());
+            labels
+        })
+        .collect();
+    let description = &record.description;
+    let chunk_count = description.duration_ms.div_ceil(refresh_ms);
+    Ok(RefreshChunks {
+        metric: record.metric.clone(),
+        cursor: generated.cursor(),
+        generated,
+        labels,
+        start_ms: description.start_ms,
+        refresh_ms,
+        chunk_count,
+        next_chunk: 0,
+        pending: None,
+        finished: false,
+    })
+}
+
+/// The iterator of [`refresh_chunks`]; it owns the generated series and
+/// draws samples as the chunks are taken.
+struct RefreshChunks {
+    metric: String,
+    generated: GeneratedTimeSeries,
+    cursor: TimeSeriesCursor,
+    /// Series `i`'s labels, `__name__` included.
+    labels: Vec<SeriesLabels>,
+    start_ms: i64,
+    refresh_ms: u64,
+    chunk_count: u64,
+    /// 0-based index of the next chunk; it ends at `start + (index + 1) refresh`.
+    next_chunk: u64,
+    /// A sample drawn past the previous chunk's end.
+    pending: Option<Sample>,
+    /// After the last chunk or an error.
+    finished: bool,
+}
+
+impl Iterator for RefreshChunks {
+    type Item = Result<SampleChunk, DataError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished || self.next_chunk >= self.chunk_count {
+            return None;
+        }
+        self.next_chunk += 1;
+        let end_ms = self.start_ms + (self.next_chunk * self.refresh_ms) as i64;
+        let mut samples = Vec::new();
+        if let Some(sample) = self.pending.take() {
+            if sample.ts_ms > end_ms {
+                self.pending = Some(sample);
+                return Some(Ok(SampleChunk { end_ms, samples }));
+            }
+            samples.push(sample);
+        }
+        while let Some(item) = self.cursor.next_sample(&self.generated) {
+            let (series, ts_ms, value) = match item {
+                Ok(sample) => sample,
+                Err(error) => {
+                    self.finished = true;
+                    return Some(Err(DataError::Generator {
+                        metric: self.metric.clone(),
+                        message: error.to_string(),
+                    }));
+                }
+            };
+            let sample = Sample {
+                labels: self.labels[series].clone(),
+                ts_ms,
+                value,
+            };
+            if ts_ms > end_ms {
+                self.pending = Some(sample);
+                break;
+            }
+            samples.push(sample);
+        }
+        Some(Ok(SampleChunk { end_ms, samples }))
+    }
+}
+
+/// The refresh chunks of several metrics merged by end: one chunk per
+/// distinct end, ascending, holding every record's samples of that refresh
+/// (record by record, each time-major). The first generator error ends the
+/// chunks with that error. Example: metrics `a` and `b` on one grid give one
+/// chunk per refresh with the samples of both.
+pub fn workload_chunks(
+    records: &[DataRecord],
+    refresh_ms: u64,
+) -> Result<impl Iterator<Item = Result<SampleChunk, DataError>>, DataError> {
+    let mut per_record = Vec::with_capacity(records.len());
+    for record in records {
+        let chunks: Box<dyn Iterator<Item = Result<SampleChunk, DataError>>> =
+            Box::new(refresh_chunks(record, refresh_ms)?);
+        per_record.push(chunks.peekable());
+    }
+    let mut finished = false;
+    Ok(std::iter::from_fn(move || {
+        if finished {
+            return None;
+        }
+        let mut end_ms = None;
+        for chunks in &mut per_record {
+            match chunks.peek() {
+                None => {}
+                Some(Err(_)) => {
+                    finished = true;
+                    return chunks.next();
+                }
+                Some(Ok(chunk)) => {
+                    end_ms = Some(end_ms.map_or(chunk.end_ms, |e: i64| e.min(chunk.end_ms)))
+                }
+            }
+        }
+        let end_ms = end_ms?;
+        let mut samples = Vec::new();
+        for chunks in &mut per_record {
+            if let Some(Ok(chunk)) =
+                chunks.next_if(|item| matches!(item, Ok(c) if c.end_ms == end_ms))
+            {
+                samples.extend(chunk.samples);
+            }
+        }
+        Some(Ok(SampleChunk { end_ms, samples }))
+    }))
 }
 
 /// Data that cannot be generated or cut.

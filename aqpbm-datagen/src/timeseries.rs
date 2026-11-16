@@ -367,6 +367,18 @@ impl GeneratedTimeSeries {
     /// counter mode, a running sum past 2^53 yields one `Err` naming the
     /// series and timestamp, and the iterator ends there.
     pub fn samples(&self) -> TimeSeriesSamples<'_> {
+        TimeSeriesSamples {
+            series: self,
+            cursor: self.cursor(),
+        }
+    }
+
+    /// The position and random state of [`GeneratedTimeSeries::samples`],
+    /// without a borrow of the series: a caller that owns the series and must
+    /// hand out an owning iterator keeps both and calls
+    /// [`TimeSeriesCursor::next_sample`] with the series. Example: a reader
+    /// that cuts the samples into refresh chunks keeps `(series, cursor)`.
+    pub fn cursor(&self) -> TimeSeriesCursor {
         let value_seed = self.description.seed ^ self.description.value_distribution.seed();
         let streams = (0..self.labels.len() as u64)
             .map(|i| SeriesStream {
@@ -381,8 +393,7 @@ impl GeneratedTimeSeries {
                 }),
             })
             .collect();
-        TimeSeriesSamples {
-            series: self,
+        TimeSeriesCursor {
             streams,
             sample_count: self.labels.len() as u64 * self.description.samples_per_series(),
             next: 0,
@@ -398,6 +409,34 @@ struct SeriesStream {
 /// The iterator [`GeneratedTimeSeries::samples`] returns.
 pub struct TimeSeriesSamples<'a> {
     series: &'a GeneratedTimeSeries,
+    cursor: TimeSeriesCursor,
+}
+
+impl<'a> Iterator for TimeSeriesSamples<'a> {
+    type Item = Result<TimeSeriesSample<'a>, DataGenError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let item = self.cursor.next_sample(self.series)?;
+        Some(item.map(|(index, timestamp_ms, value)| {
+            (&self.series.labels[index][..], timestamp_ms, value)
+        }))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let left = self.cursor.sample_count.saturating_sub(self.cursor.next) as usize;
+        // A counter can end early on an error, so only plain mode knows the
+        // exact count.
+        let lower = if self.series.description.counter {
+            0
+        } else {
+            left
+        };
+        (lower, Some(left))
+    }
+}
+
+/// Where [`GeneratedTimeSeries::samples`] is, from [`GeneratedTimeSeries::cursor`].
+pub struct TimeSeriesCursor {
     streams: Vec<SeriesStream>,
     /// Samples in all: series times samples per series.
     sample_count: u64,
@@ -405,21 +444,25 @@ pub struct TimeSeriesSamples<'a> {
     next: u64,
 }
 
-impl<'a> Iterator for TimeSeriesSamples<'a> {
-    type Item = Result<TimeSeriesSample<'a>, DataGenError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+impl TimeSeriesCursor {
+    /// The next sample as `(series index, timestamp ms, value)`; `series`
+    /// must be the series the cursor came from. Series `i`'s labels are
+    /// `series.labels[i]`.
+    pub fn next_sample(
+        &mut self,
+        series: &GeneratedTimeSeries,
+    ) -> Option<Result<(usize, i64, f64), DataGenError>> {
         if self.next >= self.sample_count {
             return None;
         }
         let series_num = self.streams.len() as u64;
         let (step, index) = (self.next / series_num, (self.next % series_num) as usize);
         self.next += 1;
-        let description = &self.series.description;
+        let description = &series.description;
         let timestamp_ms =
             description.start_ms + ((step + 1) * description.sample_interval_ms) as i64;
         let stream = &mut self.streams[index];
-        let draw = self.series.sampler.sample(&mut stream.rng);
+        let draw = series.sampler.sample(&mut stream.rng);
         let value = match &mut stream.counter {
             Some(acc) => match acc.push(draw) {
                 Ok(sum) => sum,
@@ -434,19 +477,7 @@ impl<'a> Iterator for TimeSeriesSamples<'a> {
             },
             None => draw,
         };
-        Some(Ok((&self.series.labels[index], timestamp_ms, value)))
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let left = self.sample_count.saturating_sub(self.next) as usize;
-        // A counter can end early on an error, so only plain mode knows the
-        // exact count.
-        let lower = if self.series.description.counter {
-            0
-        } else {
-            left
-        };
-        (lower, Some(left))
+        Some(Ok((index, timestamp_ms, value)))
     }
 }
 

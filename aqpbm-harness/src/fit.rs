@@ -48,10 +48,193 @@ pub enum FitFlag {
 /// Relative-weighted least squares (weights `1 / measured^2`) of `measured`
 /// on `terms`, one constant per name. A negative constant is set to 0 and the
 /// rest refitted without it.
+///
+/// The points are fitted in a canonical order (by setting, then terms, then
+/// measured value), so the constants do not depend on the order given. A
+/// constant no point exercises (all its terms 0, or collinear with the
+/// others) is `ConstantNotIdentified` and set to 0. Every point the fit
+/// misses by more than [`RESIDUAL_TOLERANCE`] of its measured value is
+/// flagged.
 pub fn fit_constants(names: &[&str], points: &[FitPoint]) -> Result<ConstantsFit, FitError> {
-    let _ = (names, points);
-    todo!("implemented after test approval")
+    if points.is_empty() {
+        return Err(FitError::NoPoints);
+    }
+    for point in points {
+        if point.terms.len() != names.len() {
+            return Err(FitError::TermCountMismatch {
+                setting: point.setting.clone(),
+                expected: names.len(),
+                got: point.terms.len(),
+            });
+        }
+        if !(point.measured.is_finite() && point.measured > 0.0) {
+            return Err(FitError::BadMeasurement {
+                setting: point.setting.clone(),
+                measured: point.measured,
+            });
+        }
+    }
+    let mut ordered: Vec<&FitPoint> = points.iter().collect();
+    ordered.sort_by(|a, b| {
+        a.setting
+            .cmp(&b.setting)
+            .then_with(|| {
+                a.terms
+                    .iter()
+                    .zip(&b.terms)
+                    .map(|(x, y)| x.total_cmp(y))
+                    .find(|order| order.is_ne())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| a.measured.total_cmp(&b.measured))
+    });
+
+    let mut flags = Vec::new();
+    let mut values = vec![0.0; names.len()];
+    let mut active: Vec<usize> = (0..names.len()).collect();
+    loop {
+        match weighted_least_squares(&ordered, &active) {
+            Err(Unidentified(constant)) => {
+                flags.push(FitFlag::ConstantNotIdentified {
+                    constant: names[constant].to_string(),
+                });
+                active.retain(|&c| c != constant);
+            }
+            Ok(solution) => {
+                let negative: Vec<(usize, f64)> = active
+                    .iter()
+                    .zip(&solution)
+                    .filter(|(_, &value)| value < 0.0)
+                    .map(|(&c, &value)| (c, value))
+                    .collect();
+                if negative.is_empty() {
+                    for (&c, value) in active.iter().zip(solution) {
+                        values[c] = value;
+                    }
+                    break;
+                }
+                for (constant, raw_value) in negative {
+                    flags.push(FitFlag::NegativeConstantClamped {
+                        constant: names[constant].to_string(),
+                        raw_value,
+                    });
+                    active.retain(|&c| c != constant);
+                }
+            }
+        }
+    }
+    for point in &ordered {
+        let relative_residual = (predict(&values, &point.terms) - point.measured) / point.measured;
+        if relative_residual.abs() > RESIDUAL_TOLERANCE {
+            flags.push(FitFlag::ResidualAboveTolerance {
+                setting: point.setting.clone(),
+                relative_residual,
+            });
+        }
+    }
+    Ok(ConstantsFit {
+        constants: names
+            .iter()
+            .zip(values)
+            .map(|(name, value)| (name.to_string(), value))
+            .collect(),
+        flags,
+    })
 }
+
+/// A point the fit misses by more than this share of its measured value is
+/// flagged: 0.10 is 10%.
+pub const RESIDUAL_TOLERANCE: f64 = 0.10;
+
+/// `terms · constants`.
+fn predict(constants: &[f64], terms: &[f64]) -> f64 {
+    constants.iter().zip(terms).map(|(c, t)| c * t).sum()
+}
+
+/// The constant (by index) the points cannot determine.
+struct Unidentified(usize);
+
+/// Minimizes `Σ ((terms · c - measured) / measured)^2` over the `active`
+/// constants by Householder QR of the weighted, column-normalized design
+/// matrix (better conditioned than the normal equations). Returns the
+/// constants in `active` order, or the first active constant whose column is
+/// zero or a combination of the earlier ones.
+fn weighted_least_squares(
+    points: &[&FitPoint],
+    active: &[usize],
+) -> Result<Vec<f64>, Unidentified> {
+    let (rows, columns) = (points.len(), active.len());
+    if columns == 0 {
+        return Ok(Vec::new());
+    }
+    // a[i][j] = term / measured, columns scaled to unit norm; b[i] = 1.
+    let mut a: Vec<Vec<f64>> = points
+        .iter()
+        .map(|point| {
+            active
+                .iter()
+                .map(|&c| point.terms[c] / point.measured)
+                .collect()
+        })
+        .collect();
+    let mut b = vec![1.0; rows];
+    let mut scale = vec![0.0; columns];
+    for (j, column_scale) in scale.iter_mut().enumerate() {
+        let norm = a.iter().map(|row| row[j] * row[j]).sum::<f64>().sqrt();
+        if norm == 0.0 {
+            return Err(Unidentified(active[j]));
+        }
+        *column_scale = norm;
+        for row in &mut a {
+            row[j] /= norm;
+        }
+    }
+    for j in 0..columns {
+        if j >= rows {
+            return Err(Unidentified(active[j]));
+        }
+        // Householder reflection zeroing column j below the diagonal.
+        let norm = (j..rows).map(|i| a[i][j] * a[i][j]).sum::<f64>().sqrt();
+        if norm < IDENTIFIED_COLUMN_NORM {
+            return Err(Unidentified(active[j]));
+        }
+        let alpha = if a[j][j] > 0.0 { -norm } else { norm };
+        let mut v: Vec<f64> = (j..rows).map(|i| a[i][j]).collect();
+        v[0] -= alpha;
+        let v_norm_sq: f64 = v.iter().map(|x| x * x).sum();
+        for k in j..columns {
+            let mut column: Vec<f64> = a[j..].iter().map(|row| row[k]).collect();
+            reflect(&v, v_norm_sq, &mut column);
+            for (row, value) in a[j..].iter_mut().zip(column) {
+                row[k] = value;
+            }
+        }
+        reflect(&v, v_norm_sq, &mut b[j..]);
+    }
+    let mut solution = vec![0.0; columns];
+    for j in (0..columns).rev() {
+        let rest: f64 = (j + 1..columns).map(|k| a[j][k] * solution[k]).sum();
+        solution[j] = (b[j] - rest) / a[j][j];
+    }
+    Ok(solution
+        .into_iter()
+        .zip(scale)
+        .map(|(value, norm)| value / norm)
+        .collect())
+}
+
+/// The Householder reflection `x -> x - 2 v (v · x) / (v · v)`.
+fn reflect(v: &[f64], v_norm_sq: f64, x: &mut [f64]) {
+    let dot: f64 = v.iter().zip(x.iter()).map(|(vi, xi)| vi * xi).sum();
+    let factor = 2.0 * dot / v_norm_sq;
+    for (xi, vi) in x.iter_mut().zip(v) {
+        *xi -= factor * vi;
+    }
+}
+
+/// Below this norm, a unit-norm column's part outside the earlier columns is
+/// rounding noise: the constant is not identified.
+const IDENTIFIED_COLUMN_NORM: f64 = 1e-10;
 
 /// One fold: the fit without one setting, and its relative error on that
 /// setting's points.
@@ -82,22 +265,112 @@ pub fn leave_one_setting_out(
     names: &[&str],
     points: &[FitPoint],
 ) -> Result<LeaveOneSettingOut, FitError> {
-    let _ = (names, points);
-    todo!("implemented after test approval")
+    let mut settings: Vec<&str> = Vec::new();
+    for point in points {
+        if !settings.contains(&point.setting.as_str()) {
+            settings.push(&point.setting);
+        }
+    }
+    if settings.len() < 2 {
+        return Err(FitError::TooFewSettings {
+            settings: settings.len(),
+        });
+    }
+    let mut held_out = Vec::with_capacity(settings.len());
+    let mut log_errors = Vec::new();
+    for setting in settings {
+        let (test, train): (Vec<FitPoint>, Vec<FitPoint>) = points
+            .iter()
+            .cloned()
+            .partition(|point| point.setting == setting);
+        let fit = fit_constants(names, &train)?;
+        let unidentified: Vec<usize> = names
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| {
+                fit.flags.iter().any(|flag| {
+                    matches!(flag, FitFlag::ConstantNotIdentified { constant } if constant == *name)
+                })
+            })
+            .map(|(index, _)| index)
+            .collect();
+        let needs_unidentified = test
+            .iter()
+            .any(|point| unidentified.iter().any(|&c| point.terms[c] != 0.0));
+        let relative_error = if needs_unidentified {
+            None
+        } else {
+            let constants: Vec<f64> = fit.constants.iter().map(|(_, value)| *value).collect();
+            let mut sum = 0.0;
+            for point in &test {
+                let predicted = predict(&constants, &point.terms);
+                sum += (predicted - point.measured) / point.measured;
+                log_errors.push((predicted / point.measured).ln());
+            }
+            Some(sum)
+        };
+        held_out.push(HeldOutSetting {
+            setting: setting.to_string(),
+            fit,
+            relative_error,
+        });
+    }
+    let rms_log_error = if log_errors.is_empty() {
+        f64::NAN
+    } else {
+        (log_errors.iter().map(|e| e * e).sum::<f64>() / log_errors.len() as f64).sqrt()
+    };
+    let settings_scored = held_out
+        .iter()
+        .filter(|fold| fold.relative_error.is_some())
+        .count();
+    Ok(LeaveOneSettingOut {
+        held_out,
+        rms_log_error,
+        settings_scored,
+    })
 }
 
 /// Times `run(size)` at each size on `clock` under `protocol` (warm-up, then
 /// the median of `measured_runs` thread-CPU times). `run` returns the units
 /// it processed. One point per size: setting = the size, terms =
 /// `[units, 1]`.
+///
+/// # Panics
+///
+/// When `protocol.measured_runs` is even or zero
+/// ([`Protocol::check_run_count`] refuses it as an error).
 pub fn measure_sizes(
     protocol: &Protocol,
     clock: &dyn CpuClock,
     sizes: &[u64],
     run: &mut dyn FnMut(u64) -> u64,
 ) -> Vec<FitPoint> {
-    let _ = (protocol, clock, sizes, run);
-    todo!("implemented after test approval")
+    if let Err(error) = protocol.check_run_count() {
+        panic!("{error}");
+    }
+    sizes
+        .iter()
+        .map(|&size| {
+            for _ in 0..protocol.warmup_runs {
+                run(size);
+            }
+            let mut runs: Vec<(u64, u64)> = (0..protocol.measured_runs)
+                .map(|_| {
+                    let before = clock.thread_cpu_ns();
+                    let units = run(size);
+                    (clock.thread_cpu_ns().saturating_sub(before), units)
+                })
+                .collect();
+            runs.sort_by_key(|&(cpu_ns, _)| cpu_ns);
+            let (median_ns, units) = runs[runs.len() / 2];
+            FitPoint {
+                setting: size.to_string(),
+                terms: vec![units as f64, 1.0],
+                measured: median_ns as f64,
+            }
+        })
+        .collect()
 }
 
 /// A fit that cannot be computed.
