@@ -19,7 +19,13 @@ def stage2(derived, errors):
     return rollout.rollout_errors(derived, errors + relative, RULES)
 
 
-DASHBOARD = {"uid": "canary-release", "title": "4 · Canary release", "parts": ("overview", "rollout", "two_stages")}
+DASHBOARD = {"uid": "canary-release", "title": "4 · Canary release", "figure": "uc4-canary-release.svg",
+             "data": {"summary": "Requests to two versions of one service, the stable release and the canary; each "
+                                 "sample is one request.",
+                      "columns": {"version": "Which version served the request: stable or canary",
+                                  "request_latency": "Latency of the request, in seconds",
+                                  "requests": "HTTP status code of the request (200 or 500)"}},
+             "parts": ("overview", "runs", "rollout", "two_stages")}
 
 CASE = {
     "spec": "uc4_canary.json",
