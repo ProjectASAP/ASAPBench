@@ -73,7 +73,8 @@ pub enum FakeFault {
     CountsWindowStart,
     /// `charged_units` reports twice the units the calibration closure returns.
     CalibrationUnitsDouble,
-    /// Charges 1 ms of thread CPU and 9 ms more on another thread per ingest.
+    /// Per ingest, charges 1 ms on the calling thread and 8 ms on another
+    /// thread: 9 ms of process CPU, 1 ms of it on the calling thread.
     WorksOnAnotherThread,
 }
 
