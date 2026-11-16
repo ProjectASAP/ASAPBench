@@ -140,6 +140,22 @@ fn stream_seed(seed: u64, stream: u64) -> u64 {
     splitmix64(seed ^ splitmix64(stream))
 }
 
+/// The seed of stream `stream`'s random generator under `seed`. Stub: the
+/// next commit implements it.
+pub fn series_stream_seed(seed: u64, stream: u64) -> u64 {
+    let _ = (seed, stream);
+    todo!("#250: implemented in the next commit")
+}
+
+/// Offsets in ms from the window start of one series' samples. Stub: the
+/// next commit implements it.
+pub fn sample_offsets_ms(sample_interval_ms: u64, duration_ms: u64) -> impl Iterator<Item = u64> {
+    let _ = (sample_interval_ms, duration_ms);
+    todo!("#250: implemented in the next commit");
+    #[allow(unreachable_code)]
+    std::iter::empty()
+}
+
 /// Label draws use one stream; series `i`'s values use stream `i`.
 const LABEL_STREAM: u64 = u64::MAX;
 
@@ -493,7 +509,8 @@ mod tests {
         let first_values = |value_seed: u64| -> Vec<f64> {
             (0..30)
                 .map(|i| {
-                    let mut rng = Xoshiro256PlusPlus::seed_from_u64(stream_seed(value_seed, i));
+                    let mut rng =
+                        Xoshiro256PlusPlus::seed_from_u64(series_stream_seed(value_seed, i));
                     sampler.sample(&mut rng)
                 })
                 .collect()
@@ -513,13 +530,13 @@ mod tests {
         assert!(plain.iter().zip(&reseeded).all(|(a, b)| a.2 != b.2));
     }
 
-    /// 30 distinct label sets, each sampled at 1000, 1010, ..., 1090 (95 ms
-    /// covers 10 samples), time-major.
+    /// 30 distinct label sets, each sampled at 1010, 1020, ..., 1090 (95 ms
+    /// holds 9 whole 10 ms intervals), time-major.
     #[test]
     fn every_series_is_distinct_and_sampled_on_the_interval() {
         let d = description(false);
         let samples = collect(&d);
-        assert_eq!(samples.len(), 30 * 10);
+        assert_eq!(samples.len(), 30 * 9);
         let mut by_series: HashMap<_, Vec<i64>> = HashMap::new();
         for (labels, t, v) in &samples {
             assert!((0.0..4.0).contains(v));
@@ -528,7 +545,7 @@ mod tests {
             by_series.entry(labels.clone()).or_default().push(*t);
         }
         assert_eq!(by_series.len(), 30);
-        let expected: Vec<i64> = (0..10).map(|k| 1000 + 10 * k).collect();
+        let expected: Vec<i64> = (1..10).map(|k| 1000 + 10 * k).collect();
         assert!(by_series.values().all(|ts| *ts == expected));
         assert!(samples.windows(2).all(|w| w[0].1 <= w[1].1));
     }
@@ -631,6 +648,7 @@ mod tests {
             ("series_num must be > 0", |d| d.series_num = 0),
             ("must be > 0", |d| d.sample_interval_ms = 0),
             ("must be > 0", |d| d.duration_ms = 0),
+            ("shorter than one sample_interval_ms", |d| d.duration_ms = 9),
             ("only 100 distinct", |d| d.series_num = 101),
             ("used twice", |d| d.labels[1].name = "host".into()),
             ("cardinality > 0", |d| d.labels[0].cardinality = 0),
@@ -660,7 +678,7 @@ mod tests {
             ..description(false)
         };
         let samples = collect(&d);
-        assert_eq!(samples.len(), 10);
+        assert_eq!(samples.len(), 9);
         assert!(samples.iter().all(|(l, _, _)| l.is_empty()));
     }
 
@@ -670,5 +688,111 @@ mod tests {
         let text = serde_norway::to_string(&d).unwrap();
         let back: TimeSeriesDescription = serde_norway::from_str(&text).unwrap();
         assert_eq!(d, back);
+    }
+
+    /// The one sample grid: one interval after the start, then every
+    /// interval, up to and including the duration.
+    #[test]
+    fn sample_offsets_are_one_interval_apart_and_end_at_the_duration() {
+        let offsets: Vec<u64> = sample_offsets_ms(10_000, 60_000).collect();
+        assert_eq!(
+            offsets,
+            vec![10_000, 20_000, 30_000, 40_000, 50_000, 60_000]
+        );
+    }
+
+    /// 100 ms at 7 ms is 14 whole intervals (7 ... 98); 101 ms at 10 ms is
+    /// 10 (10 ... 100). The partial interval at the end has no sample.
+    #[test]
+    fn a_duration_that_is_not_a_multiple_of_the_interval_stops_at_the_last_whole_interval() {
+        let sevens: Vec<u64> = sample_offsets_ms(7, 100).collect();
+        assert_eq!(sevens, (1..=14).map(|k| 7 * k).collect::<Vec<_>>());
+        let tens: Vec<u64> = sample_offsets_ms(10, 101).collect();
+        assert_eq!(tens, (1..=10).map(|k| 10 * k).collect::<Vec<_>>());
+    }
+
+    /// A duration below one interval would hold no sample: refused, naming
+    /// both fields.
+    #[test]
+    fn a_duration_shorter_than_one_interval_is_refused_by_name() {
+        for (interval, duration) in [(1000, 1), (10, 9)] {
+            let d = TimeSeriesDescription {
+                sample_interval_ms: interval,
+                duration_ms: duration,
+                ..description(false)
+            };
+            let err = d.generate().err().expect("refused").to_string();
+            assert!(
+                err.contains("duration_ms") && err.contains("sample_interval_ms"),
+                "{err}"
+            );
+        }
+    }
+
+    fn grid_description() -> TimeSeriesDescription {
+        TimeSeriesDescription {
+            labels: vec![label("host", 100, 0.0)],
+            series_num: 50,
+            start_ms: 1_700_000_000_000,
+            sample_interval_ms: 10_000,
+            duration_ms: 60_000,
+            ..description(false)
+        }
+    }
+
+    /// 60 s at 10 s: 6 samples per series at start + 10 s ... start + 60 s.
+    #[test]
+    fn time_series_samples_sit_on_the_left_open_grid() {
+        let d = grid_description();
+        assert_eq!(d.samples_per_series(), 6);
+        let samples = collect(&d);
+        assert_eq!(samples.len(), 300);
+        let mut by_series: HashMap<_, Vec<i64>> = HashMap::new();
+        for (labels, t, _) in &samples {
+            by_series.entry(labels.clone()).or_default().push(*t);
+        }
+        let expected: Vec<i64> = (1..=6).map(|k| 1_700_000_000_000 + 10_000 * k).collect();
+        assert_eq!(by_series.len(), 50);
+        assert!(by_series.values().all(|ts| *ts == expected));
+    }
+
+    /// Evaluation windows are left-open, `(t - w, t]`. With w = interval,
+    /// windows ending at start + 10 s ... start + 60 s each hold exactly one
+    /// sample of each series, and no sample falls outside them.
+    #[test]
+    fn every_sample_falls_in_exactly_one_left_open_window() {
+        let d = grid_description();
+        let start = d.start_ms;
+        let windows: Vec<(i64, i64)> = (1..=6)
+            .map(|j| (start + (j - 1) * 10_000, start + j * 10_000))
+            .collect();
+        let mut per_window_series: Vec<HashMap<Vec<(String, String)>, usize>> =
+            vec![HashMap::new(); windows.len()];
+        for (labels, t, _) in collect(&d) {
+            let inside: Vec<usize> = windows
+                .iter()
+                .enumerate()
+                .filter(|(_, (open, closed))| *open < t && t <= *closed)
+                .map(|(j, _)| j)
+                .collect();
+            assert_eq!(inside.len(), 1, "sample at {t} is in windows {inside:?}");
+            *per_window_series[inside[0]].entry(labels).or_default() += 1;
+        }
+        for (j, series) in per_window_series.iter().enumerate() {
+            assert_eq!(series.len(), 50, "window {j}");
+            assert!(series.values().all(|&n| n == 1), "window {j}");
+        }
+    }
+
+    /// The public stream seed is the splitmix mix. The old use-case seed,
+    /// `seed ^ stream * 0x9E37_79B9_7F4A_7C15`, gave (0, 1) and
+    /// (0x9E37_79B9_7F4A_7C15, 0) the same seed; this one does not.
+    #[test]
+    fn series_stream_seed_is_the_splitmix_mix_and_has_no_linear_collision() {
+        assert_eq!(series_stream_seed(0, 1), splitmix64(splitmix64(1)));
+        assert_ne!(
+            series_stream_seed(0, 1),
+            series_stream_seed(0x9E37_79B9_7F4A_7C15, 0)
+        );
     }
 }

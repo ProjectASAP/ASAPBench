@@ -42,8 +42,10 @@ fn evaluation_times_start_one_window_in_and_stay_on_the_grid() {
     assert!(times.windows(2).all(|w| w[1] - w[0] == 5000));
 }
 
+/// uc1 is all rate phases, so its sample times do not depend on the grid; the
+/// hash pins the values drawn under `aqpbm_datagen::series_stream_seed`.
 #[test]
-fn the_use_case_1_spec_draws_the_samples_it_drew_before_specs_had_many_series() {
+fn the_use_case_1_spec_draws_a_fixed_sample_stream() {
     let spec = Spec::read(Path::new("workloads/uc1_syn_flood.json")).unwrap();
     let series = generate(&spec, std::path::Path::new(".")).unwrap();
     assert_eq!(series.len(), 1);
@@ -55,7 +57,7 @@ fn the_use_case_1_spec_draws_the_samples_it_drew_before_specs_had_many_series() 
         }
     }
     assert_eq!(series[0].points.len(), 11_340_033);
-    assert_eq!(hash, 0x0ab5_805d_18d8_d702);
+    assert_eq!(hash, 0xd704_cd23_c966_dead);
 }
 
 #[test]
