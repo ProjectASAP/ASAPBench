@@ -2,6 +2,7 @@
 //! node profiles from the operator timing hook, and engine-reported CPU.
 
 use aqpbm_datagen::{DataDistribution, SeriesLabelSpec, TimeSeriesDescription, UniformParameter};
+use aqpbm_harness::arm_run::ArmRunError;
 use aqpbm_harness::arm_run::{run_arm, ArmSchedule};
 use aqpbm_harness::conformance::probe_workloads;
 use aqpbm_harness::data::{DataRecord, Sample, SampleChunk, SeriesLabels};
@@ -9,8 +10,8 @@ use aqpbm_harness::engine::{
     ArmSpec, CpuAccounting, EngineUnderTest, ProfilingMethod, QueryLanguage, QueryText, StepReport,
     WorkloadQuery, WorkloadSpec,
 };
-use aqpbm_harness::fake::FakeEngine;
-use aqpbm_harness::protocol::{CpuClock, LoadProbe, Protocol, ProtocolError};
+use aqpbm_harness::fake::{FakeEngine, FakeServer};
+use aqpbm_harness::protocol::{CpuClock, LoadProbe, MeasurementClocks, Protocol, ProtocolError};
 use aqpbm_harness::records::ArmResult;
 
 /// A machine that is always idle.
@@ -85,7 +86,7 @@ fn chunk(metric: &str, series: u64, times_ms: impl Iterator<Item = i64>) -> Samp
             .into_iter()
             .collect();
             samples.push(Sample {
-                labels,
+                labels: labels.into(),
                 ts_ms,
                 value: (s + 1) as f64,
             });
@@ -118,8 +119,22 @@ fn probe_schedule(workload: &WorkloadSpec) -> ArmSchedule {
 
 /// A harness run of `engine` on the probe workload seeded `seed`.
 fn run_probe(engine: &FakeEngine, seed: u64) -> ArmResult {
-    let workload = probe_workload(seed);
     let clock = engine.clock.clone();
+    run_probe_on(
+        engine,
+        seed,
+        &MeasurementClocks::with_calling_thread(&clock),
+    )
+    .unwrap()
+}
+
+/// [`run_probe`] reading `clocks`.
+fn run_probe_on(
+    engine: &FakeEngine,
+    seed: u64,
+    clocks: &MeasurementClocks,
+) -> Result<ArmResult, ArmRunError> {
+    let workload = probe_workload(seed);
     run_arm(
         engine,
         &workload,
@@ -128,9 +143,16 @@ fn run_probe(engine: &FakeEngine, seed: u64) -> ArmResult {
         &Protocol::default(),
         0,
         &mut IdleProbe,
-        &clock,
+        clocks,
     )
-    .unwrap()
+}
+
+/// A fresh directory under the system temp dir for a fake `/proc`.
+fn fake_proc_root(test: &str) -> std::path::PathBuf {
+    let root =
+        std::env::temp_dir().join(format!("aqpbm-harness-fake-{}-{test}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    root
 }
 
 /// The middle of three values.
@@ -177,7 +199,7 @@ fn step_costs_come_from_the_harness_clock() {
     let evaluate = protocol
         .run_job(0, &mut IdleProbe, &clock, &mut || {
             let (answers, report) = installed.evaluate(250_000)?;
-            answered_series = answers.0.len();
+            answered_series = answers.iter().count();
             Ok(report)
         })
         .unwrap();
@@ -254,25 +276,167 @@ fn the_operator_timing_hook_counts_a_shared_node_once() {
     assert_eq!(node_medians, median_of_three(&evaluate_ns));
 }
 
-/// A fake that keeps its own CPU counter (90 ns per step) and is measured as
-/// processes (this test's pid): every evaluate sample of the harness run
-/// carries the harness-measured process CPU (at least the 10 µs call cost on
-/// the fake clock), no thread CPU, and the engine's own 90 ns beside them.
+/// A fake external server (pid 4242 under a fake `/proc` whose stat file
+/// advances with the server's work) that keeps its own CPU counter (90 ns
+/// per step): every evaluate sample of the harness run carries the server's
+/// process CPU read from that stat file, exactly the 10 µs call + 150 ns for
+/// the probe's one series, no thread CPU, and the engine's own 90 ns beside
+/// them. The harness's own clock (the fake clock passed as the calling-thread
+/// clock) never moves, so a run that read it instead would record 0.
 #[test]
 fn engine_reported_cpu_is_recorded_beside_process_cpu() {
+    let root = fake_proc_root("server");
+    let server = FakeServer::start(&root, 4242).unwrap();
     let engine = FakeEngine {
         engine_reported_cpu_ns: Some(90),
-        cpu_accounting: CpuAccounting::Processes(vec![std::process::id()]),
+        server: Some(server.clone()),
         ..FakeEngine::default()
     };
-    let result = run_probe(&engine, 7);
+    assert_eq!(
+        engine.cpu_accounting(),
+        CpuAccounting::Processes(vec![4242])
+    );
+    let clock = engine.clock.clone();
+    let clocks = MeasurementClocks {
+        calling_thread: &clock,
+        proc_fs: server.proc_fs.clone(),
+    };
+    let result = run_probe_on(&engine, 7, &clocks).unwrap();
     assert!(!result.evaluate.is_empty());
     for job in &result.evaluate {
         assert!(!job.samples.is_empty());
         for sample in &job.samples {
-            assert!(sample.process_cpu_ns >= 10_000, "{sample:?}");
+            assert_eq!(sample.process_cpu_ns, 10_150, "{sample:?}");
             assert_eq!(sample.thread_cpu_ns, None, "{sample:?}");
             assert_eq!(sample.report.engine_reported_cpu_ns, Some(90), "{sample:?}");
         }
     }
+    for job in &result.ingest {
+        // 10 µs per call + 50 ns for the chunk's one sample.
+        assert_eq!(job.median.process_cpu_ns, 10_050, "{job:?}");
+    }
+    assert!(server.cpu_ns() > 0);
+    assert_eq!(clock.process_cpu_ns(), 0, "the harness clock moved");
+
+    // A server pid that has no stat file under the `/proc` read is refused
+    // before any install.
+    std::fs::remove_file(root.join("4242/stat")).unwrap();
+    let installs_before = engine.installs.get();
+    let error = run_probe_on(&engine, 7, &clocks).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            ArmRunError::Protocol(ProtocolError::MissingProcess { pid: 4242, .. })
+        ),
+        "{error:?}"
+    );
+    assert_eq!(engine.installs.get(), installs_before);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A load probe that is always idle and counts its busy-fraction samples.
+struct CountingProbe(usize);
+
+impl LoadProbe for CountingProbe {
+    fn core_busy_fraction(&mut self, _core: usize) -> Result<f64, ProtocolError> {
+        self.0 += 1;
+        Ok(0.0)
+    }
+    fn loadavg(&mut self) -> f64 {
+        f64::NAN
+    }
+}
+
+/// A run of the probe workload (6 chunks, 6 evaluations: 12 jobs) samples the
+/// core 13 times, not 24: each job's after-sample is the next job's
+/// before-sample. An unreadable load average (`NaN`) is recorded as `None`,
+/// and the record reads back from its JSON.
+#[test]
+fn consecutive_jobs_share_one_idle_sample() {
+    let engine = FakeEngine::default();
+    let clock = engine.clock.clone();
+    let workload = probe_workload(7);
+    let mut probe = CountingProbe(0);
+    let result = run_arm(
+        &engine,
+        &workload,
+        &arm(),
+        &probe_schedule(&workload),
+        &Protocol::default(),
+        0,
+        &mut probe,
+        &MeasurementClocks::with_calling_thread(&clock),
+    )
+    .unwrap();
+    let jobs = result.ingest.len() + result.evaluate.len();
+    assert_eq!(jobs, 12);
+    assert_eq!(probe.0, jobs + 1);
+    assert_eq!(result.ingest[0].loadavg, [None, None]);
+    let text = serde_json::to_string(&result).unwrap();
+    assert_eq!(serde_json::from_str::<ArmResult>(&text).unwrap(), result);
+}
+
+/// A series that already carries a `query` label keeps it: answers are keyed
+/// by query id outside the labels, so no label name is reserved. Query `q`
+/// over `m{query="x", s="s_0"}` answers under `"q" -> {__name__="m",
+/// query="x", s="s_0"}`.
+#[test]
+fn a_series_label_named_query_is_kept() {
+    let engine = FakeEngine::default();
+    let workload = WorkloadSpec {
+        name: "w".into(),
+        queries: vec![sum_query("q", "m", 10)],
+        data: vec![data("m", 1, 10_000)],
+    };
+    let mut installed = engine.install(&workload, &arm()).unwrap();
+    let labels: SeriesLabels = [("__name__", "m"), ("query", "x"), ("s", "s_0")]
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+    let samples = SampleChunk {
+        end_ms: 10_000,
+        samples: vec![Sample {
+            labels: labels.clone().into(),
+            ts_ms: 10_000,
+            value: 2.5,
+        }],
+    };
+    installed.ingest(&samples).unwrap();
+    let (answers, _) = installed.evaluate(10_000).unwrap();
+    assert_eq!(answers.get("q", &labels), Some(2.5));
+    assert_eq!(answers.iter().count(), 1);
+}
+
+/// A workload whose data last 0 ms is refused before any install: its cost
+/// per second of data would be infinite.
+#[test]
+fn a_workload_without_data_is_refused() {
+    let engine = FakeEngine::default();
+    let clock = engine.clock.clone();
+    let workload = WorkloadSpec {
+        name: "empty".into(),
+        queries: vec![sum_query("q", "m", 10)],
+        data: Vec::new(),
+    };
+    let error = run_arm(
+        &engine,
+        &workload,
+        &arm(),
+        &ArmSchedule {
+            refresh_ms: 10_000,
+            evaluate_at_ms: Vec::new(),
+        },
+        &Protocol::default(),
+        0,
+        &mut IdleProbe,
+        &MeasurementClocks::with_calling_thread(&clock),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        ArmRunError::NoData {
+            workload: "empty".into()
+        }
+    );
+    assert_eq!(engine.installs.get(), 0);
 }

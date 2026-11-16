@@ -8,6 +8,10 @@
 //! and 10,000 ns), ingesting 1,000 samples costs 60,000 ns and evaluating
 //! 4 series 10,600 ns.
 //!
+//! With a [`FakeServer`] it plays an external server instead: its work is
+//! charged to the server's `/proc/<pid>/stat` under a fake `/proc` root, not
+//! to the harness's clock, and it reports `CpuAccounting::Processes`.
+//!
 //! Its plan has one `scan` node, shared by every query and charged
 //! `ns_per_call`, and one node per query, named after the query id and
 //! charged per answered series; the operator timing hook times each node
@@ -15,15 +19,17 @@
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::data::{SampleChunk, SeriesLabels};
 use crate::engine::{
     Answers, ArmSpec, Calibratable, CostTarget, CpuAccounting, EngineDescription, EngineError,
     EngineUnderTest, Footprint, InstalledArm, NodeProfile, PlanSummary, ProfilingMethod,
-    QueryLanguage, StepReport, WorkloadSpec, QUERY_LABEL,
+    QueryLanguage, StepReport, WorkloadSpec,
 };
-use crate::protocol::CpuClock;
+use crate::protocol::{CpuClock, ProcFs};
 
 /// The ticks of a [`FakeClock`], in ns.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -58,10 +64,6 @@ impl FakeClock {
             ..ticks
         });
     }
-
-    pub fn ticks(&self) -> FakeTicks {
-        self.0.get()
-    }
 }
 
 impl CpuClock for FakeClock {
@@ -73,6 +75,67 @@ impl CpuClock for FakeClock {
     }
     fn wall_ns(&self) -> u64 {
         self.0.get().wall_ns
+    }
+}
+
+/// A fake external server: one pid under a fake `/proc` root, whose
+/// `<root>/<pid>/stat` the fake rewrites after every charge, with `utime` in
+/// ns at 1e9 ticks per second. Clones share the server's CPU.
+/// Example: after 10,150 ns of work, its stat reads `utime` 10150, `stime` 0.
+#[derive(Debug, Clone)]
+pub struct FakeServer {
+    pub pid: u32,
+    /// The fake `/proc`, at 1e9 ticks per second.
+    pub proc_fs: ProcFs,
+    cpu_ns: Rc<Cell<u64>>,
+}
+
+impl FakeServer {
+    /// Creates `<root>/<pid>/stat` with no CPU used.
+    pub fn start(root: &Path, pid: u32) -> std::io::Result<Self> {
+        std::fs::create_dir_all(root.join(pid.to_string()))?;
+        let server = FakeServer {
+            pid,
+            proc_fs: ProcFs {
+                root: root.to_path_buf(),
+                ticks_per_second: 1_000_000_000,
+            },
+            cpu_ns: Rc::default(),
+        };
+        server.write_stat()?;
+        Ok(server)
+    }
+
+    /// The server's CPU so far, in ns.
+    pub fn cpu_ns(&self) -> u64 {
+        self.cpu_ns.get()
+    }
+
+    fn charge(&self, ns: u64) {
+        self.cpu_ns.set(self.cpu_ns.get() + ns);
+        self.write_stat()
+            .unwrap_or_else(|error| panic!("fake server {} stat: {error}", self.pid));
+    }
+
+    /// Fields 1 to 15 of a `/proc/<pid>/stat` line; 14 and 15 are `utime`
+    /// and `stime`. `utime` is zero-padded to 20 digits so every write has
+    /// the same length and overwrites the file in place: truncating and
+    /// rewriting a file makes some file systems (ext4) flush it on close,
+    /// about 100 ms per write.
+    fn write_stat(&self) -> std::io::Result<()> {
+        use std::io::Write;
+        let path = self.proc_fs.root.join(self.pid.to_string()).join("stat");
+        let line = format!(
+            "{} (fake server) S 1 1 1 0 -1 0 0 0 0 0 {:020} 0 0 0\n",
+            self.pid,
+            self.cpu_ns.get()
+        );
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?
+            .write_all(line.as_bytes())
     }
 }
 
@@ -103,6 +166,9 @@ pub struct FakeEngine {
     pub faults: Vec<FakeFault>,
     /// Arms installed so far; [`FakeFault::NondeterministicAnswers`] reads it.
     pub installs: Cell<u32>,
+    /// When set, the fake is an external server: work is charged to it, not
+    /// to `clock`, and `cpu_accounting()` is `Processes([server.pid])`.
+    pub server: Option<FakeServer>,
 }
 
 impl Default for FakeEngine {
@@ -118,6 +184,7 @@ impl Default for FakeEngine {
             cpu_accounting: CpuAccounting::CallingThread,
             faults: Vec::new(),
             installs: Cell::new(0),
+            server: None,
         }
     }
 }
@@ -147,7 +214,10 @@ impl EngineUnderTest for FakeEngine {
     }
 
     fn cpu_accounting(&self) -> CpuAccounting {
-        self.cpu_accounting.clone()
+        match &self.server {
+            Some(server) => CpuAccounting::Processes(vec![server.pid]),
+            None => self.cpu_accounting.clone(),
+        }
     }
 
     /// Reads each query's PromQL text, `sum_over_time(<metric>[...])` or
@@ -180,6 +250,7 @@ impl EngineUnderTest for FakeEngine {
         }
         Ok(Box::new(FakeArm {
             clock: self.clock.clone(),
+            server: self.server.clone(),
             ns_per_sample: self.ns_per_sample,
             ns_per_series: self.ns_per_series,
             ns_per_call: self.ns_per_call,
@@ -280,9 +351,13 @@ struct FakeQuery {
     window_ms: i64,
 }
 
+/// Per series of one metric, its `(ts_ms, value)` samples in time order.
+type StoredSeries = BTreeMap<Arc<SeriesLabels>, Vec<(i64, f64)>>;
+
 /// An installed arm of the fake.
 struct FakeArm {
     clock: FakeClock,
+    server: Option<FakeServer>,
     ns_per_sample: u64,
     ns_per_series: u64,
     ns_per_call: u64,
@@ -295,16 +370,33 @@ struct FakeArm {
     queries: Vec<FakeQuery>,
     /// The metrics the shared `scan` node reads.
     scanned_metrics: Vec<String>,
-    /// Per metric, per series, its `(ts_ms, value)` samples.
-    stored: BTreeMap<String, BTreeMap<SeriesLabels, Vec<(i64, f64)>>>,
+    /// Per metric, per series, its `(ts_ms, value)` samples in time order
+    /// (chunks arrive in time order).
+    stored: BTreeMap<String, StoredSeries>,
     /// Per node, its CPU in each evaluation since the last `node_profiles`.
     node_cpu_ns_per_batch: BTreeMap<String, Vec<u64>>,
 }
 
 impl FakeArm {
+    /// Work on the calling thread, or on the server when there is one.
+    fn charge_thread(&self, ns: u64) {
+        match &self.server {
+            Some(server) => server.charge(ns),
+            None => self.clock.charge_thread(ns),
+        }
+    }
+
+    /// Work on another thread, or on the server when there is one.
+    fn charge_other_thread(&self, ns: u64) {
+        match &self.server {
+            Some(server) => server.charge(ns),
+            None => self.clock.charge_other_thread(ns),
+        }
+    }
+
     /// Charges `ns` on the calling thread to `node` for this batch.
     fn charge_node(&mut self, node: &str, ns: u64) {
-        self.clock.charge_thread(ns);
+        self.charge_thread(ns);
         self.node_cpu_ns_per_batch
             .entry(node.to_string())
             .or_default()
@@ -343,18 +435,17 @@ impl InstalledArm for FakeArm {
 
     fn ingest(&mut self, chunk: &SampleChunk) -> Result<StepReport, EngineError> {
         if self.works_on_another_thread {
-            self.clock.charge_thread(1_000_000);
-            self.clock.charge_other_thread(8_000_000);
+            self.charge_thread(1_000_000);
+            self.charge_other_thread(8_000_000);
         } else {
-            self.clock
-                .charge_thread(self.ns_per_call + self.ns_per_sample * chunk.samples.len() as u64);
+            self.charge_thread(self.ns_per_call + self.ns_per_sample * chunk.samples.len() as u64);
         }
         for sample in &chunk.samples {
             let metric = sample.labels.get("__name__").cloned().unwrap_or_default();
             self.stored
                 .entry(metric)
                 .or_default()
-                .entry(sample.labels.clone())
+                .entry(Arc::clone(&sample.labels))
                 .or_default()
                 .push((sample.ts_ms, sample.value));
         }
@@ -363,18 +454,20 @@ impl InstalledArm for FakeArm {
 
     fn evaluate(&mut self, at_ms: i64) -> Result<(Answers, StepReport), EngineError> {
         self.charge_node("scan", self.ns_per_call);
-        let mut answers = BTreeMap::new();
+        let mut answers: BTreeMap<String, BTreeMap<SeriesLabels, f64>> = BTreeMap::new();
         for query in self.queries.clone() {
             let start_ms = at_ms - query.window_ms;
-            let in_window = |ts_ms: i64| {
-                ts_ms <= at_ms
-                    && (ts_ms > start_ms || (self.counts_window_start && ts_ms == start_ms))
-            };
+            // The first sample in the window: after its start, or on it
+            // under `CountsWindowStart`.
+            let in_window_from =
+                |ts_ms: i64| ts_ms > start_ms || (self.counts_window_start && ts_ms == start_ms);
             let mut answered_series = 0;
             for (labels, samples) in self.stored.get(&query.metric).into_iter().flatten() {
-                let values: Vec<f64> = samples
+                // Samples are stored in time order, so the window is a slice.
+                let first = samples.partition_point(|&(ts_ms, _)| !in_window_from(ts_ms));
+                let end = samples.partition_point(|&(ts_ms, _)| ts_ms <= at_ms);
+                let values: Vec<f64> = samples[first..end.max(first)]
                     .iter()
-                    .filter(|(ts_ms, _)| in_window(*ts_ms))
                     .map(|(_, value)| *value)
                     .collect();
                 if values.is_empty() {
@@ -385,9 +478,10 @@ impl InstalledArm for FakeArm {
                     OverTime::Sum => values.iter().sum(),
                     OverTime::Count => values.len() as f64,
                 };
-                let mut key = labels.clone();
-                key.insert(QUERY_LABEL.into(), query.id.clone());
-                answers.insert(key, value + self.answer_offset);
+                answers
+                    .entry(query.id.clone())
+                    .or_default()
+                    .insert(SeriesLabels::clone(labels), value + self.answer_offset);
             }
             self.charge_node(&query.id, self.ns_per_series * answered_series);
         }

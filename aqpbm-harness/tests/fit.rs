@@ -9,12 +9,24 @@ use aqpbm_harness::fit::{
     fit_constants, leave_one_setting_out, measure_sizes, ConstantsFit, FitError, FitFlag, FitPoint,
     LeaveOneSettingOut,
 };
-use aqpbm_harness::protocol::{OsCpuClock, Protocol};
+use aqpbm_harness::protocol::{LoadProbe, OsCpuClock, OsLoadProbe, Protocol, ProtocolError};
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
 /// The two constants of an operator's cost `units * ns_per_unit + ns_per_invocation`.
+/// A machine that is always idle.
+struct IdleProbe;
+
+impl LoadProbe for IdleProbe {
+    fn core_busy_fraction(&mut self, _core: usize) -> Result<f64, ProtocolError> {
+        Ok(0.0)
+    }
+    fn loadavg(&mut self) -> f64 {
+        0.0
+    }
+}
+
 const OPERATOR: [&str; 2] = ["ns_per_unit", "ns_per_invocation"];
 
 /// The three constants of the leave-one-setting-out model.
@@ -78,7 +90,12 @@ fn relative_difference(a: f64, b: f64) -> f64 {
 fn held_out_errors(loso: &LeaveOneSettingOut) -> Vec<Option<f64>> {
     loso.held_out
         .iter()
-        .map(|fold| fold.relative_error)
+        .map(|fold| {
+            fold.point_relative_errors.as_ref().map(|errors| {
+                assert_eq!(errors.len(), 1, "one point per setting: {fold:?}");
+                errors[0]
+            })
+        })
         .collect()
 }
 
@@ -212,10 +229,18 @@ fn fit_recovers_fake_clock_kernel() {
         measured_runs: 5,
         max_core_busy_fraction: 0.10,
     };
-    let measured = measure_sizes(&protocol, &clock, &[1_000, 10_000, 100_000], &mut |units| {
-        kernel_clock.charge_thread(50 * units + 10_000);
-        units
-    });
+    let measured = measure_sizes(
+        &protocol,
+        0,
+        &mut IdleProbe,
+        &clock,
+        &[1_000, 10_000, 100_000],
+        &mut |units| {
+            kernel_clock.charge_thread(50 * units + 10_000);
+            Ok(units)
+        },
+    )
+    .unwrap();
     assert_eq!(
         measured,
         operator_points(&[(1e3, 60_000.0), (1e4, 510_000.0), (1e5, 5_010_000.0)])
@@ -245,6 +270,8 @@ fn fit_recovers_spin_kernel() {
     };
     let measured = measure_sizes(
         &protocol,
+        0,
+        &mut OsLoadProbe::default(),
         &OsCpuClock,
         &[1_000, 10_000, 100_000],
         &mut |units| {
@@ -252,9 +279,10 @@ fn fit_recovers_spin_kernel() {
             while Instant::now() < until {
                 std::hint::spin_loop();
             }
-            units
+            Ok(units)
         },
-    );
+    )
+    .unwrap();
     let fit = fit_constants(&OPERATOR, &measured).unwrap();
     assert!(
         (constant(&fit, "ns_per_unit") - 50.0).abs() <= 5.0,
@@ -283,10 +311,11 @@ fn leave_one_setting_out_recovers_a_known_linear_model() {
                 "{fold:?}"
             );
         }
-        let error = fold.relative_error.unwrap();
-        assert!(error.abs() < 1e-12, "{fold:?}");
+        for error in fold.point_relative_errors.as_ref().unwrap() {
+            assert!(error.abs() < 1e-12, "{fold:?}");
+        }
     }
-    assert!(loso.rms_log_error < 1e-12, "{loso:?}");
+    assert!(loso.rms_log_error.unwrap() < 1e-12, "{loso:?}");
 }
 
 /// F8 with setting 4 measured ×1.5 (337,500): the fold without it recovers
@@ -311,7 +340,10 @@ fn leave_one_setting_out_exposes_an_outlier_setting() {
         let got = got.unwrap();
         assert!((got - want).abs() < 1e-3, "{got} vs {want}: {loso:?}");
     }
-    assert!((loso.rms_log_error - 0.2586).abs() < 1e-3, "{loso:?}");
+    assert!(
+        (loso.rms_log_error.unwrap() - 0.2586).abs() < 1e-3,
+        "{loso:?}"
+    );
 }
 
 /// F8 with the series term non-zero only in setting 5: the fold without
@@ -341,9 +373,9 @@ fn a_constant_only_one_setting_exercises_is_not_identified_when_it_is_held_out()
         )),
         "{fold:?}"
     );
-    assert_eq!(fold.relative_error, None, "{fold:?}");
+    assert_eq!(fold.point_relative_errors, None, "{fold:?}");
     assert_eq!(loso.settings_scored, 4, "{loso:?}");
-    assert!(loso.rms_log_error < 1e-12, "{loso:?}");
+    assert!(loso.rms_log_error.unwrap() < 1e-12, "{loso:?}");
 
     let mut outlier = exact;
     outlier[3] *= 1.5;
@@ -365,7 +397,10 @@ fn a_constant_only_one_setting_exercises_is_not_identified_when_it_is_held_out()
             _ => panic!("{got:?} vs {want:?}: {loso:?}"),
         }
     }
-    assert!((loso.rms_log_error - 0.2488).abs() < 1e-3, "{loso:?}");
+    assert!(
+        (loso.rms_log_error.unwrap() - 0.2488).abs() < 1e-3,
+        "{loso:?}"
+    );
 }
 
 /// Leave-one-setting-out over a single setting (two points of `only`) has
@@ -444,4 +479,54 @@ fn fit_is_independent_of_point_order() {
             );
         }
     }
+}
+
+/// Two held-out points of one setting, one predicted 10% high and one 10%
+/// low, report both errors, `[+0.1, -0.1]`: they do not cancel to 0. The
+/// model is 1 ns per unit with no other constant; setting `a` (units 100 and
+/// 200) fits it exactly, setting `b` measures 1,000 units at 900 ns and
+/// 2,000 units at 2,222.2 ns.
+#[test]
+fn held_out_errors_of_opposite_sign_do_not_cancel() {
+    let point = |setting: &str, units: f64, measured: f64| FitPoint {
+        setting: setting.into(),
+        terms: vec![units],
+        measured,
+    };
+    let points = [
+        point("a", 100.0, 100.0),
+        point("a", 200.0, 200.0),
+        point("b", 1_000.0, 1_000.0 / 1.1),
+        point("b", 2_000.0, 2_000.0 / 0.9),
+    ];
+    let loso = leave_one_setting_out(&["ns_per_unit"], &points).unwrap();
+    let errors = loso.held_out[1].point_relative_errors.clone().unwrap();
+    assert_eq!(loso.held_out[1].setting, "b");
+    assert_eq!(errors.len(), 2, "{loso:?}");
+    assert!((errors[0] - 0.1).abs() < 1e-9, "{errors:?}");
+    assert!((errors[1] + 0.1).abs() < 1e-9, "{errors:?}");
+}
+
+/// With every setting needing a constant only it exercises, no fold is
+/// scored and the RMS log error is `None`, never `NaN` (which JSON writes as
+/// `null` and cannot read back as a number).
+#[test]
+fn no_scored_fold_has_no_rms_log_error() {
+    let point = |setting: &str, terms: Vec<f64>| FitPoint {
+        setting: setting.into(),
+        terms,
+        measured: 1_000.0,
+    };
+    let loso = leave_one_setting_out(
+        &["x", "y"],
+        &[point("a", vec![1.0, 0.0]), point("b", vec![0.0, 1.0])],
+    )
+    .unwrap();
+    assert_eq!(loso.settings_scored, 0, "{loso:?}");
+    assert_eq!(loso.rms_log_error, None);
+    let text = serde_json::to_string(&loso).unwrap();
+    assert_eq!(
+        serde_json::from_str::<LeaveOneSettingOut>(&text).unwrap(),
+        loso
+    );
 }

@@ -10,7 +10,7 @@ use crate::engine::{
     format_series, Answers, ArmSpec, CpuAccounting, EngineError, EngineUnderTest, InstalledArm,
     QueryLanguage, QueryText, WorkloadQuery, WorkloadSpec,
 };
-use crate::protocol::CpuClock;
+use crate::protocol::{CpuClock, MeasurementClocks};
 
 /// One check of the kit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +63,8 @@ pub enum ConformanceFailure {
         step: String,
         message: String,
     },
-    /// A `CallingThread` engine used CPU off the calling thread.
+    /// A `CallingThread` engine used CPU off the calling thread. The CPU is
+    /// per call, averaged over the calls the check repeated the step for.
     #[error("WorkOffCallingThread: {step} used {:.1} ms of process CPU but {:.1} ms on the calling thread: report CpuAccounting::Processes or do the work on the calling thread", *process_cpu_ns as f64 / 1e6, *thread_cpu_ns as f64 / 1e6)]
     WorkOffCallingThread {
         step: String,
@@ -75,9 +76,14 @@ pub enum ConformanceFailure {
 /// Runs the probe workloads twice with one seed, checks the window boundary,
 /// the calibration units and (for `CallingThread` engines) that no step's
 /// work ran on another thread. Every failure is listed, in check order.
+///
+/// The engine is timed on the clock its `cpu_accounting()` names, picked by
+/// [`MeasurementClocks::clock_for`]; for a `Processes` engine, its pids must
+/// be readable under `clocks.proc_fs`, or the check fails with
+/// `EngineFailed { step: "cpu accounting" }`.
 pub fn check(
     engine: &mut dyn EngineUnderTest,
-    clock: &dyn CpuClock,
+    clocks: &MeasurementClocks,
 ) -> Result<ConformanceReport, Vec<ConformanceFailure>> {
     let workloads = probe_workloads();
     let mut passed = Vec::new();
@@ -99,11 +105,21 @@ pub fn check(
     if let Some(found) = check_calibration_units(engine) {
         record(ConformanceCheck::CalibrationUnits, found);
     }
-    if engine.cpu_accounting() == CpuAccounting::CallingThread {
-        record(
-            ConformanceCheck::WorkOnCallingThread,
-            check_work_on_calling_thread(engine, &workloads[0], clock),
-        );
+    let accounting = engine.cpu_accounting();
+    match clocks.clock_for(&accounting) {
+        Err(error) => failures.push(ConformanceFailure::EngineFailed {
+            check: ConformanceCheck::WorkOnCallingThread,
+            step: "cpu accounting".into(),
+            message: error.to_string(),
+        }),
+        Ok(engine_clock) => {
+            if accounting == CpuAccounting::CallingThread {
+                record(
+                    ConformanceCheck::WorkOnCallingThread,
+                    check_work_on_calling_thread(engine, engine_clock.as_clock()),
+                );
+            }
+        }
     }
     if failures.is_empty() {
         Ok(ConformanceReport { passed })
@@ -113,10 +129,19 @@ pub fn check(
 }
 
 /// A `CallingThread` step may use this much more process than thread CPU
-/// before it fails: 10% of its thread CPU plus 1 ms, for the harness's own
-/// threads and clock granularity.
+/// before it fails: 10% of its thread CPU, for other threads of the process
+/// (the test runner's, the allocator's) and clock granularity.
 const OFF_THREAD_TOLERANCE_FRACTION: f64 = 0.10;
-const OFF_THREAD_TOLERANCE_NS: u64 = 1_000_000;
+/// Each step of the calling-thread check is repeated until it has used this
+/// much CPU, so the 10% margin is 2 ms: other threads of a test process
+/// using a millisecond during a step of a few microseconds no longer fail it.
+const OFF_THREAD_MIN_MEASURED_NS: u64 = 20_000_000;
+/// At most this many calls per step, for an engine whose step uses no CPU
+/// the clock can see.
+const OFF_THREAD_MAX_CALLS: u64 = 100_000;
+/// A closure's units and the cost model's charged units match when they
+/// differ by at most this share: fractional units are allowed.
+const UNITS_RELATIVE_TOLERANCE: f64 = 1e-9;
 
 /// The seed of the probe data.
 const PROBE_SEED: u64 = 7;
@@ -190,15 +215,19 @@ fn check_deterministic_answers(
             }
         };
         let differing = first.iter().zip(&second).find_map(|((at_ms, a), (_, b))| {
-            let series = a.0.keys().chain(b.0.keys()).find(|series| {
-                a.0.get(*series).map(|v| v.to_bits()) != b.0.get(*series).map(|v| v.to_bits())
-            })?;
+            let (query, series) = a
+                .iter()
+                .chain(b.iter())
+                .map(|(query, series, _)| (query, series))
+                .find(|(query, series)| {
+                    a.get(query, series).map(f64::to_bits) != b.get(query, series).map(f64::to_bits)
+                })?;
             Some(ConformanceFailure::NondeterministicAnswers {
                 seed: workload.data[0].description.seed,
                 at_ms: *at_ms,
-                series: format_series(series),
-                first: a.0.get(series).copied().unwrap_or(f64::NAN),
-                second: b.0.get(series).copied().unwrap_or(f64::NAN),
+                series: format!("{query}: {}", format_series(series)),
+                first: a.get(query, series).unwrap_or(f64::NAN),
+                second: b.get(query, series).unwrap_or(f64::NAN),
             })
         });
         failures.extend(differing);
@@ -236,14 +265,14 @@ fn check_left_open_window(
         expected: 1.0,
         window_start_ms: at_ms - query.window_ms as i64,
     };
-    if at_end.0.is_empty() {
+    let counts: Vec<f64> = at_end.iter().map(|(_, _, count)| count).collect();
+    if counts.is_empty() {
         return vec![window_failure(0.0)];
     }
-    at_end
-        .0
-        .values()
-        .find(|&&count| count != 1.0)
-        .map(|&count| vec![window_failure(count)])
+    counts
+        .into_iter()
+        .find(|&count| count != 1.0)
+        .map(|count| vec![window_failure(count)])
         .unwrap_or_default()
 }
 
@@ -267,7 +296,10 @@ fn check_calibration_units(engine: &mut dyn EngineUnderTest) -> Option<Vec<Confo
                 Err(error) => failures.push(engine_failed(check, &name, error)),
                 Ok(closure_units) => {
                     let charged_units = calibration.charged_units(&target, size);
-                    if closure_units as f64 != charged_units {
+                    let closure = closure_units as f64;
+                    if (closure - charged_units).abs()
+                        > UNITS_RELATIVE_TOLERANCE * closure.abs().max(charged_units.abs())
+                    {
                         failures.push(ConformanceFailure::UnitsMismatch {
                             target: name.clone(),
                             size,
@@ -282,52 +314,90 @@ fn check_calibration_units(engine: &mut dyn EngineUnderTest) -> Option<Vec<Confo
     Some(failures)
 }
 
-/// One ingest and one evaluate of the sum probe, each with no more process
-/// than thread CPU (within the tolerance); the first offending step of each
-/// kind is reported.
+/// Ingest and evaluate of the sum probe, each with no more process than
+/// thread CPU (within 10%). Each step is repeated until it has used
+/// [`OFF_THREAD_MIN_MEASURED_NS`] (ingest takes the probe's chunks in order,
+/// from a probe that runs long enough; evaluate repeats at the last ingested
+/// chunk's end); the failure reports the CPU per call. The first offending
+/// step of each kind is reported.
 fn check_work_on_calling_thread(
     engine: &dyn EngineUnderTest,
-    sum_workload: &WorkloadSpec,
     clock: &dyn CpuClock,
 ) -> Vec<ConformanceFailure> {
     let check = ConformanceCheck::WorkOnCallingThread;
-    let mut arm: Box<dyn InstalledArm> = match engine.install(sum_workload, &probe_arm()) {
+    let mut workload = probe_workloads().remove(0);
+    for record in &mut workload.data {
+        record.description.duration_ms = OFF_THREAD_MAX_CALLS * PROBE_STEP_MS;
+    }
+    let mut arm: Box<dyn InstalledArm> = match engine.install(&workload, &probe_arm()) {
         Ok(arm) => arm,
         Err(error) => return vec![engine_failed(check, "install", error)],
     };
-    let first_chunk = workload_chunks(&sum_workload.data, PROBE_STEP_MS)
-        .map_err(|error| error.to_string())
-        .and_then(|mut chunks| match chunks.next() {
-            Some(chunk) => chunk.map_err(|error| error.to_string()),
-            None => Err("the probe has no data".to_string()),
-        });
-    let chunk = match first_chunk {
-        Ok(chunk) => chunk,
-        Err(message) => return vec![engine_failed(check, "data", EngineError(message))],
+    let mut chunks = match workload_chunks(&workload.data, PROBE_STEP_MS) {
+        Ok(chunks) => chunks,
+        Err(error) => return vec![engine_failed(check, "data", EngineError(error.to_string()))],
     };
     let mut failures = Vec::new();
-    let mut measure = |step: &str, run: &mut dyn FnMut() -> Result<(), EngineError>| {
-        let (thread_before, process_before) = (clock.thread_cpu_ns(), clock.process_cpu_ns());
-        if let Err(error) = run() {
-            failures.push(engine_failed(check, step, error));
-            return;
+    let mut last_end_ms = None;
+    let ingest = repeat_until_measured(clock, "ingest", &mut || match chunks.next() {
+        None => Ok(false),
+        Some(Err(error)) => Err(EngineError(error.to_string())),
+        Some(Ok(chunk)) => {
+            last_end_ms = Some(chunk.end_ms);
+            arm.ingest(&chunk).map(|_| true)
         }
-        let thread_cpu_ns = clock.thread_cpu_ns().saturating_sub(thread_before);
-        let process_cpu_ns = clock.process_cpu_ns().saturating_sub(process_before);
-        let allowed_ns = thread_cpu_ns
-            + (thread_cpu_ns as f64 * OFF_THREAD_TOLERANCE_FRACTION) as u64
-            + OFF_THREAD_TOLERANCE_NS;
-        if process_cpu_ns > allowed_ns {
-            failures.push(ConformanceFailure::WorkOffCallingThread {
-                step: step.into(),
-                process_cpu_ns,
-                thread_cpu_ns,
-            });
-        }
+    });
+    match ingest {
+        Err(error) => return vec![engine_failed(check, "ingest", error)],
+        Ok(found) => failures.extend(found),
+    }
+    let Some(end_ms) = last_end_ms else {
+        return vec![engine_failed(
+            check,
+            "data",
+            EngineError("the probe has no data".into()),
+        )];
     };
-    measure("ingest", &mut || arm.ingest(&chunk).map(|_| ()));
-    measure("evaluate", &mut || arm.evaluate(chunk.end_ms).map(|_| ()));
+    match repeat_until_measured(clock, "evaluate", &mut || {
+        arm.evaluate(end_ms).map(|_| true)
+    }) {
+        Err(error) => failures.push(engine_failed(check, "evaluate", error)),
+        Ok(found) => failures.extend(found),
+    }
     failures
+}
+
+/// Calls `call` until the calls have used [`OFF_THREAD_MIN_MEASURED_NS`] of
+/// thread or process CPU, [`OFF_THREAD_MAX_CALLS`] calls ran, or `call`
+/// returns `false` (nothing left to call it with). A `WorkOffCallingThread`
+/// with the CPU per call when process CPU exceeds thread CPU by more than
+/// 10%. Example: 20 ingests of 1 ms on the thread and 8 ms on another thread
+/// report 9.0 ms of process CPU but 1.0 ms on the calling thread.
+fn repeat_until_measured(
+    clock: &dyn CpuClock,
+    step: &str,
+    call: &mut dyn FnMut() -> Result<bool, EngineError>,
+) -> Result<Option<ConformanceFailure>, EngineError> {
+    let (mut thread_cpu_ns, mut process_cpu_ns, mut calls) = (0_u64, 0_u64, 0_u64);
+    while calls < OFF_THREAD_MAX_CALLS
+        && thread_cpu_ns.max(process_cpu_ns) < OFF_THREAD_MIN_MEASURED_NS
+    {
+        let (thread_before, process_before) = (clock.thread_cpu_ns(), clock.process_cpu_ns());
+        if !call()? {
+            break;
+        }
+        thread_cpu_ns += clock.thread_cpu_ns().saturating_sub(thread_before);
+        process_cpu_ns += clock.process_cpu_ns().saturating_sub(process_before);
+        calls += 1;
+    }
+    let allowed_ns = thread_cpu_ns + (thread_cpu_ns as f64 * OFF_THREAD_TOLERANCE_FRACTION) as u64;
+    Ok((calls > 0 && process_cpu_ns > allowed_ns).then(|| {
+        ConformanceFailure::WorkOffCallingThread {
+            step: step.into(),
+            process_cpu_ns: process_cpu_ns / calls,
+            thread_cpu_ns: thread_cpu_ns / calls,
+        }
+    }))
 }
 
 /// The probe workloads, each with PromQL and SQL texts (`$t` is the

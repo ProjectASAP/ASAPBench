@@ -66,6 +66,14 @@ pub enum GateFailure {
         workload: String,
         setting: String,
     },
+    /// The exact or selected engine cost is NaN or infinite, so the 1.05
+    /// comparison cannot decide.
+    EngineCostNotANumber {
+        workload: String,
+        setting: String,
+        selected: f64,
+        exact: f64,
+    },
     /// An expected (workload, setting) has no row.
     MissingRow {
         workload: String,
@@ -143,7 +151,14 @@ pub fn gate_verdict(
             (None, _) => failures.push(GateFailure::ExactArmMissing { workload, setting }),
             (Some(_), None) => failures.push(GateFailure::EngineCostMissing { workload, setting }),
             (Some(exact), Some(selected)) => {
-                if selected > GATE_MAX_COST_RATIO * exact {
+                if !(selected.is_finite() && exact.is_finite()) {
+                    failures.push(GateFailure::EngineCostNotANumber {
+                        workload,
+                        setting,
+                        selected,
+                        exact,
+                    });
+                } else if selected > GATE_MAX_COST_RATIO * exact {
                     failures.push(GateFailure::CostAboveExact {
                         workload,
                         setting,

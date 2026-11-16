@@ -6,8 +6,9 @@
 //! `TimeSeriesDescription` on the left-open grid `(start, start + duration]`.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
-use aqpbm_datagen::{GeneratedTimeSeries, TimeSeriesCursor, TimeSeriesDescription};
+use aqpbm_datagen::{OwnedTimeSeriesSamples, TimeSeriesDescription};
 use serde::{Deserialize, Serialize};
 
 /// A series' labels, `__name__` included, such as
@@ -18,7 +19,9 @@ pub type SeriesLabels = BTreeMap<String, String>;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sample {
-    pub labels: SeriesLabels,
+    /// Shared by every sample of the series: generating a sample clones a
+    /// pointer, not the label map.
+    pub labels: Arc<SeriesLabels>,
     pub ts_ms: i64,
     pub value: f64,
 }
@@ -95,15 +98,14 @@ pub fn refresh_chunks(
         .map(|pairs| {
             let mut labels: SeriesLabels = pairs.iter().cloned().collect();
             labels.insert("__name__".into(), record.metric.clone());
-            labels
+            Arc::new(labels)
         })
         .collect();
     let description = &record.description;
     let chunk_count = description.duration_ms.div_ceil(refresh_ms);
     Ok(RefreshChunks {
         metric: record.metric.clone(),
-        cursor: generated.cursor(),
-        generated,
+        samples: generated.into_samples(),
         labels,
         start_ms: description.start_ms,
         refresh_ms,
@@ -118,10 +120,9 @@ pub fn refresh_chunks(
 /// draws samples as the chunks are taken.
 struct RefreshChunks {
     metric: String,
-    generated: GeneratedTimeSeries,
-    cursor: TimeSeriesCursor,
+    samples: OwnedTimeSeriesSamples,
     /// Series `i`'s labels, `__name__` included.
-    labels: Vec<SeriesLabels>,
+    labels: Vec<Arc<SeriesLabels>>,
     start_ms: i64,
     refresh_ms: u64,
     chunk_count: u64,
@@ -150,7 +151,7 @@ impl Iterator for RefreshChunks {
             }
             samples.push(sample);
         }
-        while let Some(item) = self.cursor.next_sample(&self.generated) {
+        for item in self.samples.by_ref() {
             let (series, ts_ms, value) = match item {
                 Ok(sample) => sample,
                 Err(error) => {
@@ -162,7 +163,7 @@ impl Iterator for RefreshChunks {
                 }
             };
             let sample = Sample {
-                labels: self.labels[series].clone(),
+                labels: Arc::clone(&self.labels[series]),
                 ts_ms,
                 value,
             };

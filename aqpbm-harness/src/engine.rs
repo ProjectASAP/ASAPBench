@@ -161,30 +161,52 @@ pub struct StepCost {
     pub report: StepReport,
 }
 
-/// The answers of one evaluation: one value per output series of every query.
-/// An output series keeps its input labels and carries the query id under
-/// [`QUERY_LABEL`], so two queries over one metric never share a key.
-/// Example: `sum_over_time(probe[10s])` with id `sum` over the series
-/// `probe{instance="instance_0"}` answers under
-/// `{__name__="probe", instance="instance_0", query="sum"}`.
+/// The answers of one evaluation: per query id, one value per output series.
+/// An output series keeps its input labels; the query id is the outer key,
+/// so two queries over one metric never share a key and no label name is
+/// reserved. Example: `sum_over_time(probe[10s])` with id `sum` over the
+/// series `probe{instance="instance_0"}` answers under
+/// `"sum" -> {__name__="probe", instance="instance_0"}`.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct Answers(pub BTreeMap<SeriesLabels, f64>);
+pub struct Answers(pub BTreeMap<String, BTreeMap<SeriesLabels, f64>>);
 
-/// The label that names the query an answer belongs to.
-pub const QUERY_LABEL: &str = "query";
+impl Answers {
+    /// Every answer as `(query id, series, value)`, by query id, then series.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &SeriesLabels, f64)> {
+        self.0.iter().flat_map(|(query, series)| {
+            series
+                .iter()
+                .map(move |(labels, value)| (query.as_str(), labels, *value))
+        })
+    }
 
-/// Serialized as a list of `[labels, value]` pairs: JSON object keys must be
-/// strings, and a series is a label map.
+    /// The answer of `query` for `series`, if any.
+    pub fn get(&self, query: &str, series: &SeriesLabels) -> Option<f64> {
+        self.0.get(query)?.get(series).copied()
+    }
+}
+
+/// Serialized as `{query id: [[labels, value], ...]}`: JSON object keys must
+/// be strings, and a series is a label map.
 impl Serialize for Answers {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_seq(self.0.iter())
+        serializer.collect_map(
+            self.0
+                .iter()
+                .map(|(query, series)| (query, series.iter().collect::<Vec<_>>())),
+        )
     }
 }
 
 impl<'de> Deserialize<'de> for Answers {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let pairs = Vec::<(SeriesLabels, f64)>::deserialize(deserializer)?;
-        Ok(Answers(pairs.into_iter().collect()))
+        let per_query = BTreeMap::<String, Vec<(SeriesLabels, f64)>>::deserialize(deserializer)?;
+        Ok(Answers(
+            per_query
+                .into_iter()
+                .map(|(query, pairs)| (query, pairs.into_iter().collect()))
+                .collect(),
+        ))
     }
 }
 
@@ -238,7 +260,10 @@ pub struct Footprint {
 pub struct MeasuredUsage {
     pub ingest_cpu_ns_per_second: f64,
     pub query_cpu_ns_per_second: f64,
-    pub memory_bytes: u64,
+    /// Bytes the arm holds after the run: stored outputs (views, sketches)
+    /// plus raw samples kept, [`Footprint::view_bytes`] +
+    /// [`Footprint::raw_retained_bytes`].
+    pub held_bytes: u64,
 }
 
 /// One node's own CPU per batch, from the per-operator timing hook.

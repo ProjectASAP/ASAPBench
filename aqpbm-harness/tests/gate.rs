@@ -135,3 +135,20 @@ fn a_row_without_an_engine_cost_fails_by_name() {
         }])
     );
 }
+
+/// A selected cost of NaN (or an infinite exact cost) fails with
+/// `EngineCostNotANumber`, not a pass: `NaN > 1.05 * exact` is false, so the
+/// ratio check alone would let it through.
+#[test]
+fn a_cost_that_is_not_a_number_fails_the_gate() {
+    for (exact, selected) in [(10.0, f64::NAN), (f64::INFINITY, 10.0)] {
+        let verdict = verdict_of(row(Some(exact), Ok(Some(selected)), 0.0, 0.01));
+        assert!(
+            fails_with(&verdict, |f| matches!(
+                f,
+                GateFailure::EngineCostNotANumber { .. }
+            )),
+            "{verdict:?}"
+        );
+    }
+}

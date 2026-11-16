@@ -8,7 +8,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::{CpuClock, Protocol};
+use crate::engine::{EngineError, StepReport};
+use crate::protocol::{CoreLoad, CpuClock, LoadProbe, MedianClock, Protocol, ProtocolError};
 
 /// One measurement: the units charged per constant (`terms`, in the order of
 /// the constant names) and the measured value.
@@ -41,7 +42,10 @@ pub enum FitFlag {
         setting: String,
         relative_residual: f64,
     },
-    /// No point has a non-zero term for this constant, so it is not fitted.
+    /// The points cannot determine this constant, so it is set to 0 and not
+    /// fitted: no point has a non-zero term for it, its column is a linear
+    /// combination of the other constants' columns (collinear), or there are
+    /// fewer points than constants.
     ConstantNotIdentified { constant: String },
 }
 
@@ -236,16 +240,18 @@ fn reflect(v: &[f64], v_norm_sq: f64, x: &mut [f64]) {
 /// rounding noise: the constant is not identified.
 const IDENTIFIED_COLUMN_NORM: f64 = 1e-10;
 
-/// One fold: the fit without one setting, and its relative error on that
-/// setting's points.
+/// One fold: the fit without one setting, and its relative error on each of
+/// that setting's points.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HeldOutSetting {
     pub setting: String,
     pub fit: ConstantsFit,
-    /// `(predicted - measured) / measured` summed over the held-out points;
-    /// `None` when a constant the setting needs is not identified without it.
-    pub relative_error: Option<f64>,
+    /// `(predicted - measured) / measured` of each held-out point, in the
+    /// order given, signed: errors of opposite sign never cancel. `None` when
+    /// a constant the setting needs is not identified without it. Example:
+    /// points measured 100 and 200, predicted 110 and 180: `[0.1, -0.1]`.
+    pub point_relative_errors: Option<Vec<f64>>,
 }
 
 /// Leave-one-setting-out over every setting.
@@ -254,9 +260,10 @@ pub struct HeldOutSetting {
 pub struct LeaveOneSettingOut {
     /// One fold per setting, in first-appearance order.
     pub held_out: Vec<HeldOutSetting>,
-    /// `sqrt(mean(ln(predicted / measured)^2))` over the scored folds.
-    pub rms_log_error: f64,
-    /// Folds with a `relative_error`.
+    /// `sqrt(mean(ln(predicted / measured)^2))` over the points of the scored
+    /// folds; `None` when no fold is scored.
+    pub rms_log_error: Option<f64>,
+    /// Folds with `point_relative_errors`.
     pub settings_scored: usize,
 }
 
@@ -297,32 +304,31 @@ pub fn leave_one_setting_out(
         let needs_unidentified = test
             .iter()
             .any(|point| unidentified.iter().any(|&c| point.terms[c] != 0.0));
-        let relative_error = if needs_unidentified {
+        let point_relative_errors = if needs_unidentified {
             None
         } else {
             let constants: Vec<f64> = fit.constants.iter().map(|(_, value)| *value).collect();
-            let mut sum = 0.0;
-            for point in &test {
-                let predicted = predict(&constants, &point.terms);
-                sum += (predicted - point.measured) / point.measured;
-                log_errors.push((predicted / point.measured).ln());
-            }
-            Some(sum)
+            let errors = test
+                .iter()
+                .map(|point| {
+                    let predicted = predict(&constants, &point.terms);
+                    log_errors.push((predicted / point.measured).ln());
+                    (predicted - point.measured) / point.measured
+                })
+                .collect();
+            Some(errors)
         };
         held_out.push(HeldOutSetting {
             setting: setting.to_string(),
             fit,
-            relative_error,
+            point_relative_errors,
         });
     }
-    let rms_log_error = if log_errors.is_empty() {
-        f64::NAN
-    } else {
-        (log_errors.iter().map(|e| e * e).sum::<f64>() / log_errors.len() as f64).sqrt()
-    };
+    let rms_log_error = (!log_errors.is_empty())
+        .then(|| (log_errors.iter().map(|e| e * e).sum::<f64>() / log_errors.len() as f64).sqrt());
     let settings_scored = held_out
         .iter()
-        .filter(|fold| fold.relative_error.is_some())
+        .filter(|fold| fold.point_relative_errors.is_some())
         .count();
     Ok(LeaveOneSettingOut {
         held_out,
@@ -331,46 +337,54 @@ pub fn leave_one_setting_out(
     })
 }
 
-/// Times `run(size)` at each size on `clock` under `protocol` (warm-up, then
-/// the median of `measured_runs` thread-CPU times). `run` returns the units
-/// it processed. One point per size: setting = the size, terms =
-/// `[units, 1]`.
+/// Times `run(size)` at each size as one protocol job pinned to `core`
+/// ([`Protocol::run_job`]: idle check, warm-up, the median of
+/// `measured_runs` thread-CPU times). `run` returns the units it processed;
+/// the point takes the units of the median run. One point per size:
+/// setting = the size, terms = `[units, 1]`. Consecutive sizes share an idle
+/// sample, as the steps of [`crate::arm_run::run_arm`] do.
 ///
-/// # Panics
-///
-/// When `protocol.measured_runs` is even or zero
-/// ([`Protocol::check_run_count`] refuses it as an error).
+/// An engine's calibration plugs in as
+/// `|size| calibratable.prepare_cost_target(&target, size)?()`.
 pub fn measure_sizes(
     protocol: &Protocol,
+    core: usize,
+    probe: &mut dyn LoadProbe,
     clock: &dyn CpuClock,
     sizes: &[u64],
-    run: &mut dyn FnMut(u64) -> u64,
-) -> Vec<FitPoint> {
-    if let Err(error) = protocol.check_run_count() {
-        panic!("{error}");
+    run: &mut dyn FnMut(u64) -> Result<u64, EngineError>,
+) -> Result<Vec<FitPoint>, ProtocolError> {
+    let mut load: Option<CoreLoad> = None;
+    let mut points = Vec::with_capacity(sizes.len());
+    for &size in sizes {
+        // Units of every call, warm-up first; the measured ones are the last
+        // `measured_runs`.
+        let mut units_per_call = Vec::new();
+        let job = protocol.run_job_accounted(
+            core,
+            probe,
+            load,
+            clock,
+            MedianClock::Thread,
+            &mut || {
+                units_per_call.push(run(size)?);
+                Ok(StepReport::default())
+            },
+        )?;
+        load = Some(job.load_after());
+        let measured_units = &units_per_call[protocol.warmup_runs as usize..];
+        let median_run = job
+            .samples
+            .iter()
+            .position(|sample| *sample == job.median)
+            .expect("the median is one of the samples");
+        points.push(FitPoint {
+            setting: size.to_string(),
+            terms: vec![measured_units[median_run] as f64, 1.0],
+            measured: job.median.thread_cpu_ns.unwrap_or(0) as f64,
+        });
     }
-    sizes
-        .iter()
-        .map(|&size| {
-            for _ in 0..protocol.warmup_runs {
-                run(size);
-            }
-            let mut runs: Vec<(u64, u64)> = (0..protocol.measured_runs)
-                .map(|_| {
-                    let before = clock.thread_cpu_ns();
-                    let units = run(size);
-                    (clock.thread_cpu_ns().saturating_sub(before), units)
-                })
-                .collect();
-            runs.sort_by_key(|&(cpu_ns, _)| cpu_ns);
-            let (median_ns, units) = runs[runs.len() / 2];
-            FitPoint {
-                setting: size.to_string(),
-                terms: vec![units as f64, 1.0],
-                measured: median_ns as f64,
-            }
-        })
-        .collect()
+    Ok(points)
 }
 
 /// A fit that cannot be computed.

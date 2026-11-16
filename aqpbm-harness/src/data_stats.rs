@@ -60,7 +60,7 @@ pub fn data_statistics(
             .map(String::as_str)
             .unwrap_or("");
         let gathered = metrics.entry(metric).or_default();
-        let mut labels = sample.labels.clone();
+        let mut labels = SeriesLabels::clone(&sample.labels);
         labels.remove("__name__");
         gathered
             .timestamps_per_series

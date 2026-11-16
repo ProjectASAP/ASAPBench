@@ -5,7 +5,8 @@
 //! Example: with warm-up 1 and 5 runs, a job whose calls cost 100, 50, 70,
 //! 60, 90 and 80 ns records the samples 50, 70, 60, 90, 80 and the median 70.
 
-use std::path::Path;
+use std::cell::{Cell, RefCell};
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -13,7 +14,7 @@ use aqpbm_core::metrics::{CpuTimeSampler, ThreadCpuTime};
 
 use serde::{Deserialize, Serialize};
 
-use crate::engine::{EngineError, StepCost, StepReport};
+use crate::engine::{CpuAccounting, EngineError, StepCost, StepReport};
 
 /// The clocks the harness reads around a step.
 pub trait CpuClock {
@@ -24,6 +25,13 @@ pub trait CpuClock {
     /// Wall time, in ns from an arbitrary origin. On the clock so a fake clock
     /// makes whole runs deterministic.
     fn wall_ns(&self) -> u64;
+    /// The first failed reading since the last call, if any. A clock whose
+    /// source can fail (a server process that exited) keeps returning its
+    /// last good reading and reports the failure here; the protocol checks
+    /// after every measured run, so a failed reading never becomes a sample.
+    fn take_read_error(&self) -> Option<ProtocolError> {
+        None
+    }
 }
 
 /// The OS clocks: `aqpbm_core::metrics::time::ThreadCpuTime` for the thread,
@@ -48,6 +56,149 @@ impl CpuClock for OsCpuClock {
     }
     fn wall_ns(&self) -> u64 {
         os_clock_origin().1.elapsed().as_nanos() as u64
+    }
+}
+
+/// Where a `Processes` engine's CPU is read: a `/proc` directory and the
+/// clock tick rate of its stat counters. Example: on Linux, `/proc` at 100
+/// ticks per second (`getconf CLK_TCK`), so a `utime` of 250 is 2.5 s.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcFs {
+    pub root: PathBuf,
+    pub ticks_per_second: u64,
+}
+
+impl ProcFs {
+    /// The machine's `/proc` and `sysconf(_SC_CLK_TCK)` (100 when unknown).
+    pub fn os() -> Self {
+        #[cfg(unix)]
+        // SAFETY: `sysconf` reads a constant of the C library and has no
+        // preconditions.
+        let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        #[cfg(not(unix))]
+        let ticks = 100;
+        ProcFs {
+            root: PathBuf::from("/proc"),
+            ticks_per_second: if ticks > 0 { ticks as u64 } else { 100 },
+        }
+    }
+}
+
+/// The clock of a `Processes` engine (an external server): process CPU is the
+/// summed `utime + stime` of the server pids in `<proc>/<pid>/stat`, thread
+/// CPU is always 0 (the harness thread does none of the engine's work), and
+/// wall time is the OS monotonic clock. Example: servers 101 and 102 at
+/// 100 ticks per second with 80 + 20 and 150 + 50 ticks read 3 s.
+#[derive(Debug)]
+pub struct ProcessesCpuClock {
+    pids: Vec<u32>,
+    proc_fs: ProcFs,
+    /// The last successful reading, returned after a failed one.
+    last_process_cpu_ns: Cell<u64>,
+    /// The first failed reading, until [`CpuClock::take_read_error`] takes it.
+    read_error: RefCell<Option<ProtocolError>>,
+}
+
+impl ProcessesCpuClock {
+    /// Reads the pids once, so a missing server fails here, before any job.
+    pub fn new(pids: Vec<u32>, proc_fs: ProcFs) -> Result<Self, ProtocolError> {
+        let first = processes_cpu_ns(&proc_fs.root, &pids, proc_fs.ticks_per_second)?;
+        Ok(ProcessesCpuClock {
+            pids,
+            proc_fs,
+            last_process_cpu_ns: Cell::new(first),
+            read_error: RefCell::new(None),
+        })
+    }
+}
+
+impl CpuClock for ProcessesCpuClock {
+    fn thread_cpu_ns(&self) -> u64 {
+        0
+    }
+    fn process_cpu_ns(&self) -> u64 {
+        match processes_cpu_ns(
+            &self.proc_fs.root,
+            &self.pids,
+            self.proc_fs.ticks_per_second,
+        ) {
+            Ok(ns) => {
+                self.last_process_cpu_ns.set(ns);
+                ns
+            }
+            Err(error) => {
+                self.read_error.borrow_mut().get_or_insert(error);
+                self.last_process_cpu_ns.get()
+            }
+        }
+    }
+    fn wall_ns(&self) -> u64 {
+        OsCpuClock.wall_ns()
+    }
+    fn take_read_error(&self) -> Option<ProtocolError> {
+        self.read_error.borrow_mut().take()
+    }
+}
+
+/// What the harness reads CPU from, per engine accounting: the caller's
+/// clock for a `CallingThread` engine ([`OsCpuClock`], or a fake clock in
+/// tests), and a [`ProcessesCpuClock`] it builds itself over `proc_fs` for a
+/// `Processes` engine, so an external server is never timed on the harness
+/// process.
+pub struct MeasurementClocks<'a> {
+    pub calling_thread: &'a dyn CpuClock,
+    pub proc_fs: ProcFs,
+}
+
+impl<'a> MeasurementClocks<'a> {
+    /// [`OsCpuClock`] and the machine's `/proc`.
+    pub fn os() -> MeasurementClocks<'static> {
+        MeasurementClocks {
+            calling_thread: &OsCpuClock,
+            proc_fs: ProcFs::os(),
+        }
+    }
+
+    /// `calling_thread` and the machine's `/proc`.
+    pub fn with_calling_thread(calling_thread: &'a dyn CpuClock) -> Self {
+        MeasurementClocks {
+            calling_thread,
+            proc_fs: ProcFs::os(),
+        }
+    }
+
+    /// The clock an engine with `accounting` is measured on. For
+    /// `Processes(pids)` this reads every pid once and fails on a missing one.
+    pub fn clock_for(&self, accounting: &CpuAccounting) -> Result<EngineClock<'a>, ProtocolError> {
+        Ok(match accounting {
+            CpuAccounting::CallingThread => EngineClock::CallingThread(self.calling_thread),
+            CpuAccounting::Processes(pids) => {
+                EngineClock::Processes(ProcessesCpuClock::new(pids.clone(), self.proc_fs.clone())?)
+            }
+        })
+    }
+}
+
+/// The clock [`MeasurementClocks::clock_for`] picked for one engine.
+pub enum EngineClock<'a> {
+    CallingThread(&'a dyn CpuClock),
+    Processes(ProcessesCpuClock),
+}
+
+impl EngineClock<'_> {
+    pub fn as_clock(&self) -> &dyn CpuClock {
+        match self {
+            EngineClock::CallingThread(clock) => *clock,
+            EngineClock::Processes(clock) => clock,
+        }
+    }
+
+    /// The clock the median of a job is taken on.
+    pub(crate) fn median_clock(&self) -> MedianClock {
+        match self {
+            EngineClock::CallingThread(_) => MedianClock::Thread,
+            EngineClock::Processes(_) => MedianClock::Process,
+        }
     }
 }
 
@@ -224,14 +375,19 @@ pub trait LoadProbe {
 }
 
 /// The OS load probe: two `/proc/stat` reads `sample_interval` apart, and the
-/// first field of `/proc/loadavg` (`NaN` when unreadable).
+/// first field of `/proc/loadavg` (`NaN` when unreadable; recorded as `None`).
 #[derive(Debug, Clone, Copy)]
 pub struct OsLoadProbe {
     pub sample_interval: std::time::Duration,
 }
 
 impl Default for OsLoadProbe {
-    /// 100 ms: about 10 scheduler ticks at 100 Hz per core.
+    /// 100 ms: `/proc/stat` counts in 10 ms ticks (100 Hz), so 10 ticks per
+    /// sample resolve the 10% busy limit to one tick. A shorter interval
+    /// cannot: at 50 ms one stray tick already reads 20% busy. The cost is
+    /// cut instead by sampling once per job, not twice: in a run of jobs each
+    /// job's after-sample is the next job's before-sample (see
+    /// [`Protocol::run_job`]).
     fn default() -> Self {
         OsLoadProbe {
             sample_interval: std::time::Duration::from_millis(100),
@@ -290,14 +446,25 @@ pub struct JobRecord {
     pub core: usize,
     pub busy_before: f64,
     pub busy_after: f64,
-    /// The load average before and after.
-    pub loadavg: [f64; 2],
+    /// The 1-minute load average before and after; `None` when unreadable.
+    pub loadavg: [Option<f64>; 2],
     pub marks: Vec<JobMark>,
     /// One cost per measured run, warm-up excluded.
     pub samples: Vec<StepCost>,
     /// The sample with the median thread CPU (process CPU for a `Processes`
     /// engine).
     pub median: StepCost,
+}
+
+impl JobRecord {
+    /// The after-sample of this job, to stand in for the next job's
+    /// before-sample on the same core.
+    pub(crate) fn load_after(&self) -> CoreLoad {
+        CoreLoad {
+            busy_fraction: self.busy_after,
+            loadavg: self.loadavg[1],
+        }
+    }
 }
 
 /// Something that happened around a job that a reader must know.
@@ -307,8 +474,30 @@ pub enum JobMark {
     BusyAfter { busy_fraction: f64 },
 }
 
+/// One idle-check sample of a core: its busy fraction over the sampling
+/// interval and the load average read after it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct CoreLoad {
+    pub busy_fraction: f64,
+    pub loadavg: Option<f64>,
+}
+
+impl CoreLoad {
+    fn sample(probe: &mut dyn LoadProbe, core: usize) -> Result<Self, ProtocolError> {
+        let busy_fraction = probe.core_busy_fraction(core)?;
+        let loadavg = Some(probe.loadavg()).filter(|value| value.is_finite());
+        Ok(CoreLoad {
+            busy_fraction,
+            loadavg,
+        })
+    }
+}
+
 impl Protocol {
-    /// Pin, check idle, warm up, run `measured_runs` times, check idle again.
+    /// Check the core is idle, pin, warm up, run `measured_runs` times, check
+    /// idle again. The calling thread stays pinned to `core` afterwards, so
+    /// the jobs of one run all stay on it; a caller that needs another core
+    /// pins again.
     pub fn run_job(
         &self,
         core: usize,
@@ -316,28 +505,36 @@ impl Protocol {
         clock: &dyn CpuClock,
         job: &mut dyn FnMut() -> Result<StepReport, EngineError>,
     ) -> Result<JobRecord, ProtocolError> {
-        self.run_job_accounted(core, probe, clock, MedianClock::Thread, job)
+        self.run_job_accounted(core, probe, None, clock, MedianClock::Thread, job)
     }
 
     /// [`Protocol::run_job`] for either accounting: with
     /// [`MedianClock::Process`] (an engine measured as processes) the samples
     /// carry no thread CPU and the median is taken over process CPU.
+    ///
+    /// `load_before` is the previous job's after-sample of the same core, when
+    /// the caller runs jobs back to back: nothing but the harness ran on the
+    /// core between the two, so it stands in for a fresh before-sample and
+    /// each job costs one sampling interval instead of two.
     pub(crate) fn run_job_accounted(
         &self,
         core: usize,
         probe: &mut dyn LoadProbe,
+        load_before: Option<CoreLoad>,
         clock: &dyn CpuClock,
         median_clock: MedianClock,
         job: &mut dyn FnMut() -> Result<StepReport, EngineError>,
     ) -> Result<JobRecord, ProtocolError> {
         self.check_run_count()?;
-        let busy_before = probe.core_busy_fraction(core)?;
-        let loadavg_before = probe.loadavg();
-        if busy_before > self.max_core_busy_fraction {
+        let before = match load_before {
+            Some(load) => load,
+            None => CoreLoad::sample(probe, core)?,
+        };
+        if before.busy_fraction > self.max_core_busy_fraction {
             return Err(ProtocolError::CoreBusy {
                 core,
-                busy_fraction: busy_before,
-                loadavg: loadavg_before,
+                busy_fraction: before.busy_fraction,
+                loadavg: before.loadavg.unwrap_or(f64::NAN),
                 limit: self.max_core_busy_fraction,
             });
         }
@@ -354,27 +551,30 @@ impl Protocol {
             );
             let report = job()?;
             let thread_cpu_ns = clock.thread_cpu_ns().saturating_sub(thread_before);
+            let process_cpu_ns = clock.process_cpu_ns().saturating_sub(process_before);
+            if let Some(error) = clock.take_read_error() {
+                return Err(error);
+            }
             samples.push(StepCost {
                 thread_cpu_ns: (median_clock == MedianClock::Thread).then_some(thread_cpu_ns),
-                process_cpu_ns: clock.process_cpu_ns().saturating_sub(process_before),
+                process_cpu_ns,
                 wall_ns: clock.wall_ns().saturating_sub(wall_before),
                 report,
             });
         }
-        let busy_after = probe.core_busy_fraction(core)?;
-        let loadavg_after = probe.loadavg();
+        let after = CoreLoad::sample(probe, core)?;
         let mut marks = Vec::new();
-        if busy_after > self.max_core_busy_fraction {
+        if after.busy_fraction > self.max_core_busy_fraction {
             marks.push(JobMark::BusyAfter {
-                busy_fraction: busy_after,
+                busy_fraction: after.busy_fraction,
             });
         }
         let median = median_sample(&samples, median_clock);
         Ok(JobRecord {
             core,
-            busy_before,
-            busy_after,
-            loadavg: [loadavg_before, loadavg_after],
+            busy_before: before.busy_fraction,
+            busy_after: after.busy_fraction,
+            loadavg: [before.loadavg, after.loadavg],
             marks,
             samples,
             median,

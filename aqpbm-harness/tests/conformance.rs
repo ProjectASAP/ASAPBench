@@ -1,7 +1,8 @@
 //! The conformance kit against the fake engine and its faults.
 
 use aqpbm_harness::conformance::{check, ConformanceCheck, ConformanceFailure};
-use aqpbm_harness::fake::{FakeEngine, FakeFault};
+use aqpbm_harness::fake::{FakeEngine, FakeFault, FakeServer};
+use aqpbm_harness::protocol::{MeasurementClocks, ProcFs};
 
 /// Runs the kit on a fake with `faults`, reading the fake's own clock.
 fn check_fake(faults: &[FakeFault]) -> Result<Vec<ConformanceCheck>, Vec<ConformanceFailure>> {
@@ -10,7 +11,7 @@ fn check_fake(faults: &[FakeFault]) -> Result<Vec<ConformanceCheck>, Vec<Conform
         ..FakeEngine::default()
     };
     let clock = engine.clock.clone();
-    check(&mut engine, &clock).map(|report| report.passed)
+    check(&mut engine, &MeasurementClocks::with_calling_thread(&clock)).map(|report| report.passed)
 }
 
 /// The default fake (50 ns per sample, 150 ns per series, 10 µs per call,
@@ -155,4 +156,55 @@ fn every_conformance_failure_is_listed() {
         last_nondeterministic < first_window,
         "not in check order: {failures:?}"
     );
+}
+
+/// A fake external server (pid 4242 under a fake `/proc`) passes the three
+/// checks that do not apply only to `CallingThread` engines; the same engine
+/// read under a `/proc` without pid 4242 fails with `EngineFailed` at step
+/// `cpu accounting`, naming the pid.
+#[test]
+fn a_processes_engine_is_checked_on_its_server_pids() {
+    let root = std::env::temp_dir().join(format!(
+        "aqpbm-harness-conformance-{}-server",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let server = FakeServer::start(&root, 4242).unwrap();
+    let mut engine = FakeEngine {
+        server: Some(server.clone()),
+        ..FakeEngine::default()
+    };
+    let clock = engine.clock.clone();
+    let clocks = MeasurementClocks {
+        calling_thread: &clock,
+        proc_fs: server.proc_fs.clone(),
+    };
+    assert_eq!(
+        check(&mut engine, &clocks).map(|report| report.passed),
+        Ok(vec![
+            ConformanceCheck::DeterministicAnswers,
+            ConformanceCheck::LeftOpenWindow,
+            ConformanceCheck::CalibrationUnits,
+        ])
+    );
+
+    let empty = root.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let clocks = MeasurementClocks {
+        calling_thread: &clock,
+        proc_fs: ProcFs {
+            root: empty,
+            ticks_per_second: 100,
+        },
+    };
+    let failures = check(&mut engine, &clocks).unwrap_err();
+    assert!(
+        matches!(
+            failures.as_slice(),
+            [ConformanceFailure::EngineFailed { step, message, .. }]
+                if step == "cpu accounting" && message.contains("4242")
+        ),
+        "{failures:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }

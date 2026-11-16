@@ -14,7 +14,9 @@ use crate::records::{ArmResult, RunRecord};
 /// A created run directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunDir {
-    pub path: PathBuf,
+    /// Private: only [`RunDir::create`] makes one, so every `RunDir` names a
+    /// directory this run created.
+    path: PathBuf,
 }
 
 impl RunDir {
@@ -54,6 +56,11 @@ impl RunDir {
             std::fs::create_dir(&sub).map_err(|source| io(&sub, source))?;
         }
         Ok(RunDir { path })
+    }
+
+    /// The directory.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     /// Writes `run.json`.
@@ -111,15 +118,16 @@ impl RunDir {
 
     /// Appends one line to `status.log`: job name, core, busy before and
     /// after, load average and marks (such as `busy-after 0.35`).
-    /// Example: `ingest-0 core 3 busy-before 0.02 busy-after 0.03 loadavg 0.5 0.75`.
+    /// Example: `ingest-0 core 3 busy-before 0.02 busy-after 0.03 loadavg 0.5 0.75`;
+    /// an unreadable load average is written `unknown`.
     pub fn append_status(&self, job: &str, record: &JobRecord) -> Result<(), RunDirError> {
         let mut line = format!(
             "{job} core {} busy-before {:.2} busy-after {:.2} loadavg {} {}",
             record.core,
             record.busy_before,
             record.busy_after,
-            record.loadavg[0],
-            record.loadavg[1]
+            loadavg_text(record.loadavg[0]),
+            loadavg_text(record.loadavg[1])
         );
         for mark in &record.marks {
             match mark {
@@ -137,6 +145,10 @@ impl RunDir {
             .and_then(|mut file| file.write_all(line.as_bytes()))
             .map_err(|source| io(&path, source))
     }
+}
+
+fn loadavg_text(loadavg: Option<f64>) -> String {
+    loadavg.map_or_else(|| "unknown".to_string(), |value| value.to_string())
 }
 
 /// The characters of a subcommand or label.
@@ -172,14 +184,20 @@ fn io(path: &Path, source: std::io::Error) -> RunDirError {
     }
 }
 
-/// Writes `value` as pretty JSON with a final newline.
+/// Writes `value` as pretty JSON with a final newline to a new file; an
+/// existing file is refused (`create_new`), so a result is never overwritten.
 fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), RunDirError> {
     let mut text = serde_json::to_string_pretty(value).map_err(|source| RunDirError::Json {
         path: path.to_path_buf(),
         source,
     })?;
     text.push('\n');
-    std::fs::write(path, text).map_err(|source| io(path, source))
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .and_then(|mut file| file.write_all(text.as_bytes()))
+        .map_err(|source| io(path, source))
 }
 
 /// A run directory that cannot be created or written.

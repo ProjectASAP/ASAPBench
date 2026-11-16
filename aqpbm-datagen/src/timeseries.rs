@@ -373,12 +373,20 @@ impl GeneratedTimeSeries {
         }
     }
 
-    /// The position and random state of [`GeneratedTimeSeries::samples`],
-    /// without a borrow of the series: a caller that owns the series and must
-    /// hand out an owning iterator keeps both and calls
-    /// [`TimeSeriesCursor::next_sample`] with the series. Example: a reader
-    /// that cuts the samples into refresh chunks keeps `(series, cursor)`.
-    pub fn cursor(&self) -> TimeSeriesCursor {
+    /// The samples of [`GeneratedTimeSeries::samples`], from an iterator
+    /// that owns the series, each as `(series index, timestamp ms, value)`;
+    /// series `i`'s labels are `labels[i]` of the series. Example: a reader
+    /// that cuts the samples into refresh chunks keeps this iterator, with
+    /// no borrow to tie it to the series.
+    pub fn into_samples(self) -> OwnedTimeSeriesSamples {
+        OwnedTimeSeriesSamples {
+            cursor: self.cursor(),
+            series: self,
+        }
+    }
+
+    /// The position and random state of an iterator over the samples.
+    fn cursor(&self) -> TimeSeriesCursor {
         let value_seed = self.description.seed ^ self.description.value_distribution.seed();
         let streams = (0..self.labels.len() as u64)
             .map(|i| SeriesStream {
@@ -435,8 +443,25 @@ impl<'a> Iterator for TimeSeriesSamples<'a> {
     }
 }
 
-/// Where [`GeneratedTimeSeries::samples`] is, from [`GeneratedTimeSeries::cursor`].
-pub struct TimeSeriesCursor {
+/// The iterator [`GeneratedTimeSeries::into_samples`] returns.
+pub struct OwnedTimeSeriesSamples {
+    series: GeneratedTimeSeries,
+    cursor: TimeSeriesCursor,
+}
+
+impl Iterator for OwnedTimeSeriesSamples {
+    /// `(series index, timestamp ms, value)`.
+    type Item = Result<(usize, i64, f64), DataGenError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.cursor.next_sample(&self.series)
+    }
+}
+
+/// Where an iterator over the samples is: per series its random stream, and
+/// the next sample's index. Private, so it only ever reads the series it was
+/// made from.
+struct TimeSeriesCursor {
     streams: Vec<SeriesStream>,
     /// Samples in all: series times samples per series.
     sample_count: u64,
@@ -445,10 +470,9 @@ pub struct TimeSeriesCursor {
 }
 
 impl TimeSeriesCursor {
-    /// The next sample as `(series index, timestamp ms, value)`; `series`
-    /// must be the series the cursor came from. Series `i`'s labels are
-    /// `series.labels[i]`.
-    pub fn next_sample(
+    /// The next sample as `(series index, timestamp ms, value)`; `series` is
+    /// the series the cursor came from.
+    fn next_sample(
         &mut self,
         series: &GeneratedTimeSeries,
     ) -> Option<Result<(usize, i64, f64), DataGenError>> {
@@ -530,6 +554,23 @@ mod tests {
     /// How many of the series carry `value` for label `position`.
     fn count(g: &GeneratedTimeSeries, position: usize, value: &str) -> usize {
         g.labels.iter().filter(|l| l[position].1 == value).count()
+    }
+
+    /// The owning iterator yields the samples of `samples()`, with the
+    /// series index in place of the labels, in plain and counter mode.
+    #[test]
+    fn into_samples_yields_the_samples_by_series_index() {
+        for counter in [false, true] {
+            let d = description(counter);
+            let generated = d.generate().unwrap();
+            let labels = generated.labels.clone();
+            let owned: Vec<OwnedSample> = generated
+                .into_samples()
+                .map(|s| s.map(|(i, t, v)| (labels[i].clone(), t, v)))
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert_eq!(owned, collect(&d));
+        }
     }
 
     #[test]

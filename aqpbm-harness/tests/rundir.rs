@@ -88,7 +88,7 @@ fn arm_result(workload: &str) -> ArmResult {
         evaluate: Vec::new(),
         answers: Vec::new(),
         footprint: Footprint::default(),
-        engine_cost_per_second: None,
+        measured_engine_cost_per_second: None,
         node_profiles: None,
     }
 }
@@ -98,7 +98,7 @@ fn job(core: usize, busy_before: f64, busy_after: f64, loadavg: [f64; 2]) -> Job
         core,
         busy_before,
         busy_after,
-        loadavg,
+        loadavg: loadavg.map(Some),
         marks: Vec::new(),
         samples: vec![StepCost::default()],
         median: StepCost::default(),
@@ -119,13 +119,13 @@ fn run_dir_is_machine_key_utc_subcommand_label() {
         .join("runs")
         .join(E5_KEY)
         .join("20261116T201500Z-sweep-sketch-benefit");
-    assert_eq!(run.path, expected);
-    assert!(run.path.is_dir(), "{:?}", run.path);
+    assert_eq!(run.path(), expected);
+    assert!(run.path().is_dir(), "{:?}", run.path());
     for sub in ["workloads", "data", "plans", "results"] {
         assert!(
-            run.path.join(sub).is_dir(),
+            run.path().join(sub).is_dir(),
             "{sub} missing in {:?}",
-            run.path
+            run.path()
         );
     }
 }
@@ -153,12 +153,12 @@ fn an_existing_run_dir_is_never_overwritten() {
     let root = TempDir::new("an_existing_run_dir_is_never_overwritten");
     let first = create(&root.0).unwrap();
     first.write_run(&run_record()).unwrap();
-    let run_json = first.path.join("run.json");
+    let run_json = first.path().join("run.json");
     let before = std::fs::read(&run_json).unwrap();
 
     let error = create(&root.0).unwrap_err();
     assert!(
-        matches!(&error, RunDirError::RunDirExists(path) if *path == first.path),
+        matches!(&error, RunDirError::RunDirExists(path) if *path == first.path()),
         "{error:?}"
     );
     assert_eq!(std::fs::read(&run_json).unwrap(), before);
@@ -173,7 +173,7 @@ fn run_json_round_trips_and_refuses_unknown_fields() {
     let run = create(&root.0).unwrap();
     let record = run_record();
     run.write_run(&record).unwrap();
-    let text = std::fs::read_to_string(run.path.join("run.json")).unwrap();
+    let text = std::fs::read_to_string(run.path().join("run.json")).unwrap();
     let read: RunRecord = serde_json::from_str(&text).unwrap();
     assert_eq!(read, record);
 
@@ -194,7 +194,7 @@ fn arm_results_are_filed_per_engine_workload_and_arm() {
     let root = TempDir::new("arm_results_are_filed_per_engine_workload_and_arm");
     let run = create(&root.0).unwrap();
     let path = run.write_arm(&arm_result("w")).unwrap();
-    assert_eq!(path, run.path.join("results/fake/w__planned.json"));
+    assert_eq!(path, run.path().join("results/fake/w__planned.json"));
     assert!(path.is_file(), "{path:?}");
 
     let error = run.write_arm(&arm_result("a__b")).unwrap_err();
@@ -202,7 +202,7 @@ fn arm_results_are_filed_per_engine_workload_and_arm() {
         matches!(&error, RunDirError::AmbiguousName { name, .. } if name == "a__b"),
         "{error:?}"
     );
-    assert!(!run.path.join("results/fake/a__b__planned.json").exists());
+    assert!(!run.path().join("results/fake/a__b__planned.json").exists());
 }
 
 /// Two jobs, on cores 3 and 4, give two `status.log` lines, each with the job
@@ -217,7 +217,7 @@ fn status_log_has_one_line_per_job() {
     run.append_status("evaluate-0", &job(4, 0.04, 0.06, [1.25, 1.5]))
         .unwrap();
 
-    let log = std::fs::read_to_string(run.path.join("status.log")).unwrap();
+    let log = std::fs::read_to_string(run.path().join("status.log")).unwrap();
     let lines: Vec<&str> = log.lines().collect();
     assert_eq!(lines.len(), 2, "{log}");
     let expected = [
@@ -263,4 +263,41 @@ fn a_stale_calibration_is_named() {
     assert!(warning.contains("dirty"), "{warning}");
 
     assert_eq!(calibration_staleness(&recorded, &recorded.clone()), None);
+}
+
+/// A result file is never overwritten: writing the arm `w`/`planned` twice
+/// fails the second time and keeps the first file.
+#[test]
+fn a_result_file_is_never_overwritten() {
+    let root = TempDir::new("a_result_file_is_never_overwritten");
+    let run = create(&root.0).unwrap();
+    let path = run.write_arm(&arm_result("w")).unwrap();
+    let first = std::fs::read_to_string(&path).unwrap();
+    let error = run.write_arm(&arm_result("w")).unwrap_err();
+    assert!(
+        matches!(&error, RunDirError::Io { path: p, source } if *p == path
+            && source.kind() == std::io::ErrorKind::AlreadyExists),
+        "{error:?}"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), first);
+}
+
+/// A calibration measured on a dirty `8e65fca45` is stale on a clean
+/// `8e65fca45`, and the warning says the calibration's build was dirty, not
+/// the current engine.
+#[test]
+fn a_calibration_from_a_dirty_build_names_the_recorded_build() {
+    let warning = calibration_staleness(
+        &fake_engine("8e65fca45", true),
+        &fake_engine("8e65fca45", false),
+    )
+    .expect("a dirty recorded build is stale");
+    assert!(
+        warning.contains("the calibration was measured on a dirty build"),
+        "{warning}"
+    );
+    assert!(
+        !warning.contains("the engine is a dirty build"),
+        "{warning}"
+    );
 }

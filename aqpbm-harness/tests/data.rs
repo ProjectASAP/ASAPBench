@@ -37,7 +37,7 @@ fn sample(metric: &str, labels: &[(&str, &str)], ts_ms: i64, value: f64) -> Samp
         .collect();
     all.insert("__name__".into(), metric.into());
     Sample {
-        labels: all,
+        labels: all.into(),
         ts_ms,
         value,
     }
@@ -56,7 +56,7 @@ fn samples_hash(mut samples: Vec<Sample>) -> u64 {
         }
     };
     for sample in &samples {
-        for (name, value) in &sample.labels {
+        for (name, value) in sample.labels.iter() {
             eat(name.as_bytes());
             eat(&[0xff]);
             eat(value.as_bytes());
@@ -78,7 +78,7 @@ fn generated_directly(record: &DataRecord) -> Result<Vec<Sample>, Box<dyn std::e
         let mut labels: BTreeMap<String, String> = labels.iter().cloned().collect();
         labels.insert("__name__".into(), record.metric.clone());
         samples.push(Sample {
-            labels,
+            labels: labels.into(),
             ts_ms,
             value,
         });

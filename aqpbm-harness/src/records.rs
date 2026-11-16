@@ -39,13 +39,18 @@ pub struct ArmResult {
     /// The answers at each evaluation time.
     pub answers: Vec<(i64, Answers)>,
     pub footprint: Footprint,
-    /// Measured usage at the engine's own prices; `None` for an engine
-    /// without a cost model.
-    pub engine_cost_per_second: Option<f64>,
+    /// The usage the harness measured, priced at the engine's own prices
+    /// ([`crate::engine::InstalledArm::price`]); `None` for an engine without
+    /// a cost model. Compare with the engine's own prediction,
+    /// [`PredictedCost::engine_cost_per_second`].
+    pub measured_engine_cost_per_second: Option<f64>,
     pub node_profiles: Option<Vec<NodeProfile>>,
 }
 
-/// `calibrate-run.json`: the raw points and fits of one calibration.
+/// `calibrate-run.json`: the raw points and fits of one calibration. Written
+/// by the `calibrate` subcommand of the harness CLI; defined here because the
+/// design names it as the harness-owned calibration record beside
+/// [`RunRecord`] and [`ArmResult`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CalibrationRun {
@@ -77,12 +82,14 @@ pub fn calibration_staleness(
             recorded.id, recorded.version, current.id, current.version
         ));
     }
-    if recorded.version_dirty || current.version_dirty {
-        return Some(format!(
-            "the engine {} {} is dirty (uncommitted changes), so it may not be the build \
-             the calibration was measured on: commit and rerun calibrate",
-            current.id, current.version
-        ));
-    }
-    None
+    let dirty = match (recorded.version_dirty, current.version_dirty) {
+        (false, false) => return None,
+        (true, false) => "the calibration was measured on a dirty build",
+        (false, true) => "the engine is a dirty build",
+        (true, true) => "the calibration was measured on a dirty build, and the engine is one",
+    };
+    Some(format!(
+        "{dirty} of {} {} (uncommitted changes), so the two may differ: commit and rerun calibrate",
+        current.id, current.version
+    ))
 }

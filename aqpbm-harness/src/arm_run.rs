@@ -4,10 +4,11 @@
 
 use crate::data::{workload_chunks, DataError};
 use crate::engine::{
-    Answers, ArmSpec, CpuAccounting, EngineError, EngineUnderTest, InstalledArm, MeasuredUsage,
-    WorkloadSpec,
+    Answers, ArmSpec, EngineError, EngineUnderTest, InstalledArm, MeasuredUsage, WorkloadSpec,
 };
-use crate::protocol::{CpuClock, JobRecord, LoadProbe, MedianClock, Protocol, ProtocolError};
+use crate::protocol::{
+    CoreLoad, JobRecord, LoadProbe, MeasurementClocks, MedianClock, Protocol, ProtocolError,
+};
 use crate::records::ArmResult;
 
 /// When to ingest and when to evaluate.
@@ -23,11 +24,26 @@ pub struct ArmSchedule {
 /// installs the arm afresh, so ingest stays a first ingest; the answers come
 /// from the last measured run.
 ///
+/// The engine is measured on the clock its [`EngineUnderTest::cpu_accounting`]
+/// names: `clocks.calling_thread` for `CallingThread`, and for
+/// `Processes(pids)` a clock over the server pids under `clocks.proc_fs` that
+/// `run_arm` builds itself, never the harness process.
+///
 /// Every run gets its own install up front, and each step (one refresh
 /// chunk, or one evaluation) is one protocol job whose k-th call goes to
 /// install k. Example: warm-up 1 and 5 runs install 6 arms; the job of chunk
 /// 3 ingests chunk 3 into each of them in turn and records the 5 measured
 /// calls. An evaluation time runs after the chunk that ends at or after it.
+///
+/// Memory: all `warmup_runs + measured_runs` installs are held at once, so a
+/// run needs that many times the memory of one arm (6× with the default
+/// protocol). Because consecutive calls go to different installs, each call
+/// starts with the previous install's data in the caches, not its own: steps
+/// are measured with cold caches, as a refresh that runs after other work.
+///
+/// Idle checks: consecutive jobs share a sample, the after-sample of one job
+/// is the before-sample of the next, so each step costs one sampling interval
+/// of the probe (100 ms with the OS probe).
 #[allow(clippy::too_many_arguments)]
 pub fn run_arm(
     engine: &dyn EngineUnderTest,
@@ -37,13 +53,22 @@ pub fn run_arm(
     protocol: &Protocol,
     core: usize,
     probe: &mut dyn LoadProbe,
-    clock: &dyn CpuClock,
+    clocks: &MeasurementClocks,
 ) -> Result<ArmResult, ArmRunError> {
     protocol.check_run_count()?;
-    let median_clock = match engine.cpu_accounting() {
-        CpuAccounting::CallingThread => MedianClock::Thread,
-        CpuAccounting::Processes(_) => MedianClock::Process,
-    };
+    let data_ms = workload
+        .data
+        .iter()
+        .map(|record| record.description.duration_ms)
+        .max()
+        .unwrap_or(0);
+    if data_ms == 0 {
+        return Err(ArmRunError::NoData {
+            workload: workload.name.clone(),
+        });
+    }
+    let engine_clock = clocks.clock_for(&engine.cpu_accounting())?;
+    let (clock, median_clock) = (engine_clock.as_clock(), engine_clock.median_clock());
     let runs = (protocol.warmup_runs + protocol.measured_runs) as usize;
     let mut installs: Vec<Box<dyn InstalledArm>> = (0..runs)
         .map(|_| engine.install(workload, arm))
@@ -52,21 +77,26 @@ pub fn run_arm(
     let mut ingest = Vec::new();
     let mut evaluate = Vec::new();
     let mut answers = Vec::new();
+    // The after-sample of the last job, the before-sample of the next.
+    let mut load: Option<CoreLoad> = None;
     let mut pending_evaluations = schedule.evaluate_at_ms.iter().copied().peekable();
     let mut evaluate_at = |at_ms: i64,
                            installs: &mut Vec<Box<dyn InstalledArm>>,
-                           probe: &mut dyn LoadProbe|
+                           probe: &mut dyn LoadProbe,
+                           load: &mut Option<CoreLoad>|
      -> Result<(), ArmRunError> {
         let mut call = 0;
         let mut last_answers = Answers::default();
-        let job = protocol.run_job_accounted(core, probe, clock, median_clock, &mut || {
-            let (step_answers, report) = installs[call].evaluate(at_ms)?;
-            call += 1;
-            if call == runs {
-                last_answers = step_answers;
-            }
-            Ok(report)
-        })?;
+        let job =
+            protocol.run_job_accounted(core, probe, *load, clock, median_clock, &mut || {
+                let (step_answers, report) = installs[call].evaluate(at_ms)?;
+                call += 1;
+                if call == runs {
+                    last_answers = step_answers;
+                }
+                Ok(report)
+            })?;
+        *load = Some(job.load_after());
         evaluate.push(job);
         answers.push((at_ms, last_answers));
         Ok(())
@@ -74,33 +104,29 @@ pub fn run_arm(
     for chunk in workload_chunks(&workload.data, schedule.refresh_ms)? {
         let chunk = chunk?;
         let mut call = 0;
-        let job = protocol.run_job_accounted(core, probe, clock, median_clock, &mut || {
-            let report = installs[call].ingest(&chunk);
-            call += 1;
-            report
-        })?;
+        let job =
+            protocol.run_job_accounted(core, probe, load, clock, median_clock, &mut || {
+                let report = installs[call].ingest(&chunk);
+                call += 1;
+                report
+            })?;
+        load = Some(job.load_after());
         ingest.push(job);
         while let Some(at_ms) = pending_evaluations.next_if(|&at_ms| at_ms <= chunk.end_ms) {
-            evaluate_at(at_ms, &mut installs, probe)?;
+            evaluate_at(at_ms, &mut installs, probe, &mut load)?;
         }
     }
     for at_ms in pending_evaluations {
-        evaluate_at(at_ms, &mut installs, probe)?;
+        evaluate_at(at_ms, &mut installs, probe, &mut load)?;
     }
 
     let last = installs.last_mut().expect("at least one measured run");
     let footprint = last.footprint()?;
-    let data_seconds = workload
-        .data
-        .iter()
-        .map(|record| record.description.duration_ms)
-        .max()
-        .unwrap_or(0) as f64
-        / 1_000.0;
+    let data_seconds = data_ms as f64 / 1_000.0;
     let usage = MeasuredUsage {
         ingest_cpu_ns_per_second: median_cpu_ns(&ingest, median_clock) / data_seconds,
         query_cpu_ns_per_second: median_cpu_ns(&evaluate, median_clock) / data_seconds,
-        memory_bytes: footprint.view_bytes + footprint.raw_retained_bytes,
+        held_bytes: footprint.view_bytes + footprint.raw_retained_bytes,
     };
     Ok(ArmResult {
         engine: engine.description().id,
@@ -108,7 +134,7 @@ pub fn run_arm(
         arm: arm.name.clone(),
         plan: last.plan_summary(),
         predicted: last.predicted(),
-        engine_cost_per_second: last.price(&usage),
+        measured_engine_cost_per_second: last.price(&usage),
         node_profiles: last.node_profiles(),
         ingest,
         evaluate,
@@ -135,4 +161,8 @@ pub enum ArmRunError {
     Protocol(#[from] ProtocolError),
     #[error(transparent)]
     Data(#[from] DataError),
+    /// A workload whose data last 0 ms: its costs per second of data would be
+    /// infinite.
+    #[error("workload {workload} has no data (duration 0 ms), so its cost per second of data is undefined")]
+    NoData { workload: String },
 }

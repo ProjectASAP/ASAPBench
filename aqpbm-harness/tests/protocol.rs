@@ -204,7 +204,7 @@ fn a_core_that_turns_busy_during_the_job_marks_it() {
     let utc = Utc.with_ymd_and_hms(2026, 11, 16, 0, 0, 0).unwrap();
     let run_dir = RunDir::create(&tmp.0, "test-machine", utc, "test", "busy-after").unwrap();
     run_dir.append_status("ingest", &record).unwrap();
-    let status = std::fs::read_to_string(run_dir.path.join("status.log")).unwrap();
+    let status = std::fs::read_to_string(run_dir.path().join("status.log")).unwrap();
     assert!(status.contains("busy-after 0.35"), "{status}");
 }
 

@@ -10,7 +10,7 @@ description = "Engine-neutral measurement harness: the traits an engine under te
 aqpbm-core.workspace = true
 aqpbm-datagen.workspace = true
 chrono.workspace = true
-serde.workspace = true
+serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
 thiserror.workspace = true
 

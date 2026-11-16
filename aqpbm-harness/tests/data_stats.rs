@@ -25,7 +25,7 @@ fn sample(metric: &str, labels: &[(&str, &str)], ts_ms: i64, value: f64) -> Samp
         .collect();
     all.insert("__name__".into(), metric.into());
     Sample {
-        labels: all,
+        labels: all.into(),
         ts_ms,
         value,
     }
