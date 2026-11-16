@@ -1,6 +1,15 @@
-//! Synthetic data generation — see `docs/aqpbm-datagen.md`. In-memory only: no
-//! files, no workspace deps. Four separable axes: distribution ([`dist`]), rule
-//! ([`rule`]), rendering ([`value`]), relation ([`table`]).
+//! Synthetic data generation — see `docs/aqpbm-datagen.md`. In-memory by
+//! default, no workspace deps. Four separable axes: distribution ([`dist`]),
+//! rule ([`rule`]), rendering ([`value`]), relation ([`table`]).
+//!
+//! Two entry points: [`TableDescription::generate`] for typed columns, and
+//! [`TimeSeriesDescription::generate`] for labelled time series (see
+//! [`timeseries`] for an example). With default features the crate depends
+//! only on serde, rand, rand_distr, rand_xoshiro and thiserror, so another
+//! workspace can use it as a git dependency without the benchmark. The
+//! `files` feature adds serde_json and serde_norway for
+//! `TableDescription::from_path`; `import` adds polars, csv, chrono, flate2
+//! and anyhow for external datasets; `schema` adds schemars.
 
 pub mod burst;
 pub mod column;
@@ -10,6 +19,7 @@ pub mod error;
 pub mod import;
 pub mod rule;
 pub mod table;
+pub mod timeseries;
 pub mod value;
 
 pub use burst::{inject_interval_bursts, BurstSpec};
@@ -23,11 +33,21 @@ pub use error::DataGenError;
 pub use import::{ExternalTableDescription, WindowSpec};
 pub use rule::{RULE_MASK_ALL, RULE_MONOTONIC_INCREASE, RULE_NONE};
 pub use table::{splitmix64, GeneratedTable, TableDescription};
+pub use timeseries::{
+    GeneratedTimeSeries, SeriesLabelSpec, TimeSeriesDescription, TimeSeriesSample,
+    TimeSeriesSamples,
+};
 pub use value::{ColumnData, ColumnItem, StrCfg, StringOpts};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A description from `configs/datagen`, read without the `files` feature.
+    fn load_config(file: &str) -> TableDescription {
+        let text = std::fs::read_to_string(format!("../configs/datagen/{file}")).unwrap();
+        serde_norway::from_str(&text).unwrap()
+    }
 
     fn zipf(population_size: u64, skewness: f64, seed: u64) -> DataDistribution {
         DataDistribution::Zipf(ZipfParameter {
@@ -626,9 +646,7 @@ mod tests {
 
     #[test]
     fn hydra_hier_yaml_generates_its_hierarchy() {
-        let d =
-            TableDescription::from_path(std::path::Path::new("../configs/datagen/hydra_hier.yaml"))
-                .unwrap();
+        let d = load_config("hydra_hier.yaml");
         let t = d.generate().unwrap();
         let col = |i: usize| t.data[i].as_string().unwrap();
         assert_eq!(children_by_parent(col(0), col(1), 25).len(), 4);
@@ -639,8 +657,7 @@ mod tests {
     #[test]
     fn hydra_hier_cuts_keep_their_leading_labels() {
         for (file, labels) in [("hydra_hier_d2.yaml", 2), ("hydra_hier_d3.yaml", 3)] {
-            let path = format!("../configs/datagen/{file}");
-            let d = TableDescription::from_path(std::path::Path::new(&path)).unwrap();
+            let d = load_config(file);
             assert_eq!(d.column_num, labels + 1, "{file}");
             let t = d.generate().unwrap();
             let col = |i: usize| t.data[i].as_string().unwrap();
@@ -788,8 +805,7 @@ mod tests {
     /// The eval's latency spec scales by service and leaves the labels alone.
     #[test]
     fn hydra_http_latency_scales_by_service() {
-        let path = std::path::Path::new("../configs/datagen/hydra_http_latency.yaml");
-        let d = TableDescription::from_path(path).unwrap();
+        let d = load_config("hydra_http_latency.yaml");
         assert_eq!(d.column_label[1], "service");
         assert_eq!(d.column_spec[4].scale_by, Some(1));
         let mut plain = d.clone();

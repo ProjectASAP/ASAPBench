@@ -6,11 +6,7 @@ use rand_distr::{Distribution as _, Normal, Pareto, Uniform, Zipf};
 use rand_xoshiro::Xoshiro256PlusPlus;
 use serde::{Deserialize, Serialize};
 
-use crate::error::DataGenError;
-
-fn bad(msg: String) -> DataGenError {
-    DataGenError::BadParam(msg)
-}
+use crate::error::{bad, DataGenError};
 
 /// Zipfian: rank `r` appears with probability `∝ r^-skewness`, over the ranks
 /// `1..=population_size`.

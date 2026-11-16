@@ -18,8 +18,8 @@ pub struct BurstSpec {
 }
 
 /// Keep the base stream and inject resampled traffic into randomly selected
-/// intervals. Selection and resampling use one seeded RNG, so ERP provenance
-/// completely determines the generated workload.
+/// intervals. Selection and resampling use one seeded RNG, so the spec and its
+/// seed completely determine the generated workload.
 pub fn inject_interval_bursts<T: Clone>(
     input: &[T],
     spec: BurstSpec,

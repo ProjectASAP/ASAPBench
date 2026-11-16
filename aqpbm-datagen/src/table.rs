@@ -5,7 +5,6 @@
 //! has to pick between two entry points.
 
 use std::collections::HashMap;
-use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -64,8 +63,9 @@ impl TableDescription {
     }
 
     /// Load a description from a `.yaml`/`.yml` (serde_norway) or otherwise JSON
-    /// file.
-    pub fn from_path(path: &Path) -> Result<Self, DataGenError> {
+    /// file. Behind the `files` feature.
+    #[cfg(feature = "files")]
+    pub fn from_path(path: &std::path::Path) -> Result<Self, DataGenError> {
         let text = std::fs::read_to_string(path)?;
         let ext = path
             .extension()
