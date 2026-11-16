@@ -654,20 +654,20 @@ def about_part(module):
     rules = "\n".join(["Each query runs twice, once with the exact plan and once with the approximate plan. "
                        "A rule reads query results and decides an action; exact and approx decide separately, "
                        "and the dashboard compares their decisions. On the time charts below, shaded areas are "
-                       "the problem periods injected into the synthetic data, and vertical marks are the times "
-                       "when the selected rule decided differently on approx than on exact; a rule that always "
-                       "decides the same has no marks.", "", "**Queries**", ""]
+                       "the problem periods injected into the synthetic data.", "", "**Queries**", ""]
                       + query_lines(spec) + ["", "**Rules**", ""] + rule_lines(module))
     b.row("Queries and rules", 1 + height)
     b.panel({"type": "text", "title": "", "options": {"mode": "markdown", "content": rules}},
             0, 2 + height, 24, markdown_rows(rules))
-    return part(b, annotations=[change_annotation(spec), disagreement_annotation(module)])
+    return part(b, annotations=[change_annotation(spec)])
 
 
 def change_annotation(spec):
     found = []
     for m in spec["metrics"]:
         for start, end, text in events(m, spec["duration_ms"]):
+            if start == 0 and end >= spec["duration_ms"]:
+                continue
             found.append({"time": spec["start_ms"] + start, "timeEnd": spec["start_ms"] + end,
                           "text": f"{m['name']}: {text}"})
     root = (f'( $e := $[run_id="${{run}}" and $not($contains(run_id, "-real"))]; '
@@ -675,15 +675,6 @@ def change_annotation(spec):
     return {"name": "problem periods", "enable": True, "hide": True, "iconColor": "#8AB8FF", "datasource": DS,
             "target": iq("Anno", INDEX, root, [T, col("timeEnd", "timeEnd", "timestamp_epoch"),
                                                 col("text", "text", "string")])}
-
-
-def disagreement_annotation(module):
-    name = rule_variable_name(module)
-    root = (f'$[labels.signal="${{{name}}}"].{{"time": time, "text": "approx ≠ exact: " & $replace(metric, "_", " ")'
-            ' & ( $w := (labels.entity ? labels.entity : (labels.container ? labels.container : labels.client_id)); '
-            '$w ? " on " & $w : "" ) & ", " & $string(value) & " evaluations"}')
-    return {"name": "approx ≠ exact", "enable": True, "hide": True, "iconColor": "#FF9830", "datasource": DS,
-            "target": iq("Anno", RUN + "fidelity_event.json", root, [T, col("text", "text", "string")])}
 
 
 def by_metric_columns(*pairs):

@@ -299,45 +299,6 @@
             }
           ]
         }
-      },
-      {
-        "name": "approx \u2260 exact",
-        "enable": true,
-        "hide": true,
-        "iconColor": "#FF9830",
-        "datasource": {
-          "type": "yesoreyeram-infinity-datasource",
-          "uid": "approx-rows"
-        },
-        "target": {
-          "refId": "Anno",
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "approx-rows"
-          },
-          "type": "json",
-          "source": "url",
-          "parser": "backend",
-          "format": "table",
-          "url": "http://localhost:8000/runs/${run}/fidelity_event.json",
-          "url_options": {
-            "method": "GET",
-            "data": ""
-          },
-          "root_selector": "( $r := $[labels.signal=\"${signal}\"].{\"time\": time, \"text\": \"approx \u2260 exact: \" & $replace(metric, \"_\", \" \") & ( $w := (labels.entity ? labels.entity : (labels.container ? labels.container : labels.client_id)); $w ? \" on \" & $w : \"\" ) & \", \" & $string(value) & \" evaluations\"}; $exists($r) ? $r : [] )",
-          "columns": [
-            {
-              "selector": "time",
-              "text": "time",
-              "type": "timestamp_epoch"
-            },
-            {
-              "selector": "text",
-              "text": "text",
-              "type": "string"
-            }
-          ]
-        }
       }
     ]
   },
@@ -425,14 +386,14 @@
       "title": "",
       "options": {
         "mode": "markdown",
-        "content": "Each query runs twice, once with the exact plan and once with the approximate plan. A rule reads query results and decides an action; exact and approx decide separately, and the dashboard compares their decisions. On the time charts below, shaded areas are the problem periods injected into the synthetic data, and vertical marks are the times when the selected rule decided differently on approx than on exact; a rule that always decides the same has no marks.\n\n**Queries**\n\n| query | PromQL | computed |\n|---|---|---|\n| entropy_bitrate | `entropy_over_time(bitrate[1m])` | every 60 s over the last 60 s |\n| buffering_l1 | `sum_over_time(buffering[1m])` | every 60 s over the last 60 s |\n| sessions | `count_over_time(bitrate[1m])` | every 60 s over the last 60 s |\n| distinct_devices | `distinct_over_time(device_id[1m])` | every 60 s over the last 60 s |\n| startup_p95 | `quantile_over_time(0.95, startup_time[5m])` | every 60 s over the last 300 s |\n| rebuffer_ratio | `sum_over_time(buffering[5m]) / (sum_over_time(play_time[5m]) + sum_over_time(buffering[5m]))` | every 60 s over the last 300 s |\n\n**Rules**\n\n| rule | queries it uses | what it does |\n|---|---|---|\n| hydra | buffering_l1 | Buffering L1 norm above the mean plus 3 standard deviations of the previous 30 minutes (Hydra) |\n| hydra_entropy | entropy_bitrate | Bitrate entropy more than 3 standard deviations from the mean of the previous 30 minutes (Hydra) |\n| mux | rebuffer_ratio, startup_p95, sessions | Rebuffering above 5% or p95 start time above 4 s over 5 minutes, with at least 100 viewers (Mux) |\n| conviva_ai | startup_p95, sessions | p95 start time above the mean plus 3 standard deviations of up to 6 hours, with at least 25 plays; the alert then holds for 1 hour (Conviva AI Alerts) |\n| conviva_patent | rebuffer_ratio, distinct_devices | Rebuffering above a baseline decaying by 0.998 per minute plus 3 standard deviations for 5 minutes, with at least 100 devices (Conviva patent) |"
+        "content": "Each query runs twice, once with the exact plan and once with the approximate plan. A rule reads query results and decides an action; exact and approx decide separately, and the dashboard compares their decisions. On the time charts below, shaded areas are the problem periods injected into the synthetic data.\n\n**Queries**\n\n| query | PromQL | computed |\n|---|---|---|\n| entropy_bitrate | `entropy_over_time(bitrate[1m])` | every 60 s over the last 60 s |\n| buffering_l1 | `sum_over_time(buffering[1m])` | every 60 s over the last 60 s |\n| sessions | `count_over_time(bitrate[1m])` | every 60 s over the last 60 s |\n| distinct_devices | `distinct_over_time(device_id[1m])` | every 60 s over the last 60 s |\n| startup_p95 | `quantile_over_time(0.95, startup_time[5m])` | every 60 s over the last 300 s |\n| rebuffer_ratio | `sum_over_time(buffering[5m]) / (sum_over_time(play_time[5m]) + sum_over_time(buffering[5m]))` | every 60 s over the last 300 s |\n\n**Rules**\n\n| rule | queries it uses | what it does |\n|---|---|---|\n| hydra | buffering_l1 | Buffering L1 norm above the mean plus 3 standard deviations of the previous 30 minutes (Hydra) |\n| hydra_entropy | entropy_bitrate | Bitrate entropy more than 3 standard deviations from the mean of the previous 30 minutes (Hydra) |\n| mux | rebuffer_ratio, startup_p95, sessions | Rebuffering above 5% or p95 start time above 4 s over 5 minutes, with at least 100 viewers (Mux) |\n| conviva_ai | startup_p95, sessions | p95 start time above the mean plus 3 standard deviations of up to 6 hours, with at least 25 plays; the alert then holds for 1 hour (Conviva AI Alerts) |\n| conviva_patent | rebuffer_ratio, distinct_devices | Rebuffering above a baseline decaying by 0.998 per minute plus 3 standard deviations for 5 minutes, with at least 100 devices (Conviva patent) |"
       },
       "id": 6,
       "gridPos": {
         "x": 0,
         "y": 39,
         "w": 24,
-        "h": 29
+        "h": 28
       },
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
@@ -446,7 +407,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 68,
+        "y": 67,
         "w": 24,
         "h": 1
       },
@@ -753,7 +714,7 @@
       "id": 8,
       "gridPos": {
         "x": 0,
-        "y": 69,
+        "y": 68,
         "w": 24,
         "h": 16
       },
@@ -939,7 +900,7 @@
       "id": 9,
       "gridPos": {
         "x": 0,
-        "y": 85,
+        "y": 84,
         "w": 24,
         "h": 12
       },
@@ -955,7 +916,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 97,
+        "y": 96,
         "w": 24,
         "h": 1
       },
@@ -1089,7 +1050,7 @@
       "id": 11,
       "gridPos": {
         "x": 0,
-        "y": 98,
+        "y": 97,
         "w": 12,
         "h": 7
       },
@@ -1187,7 +1148,7 @@
       "id": 12,
       "gridPos": {
         "x": 12,
-        "y": 98,
+        "y": 97,
         "w": 12,
         "h": 7
       },
@@ -1281,7 +1242,7 @@
       "id": 13,
       "gridPos": {
         "x": 0,
-        "y": 105,
+        "y": 104,
         "w": 24,
         "h": 5
       },
@@ -1297,7 +1258,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 110,
+        "y": 109,
         "w": 24,
         "h": 1
       },
@@ -1430,7 +1391,7 @@
       "id": 15,
       "gridPos": {
         "x": 0,
-        "y": 111,
+        "y": 110,
         "w": 24,
         "h": 8
       },
@@ -1446,7 +1407,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 119,
+        "y": 118,
         "w": 24,
         "h": 1
       },
@@ -1538,7 +1499,7 @@
       "id": 17,
       "gridPos": {
         "x": 0,
-        "y": 120,
+        "y": 119,
         "w": 8,
         "h": 8
       },
@@ -1621,7 +1582,7 @@
       "id": 18,
       "gridPos": {
         "x": 8,
-        "y": 120,
+        "y": 119,
         "w": 10,
         "h": 8
       },
@@ -1715,7 +1676,7 @@
       "id": 19,
       "gridPos": {
         "x": 18,
-        "y": 120,
+        "y": 119,
         "w": 6,
         "h": 8
       },
@@ -1944,7 +1905,7 @@
       "id": 20,
       "gridPos": {
         "x": 0,
-        "y": 128,
+        "y": 127,
         "w": 24,
         "h": 5
       },
@@ -1960,7 +1921,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 133,
+        "y": 132,
         "w": 24,
         "h": 1
       },
@@ -2032,7 +1993,7 @@
       "id": 22,
       "gridPos": {
         "x": 0,
-        "y": 134,
+        "y": 133,
         "w": 24,
         "h": 7
       },
@@ -2107,7 +2068,7 @@
       "id": 23,
       "gridPos": {
         "x": 0,
-        "y": 141,
+        "y": 140,
         "w": 24,
         "h": 7
       },
@@ -2123,7 +2084,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 148,
+        "y": 147,
         "w": 24,
         "h": 1
       },
@@ -2777,7 +2738,7 @@
       "id": 25,
       "gridPos": {
         "x": 0,
-        "y": 149,
+        "y": 148,
         "w": 12,
         "h": 8
       },
@@ -3434,7 +3395,7 @@
       "id": 26,
       "gridPos": {
         "x": 12,
-        "y": 149,
+        "y": 148,
         "w": 12,
         "h": 8
       },
@@ -3450,7 +3411,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 157,
+        "y": 156,
         "w": 24,
         "h": 1
       },
@@ -3720,7 +3681,7 @@
       "id": 28,
       "gridPos": {
         "x": 0,
-        "y": 158,
+        "y": 157,
         "w": 24,
         "h": 14
       },

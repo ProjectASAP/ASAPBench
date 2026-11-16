@@ -131,7 +131,7 @@
             "method": "GET",
             "data": ""
           },
-          "root_selector": "( $r := ( $e := $[run_id=\"${run}\" and $not($contains(run_id, \"-real\"))]; $exists($e) ? [{\"time\": 1767227400000, \"timeEnd\": 1767229200000, \"text\": \"request_latency: Minutes 30 to 60, ramping in and out over 10 minutes: values multiplied by 1.08 on version canary\"}, {\"time\": 1767229800000, \"timeEnd\": 1767232200000, \"text\": \"request_latency: Minutes 70 to 110, ramping in and out over 10 minutes: values multiplied by 1.25 on version canary\"}, {\"time\": 1767235200000, \"timeEnd\": 1767237000000, \"text\": \"request_latency: Minutes 160 to 190: 5% of samples are drawn from a Pareto distribution (alpha 3, scale 2) on version canary\"}, {\"time\": 1767237600000, \"timeEnd\": 1767239400000, \"text\": \"request_latency: Minutes 200 to 230: 8.7% of samples are random values, uniform between 1 and 1.001 on version canary\"}, {\"time\": 1767225600000, \"timeEnd\": 1767240600000, \"text\": \"requests: Throughout: 0.1% of samples are 500\"}, {\"time\": 1767232800000, \"timeEnd\": 1767234600000, \"text\": \"requests: Minutes 120 to 150: 19.9% of samples are 500 on version canary\"}] : [] ); $exists($r) ? $r : [] )",
+          "root_selector": "( $r := ( $e := $[run_id=\"${run}\" and $not($contains(run_id, \"-real\"))]; $exists($e) ? [{\"time\": 1767227400000, \"timeEnd\": 1767229200000, \"text\": \"request_latency: Minutes 30 to 60, ramping in and out over 10 minutes: values multiplied by 1.08 on version canary\"}, {\"time\": 1767229800000, \"timeEnd\": 1767232200000, \"text\": \"request_latency: Minutes 70 to 110, ramping in and out over 10 minutes: values multiplied by 1.25 on version canary\"}, {\"time\": 1767235200000, \"timeEnd\": 1767237000000, \"text\": \"request_latency: Minutes 160 to 190: 5% of samples are drawn from a Pareto distribution (alpha 3, scale 2) on version canary\"}, {\"time\": 1767237600000, \"timeEnd\": 1767239400000, \"text\": \"request_latency: Minutes 200 to 230: 8.7% of samples are random values, uniform between 1 and 1.001 on version canary\"}, {\"time\": 1767232800000, \"timeEnd\": 1767234600000, \"text\": \"requests: Minutes 120 to 150: 19.9% of samples are 500 on version canary\"}] : [] ); $exists($r) ? $r : [] )",
           "columns": [
             {
               "selector": "time",
@@ -141,45 +141,6 @@
             {
               "selector": "timeEnd",
               "text": "timeEnd",
-              "type": "timestamp_epoch"
-            },
-            {
-              "selector": "text",
-              "text": "text",
-              "type": "string"
-            }
-          ]
-        }
-      },
-      {
-        "name": "approx \u2260 exact",
-        "enable": true,
-        "hide": true,
-        "iconColor": "#FF9830",
-        "datasource": {
-          "type": "yesoreyeram-infinity-datasource",
-          "uid": "approx-rows"
-        },
-        "target": {
-          "refId": "Anno",
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "approx-rows"
-          },
-          "type": "json",
-          "source": "url",
-          "parser": "backend",
-          "format": "table",
-          "url": "http://localhost:8000/phase3/runs/${run}/fidelity_event.json",
-          "url_options": {
-            "method": "GET",
-            "data": ""
-          },
-          "root_selector": "( $r := $[labels.signal=\"${rule}\"].{\"time\": time, \"text\": \"approx \u2260 exact: \" & $replace(metric, \"_\", \" \") & ( $w := (labels.entity ? labels.entity : (labels.container ? labels.container : labels.client_id)); $w ? \" on \" & $w : \"\" ) & \", \" & $string(value) & \" evaluations\"}; $exists($r) ? $r : [] )",
-          "columns": [
-            {
-              "selector": "time",
-              "text": "time",
               "type": "timestamp_epoch"
             },
             {
@@ -276,14 +237,14 @@
       "title": "",
       "options": {
         "mode": "markdown",
-        "content": "Each query runs twice, once with the exact plan and once with the approximate plan. A rule reads query results and decides an action; exact and approx decide separately, and the dashboard compares their decisions. On the time charts below, shaded areas are the problem periods injected into the synthetic data, and vertical marks are the times when the selected rule decided differently on approx than on exact; a rule that always decides the same has no marks.\n\n**Queries**\n\n| query | PromQL | computed |\n|---|---|---|\n| p99_canary | `quantile_over_time(0.99, request_latency{version=\"canary\"}[5m])` | every 60 s over the last 300 s |\n| p95_canary | `quantile_over_time(0.95, request_latency{version=\"canary\"}[5m])` | every 60 s over the last 300 s |\n| p99_stable | `quantile_over_time(0.99, request_latency{version=\"stable\"}[5m])` | every 60 s over the last 300 s |\n| success_rate_canary | `sum(count_over_time(requests{version=\"canary\", code=\"200\"}[5m])) / sum(count_over_time(requests{version=\"canary\"}[5m]))` | every 60 s over the last 300 s |\n\n**Rules**\n\n| rule | queries it uses | what it does |\n|---|---|---|\n| ours | p99_canary, p99_stable | A check fails when canary p99 / stable p99 > 1.1. A rollout rolls back when 3 failed checks in a row out of 10; otherwise it promotes. |\n| flagger | p99_canary, success_rate_canary | A check fails when canary p99 > 0.5 s or canary success rate < 99%. A rollout rolls back when 10 failed checks in total; promotes after 25 passed checks (up to 34 checks); otherwise it promotes. |\n| argo_rollouts | success_rate_canary | A check fails when canary success rate < 95% (a check every 5 evaluations). A rollout rolls back when more than 3 failed checks out of 10; otherwise it promotes. |\n| cloudwatch | p99_canary | A check fails when canary p99 > 0.5 s. A rollout rolls back when 4 of the last 5 checks failed, within 10 checks; otherwise it promotes. |\n| keptn | p95_canary | A check fails when canary p95 > 1.1 \u00d7 the mean of the last 3 passing checks, or \u2265 0.6 s (a check every 10 evaluations). A rollout rolls back when the check fails; each check is its own evaluation; otherwise it promotes. |"
+        "content": "Each query runs twice, once with the exact plan and once with the approximate plan. A rule reads query results and decides an action; exact and approx decide separately, and the dashboard compares their decisions. On the time charts below, shaded areas are the problem periods injected into the synthetic data.\n\n**Queries**\n\n| query | PromQL | computed |\n|---|---|---|\n| p99_canary | `quantile_over_time(0.99, request_latency{version=\"canary\"}[5m])` | every 60 s over the last 300 s |\n| p95_canary | `quantile_over_time(0.95, request_latency{version=\"canary\"}[5m])` | every 60 s over the last 300 s |\n| p99_stable | `quantile_over_time(0.99, request_latency{version=\"stable\"}[5m])` | every 60 s over the last 300 s |\n| success_rate_canary | `sum(count_over_time(requests{version=\"canary\", code=\"200\"}[5m])) / sum(count_over_time(requests{version=\"canary\"}[5m]))` | every 60 s over the last 300 s |\n\n**Rules**\n\n| rule | queries it uses | what it does |\n|---|---|---|\n| ours | p99_canary, p99_stable | A check fails when canary p99 / stable p99 > 1.1. A rollout rolls back when 3 failed checks in a row out of 10; otherwise it promotes. |\n| flagger | p99_canary, success_rate_canary | A check fails when canary p99 > 0.5 s or canary success rate < 99%. A rollout rolls back when 10 failed checks in total; promotes after 25 passed checks (up to 34 checks); otherwise it promotes. |\n| argo_rollouts | success_rate_canary | A check fails when canary success rate < 95% (a check every 5 evaluations). A rollout rolls back when more than 3 failed checks out of 10; otherwise it promotes. |\n| cloudwatch | p99_canary | A check fails when canary p99 > 0.5 s. A rollout rolls back when 4 of the last 5 checks failed, within 10 checks; otherwise it promotes. |\n| keptn | p95_canary | A check fails when canary p95 > 1.1 \u00d7 the mean of the last 3 passing checks, or \u2265 0.6 s (a check every 10 evaluations). A rollout rolls back when the check fails; each check is its own evaluation; otherwise it promotes. |"
       },
       "id": 6,
       "gridPos": {
         "x": 0,
         "y": 32,
         "w": 24,
-        "h": 27
+        "h": 26
       },
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
@@ -297,7 +258,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 59,
+        "y": 58,
         "w": 24,
         "h": 1
       },
@@ -618,7 +579,7 @@
       "id": 8,
       "gridPos": {
         "x": 0,
-        "y": 60,
+        "y": 59,
         "w": 24,
         "h": 14
       },
@@ -735,7 +696,7 @@
       "id": 9,
       "gridPos": {
         "x": 0,
-        "y": 74,
+        "y": 73,
         "w": 24,
         "h": 8
       },
@@ -751,7 +712,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 82,
+        "y": 81,
         "w": 24,
         "h": 1
       },
@@ -1058,7 +1019,7 @@
       "id": 11,
       "gridPos": {
         "x": 0,
-        "y": 83,
+        "y": 82,
         "w": 24,
         "h": 16
       },
@@ -1074,7 +1035,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 99,
+        "y": 98,
         "w": 24,
         "h": 1
       },
@@ -1208,7 +1169,7 @@
       "id": 13,
       "gridPos": {
         "x": 0,
-        "y": 100,
+        "y": 99,
         "w": 12,
         "h": 7
       },
@@ -1306,7 +1267,7 @@
       "id": 14,
       "gridPos": {
         "x": 12,
-        "y": 100,
+        "y": 99,
         "w": 12,
         "h": 7
       },
@@ -1400,7 +1361,7 @@
       "id": 15,
       "gridPos": {
         "x": 0,
-        "y": 107,
+        "y": 106,
         "w": 24,
         "h": 5
       },
@@ -1416,7 +1377,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 112,
+        "y": 111,
         "w": 24,
         "h": 1
       },
@@ -1657,7 +1618,7 @@
       "id": 17,
       "gridPos": {
         "x": 0,
-        "y": 113,
+        "y": 112,
         "w": 16,
         "h": 8
       },
@@ -1799,7 +1760,7 @@
       "id": 18,
       "gridPos": {
         "x": 16,
-        "y": 113,
+        "y": 112,
         "w": 8,
         "h": 8
       },
@@ -1935,7 +1896,7 @@
       "id": 19,
       "gridPos": {
         "x": 0,
-        "y": 121,
+        "y": 120,
         "w": 12,
         "h": 6
       },
@@ -2388,7 +2349,7 @@
       "id": 20,
       "gridPos": {
         "x": 12,
-        "y": 121,
+        "y": 120,
         "w": 12,
         "h": 6
       },
@@ -2841,7 +2802,7 @@
       "id": 21,
       "gridPos": {
         "x": 0,
-        "y": 127,
+        "y": 126,
         "w": 24,
         "h": 6
       },
@@ -2857,7 +2818,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 133,
+        "y": 132,
         "w": 24,
         "h": 1
       },
@@ -3078,7 +3039,7 @@
       "id": 23,
       "gridPos": {
         "x": 0,
-        "y": 140,
+        "y": 139,
         "w": 24,
         "h": 7
       },
@@ -3397,7 +3358,7 @@
       "id": 24,
       "gridPos": {
         "x": 0,
-        "y": 147,
+        "y": 146,
         "w": 24,
         "h": 9
       },
@@ -3413,7 +3374,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 156,
+        "y": 155,
         "w": 24,
         "h": 1
       },
@@ -4125,7 +4086,7 @@
       "id": 26,
       "gridPos": {
         "x": 0,
-        "y": 157,
+        "y": 156,
         "w": 24,
         "h": 12
       },
@@ -4141,7 +4102,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 169,
+        "y": 168,
         "w": 24,
         "h": 1
       },
@@ -4232,7 +4193,7 @@
       "id": 28,
       "gridPos": {
         "x": 0,
-        "y": 170,
+        "y": 169,
         "w": 6,
         "h": 8
       },
@@ -4355,7 +4316,7 @@
       "id": 29,
       "gridPos": {
         "x": 6,
-        "y": 170,
+        "y": 169,
         "w": 6,
         "h": 8
       },
@@ -4479,7 +4440,7 @@
       "id": 30,
       "gridPos": {
         "x": 12,
-        "y": 170,
+        "y": 169,
         "w": 7,
         "h": 8
       },
@@ -4556,7 +4517,7 @@
       "id": 31,
       "gridPos": {
         "x": 19,
-        "y": 170,
+        "y": 169,
         "w": 5,
         "h": 8
       },

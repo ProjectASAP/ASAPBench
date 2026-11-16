@@ -341,45 +341,6 @@
             }
           ]
         }
-      },
-      {
-        "name": "approx \u2260 exact",
-        "enable": true,
-        "hide": true,
-        "iconColor": "#FF9830",
-        "datasource": {
-          "type": "yesoreyeram-infinity-datasource",
-          "uid": "approx-rows"
-        },
-        "target": {
-          "refId": "Anno",
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "approx-rows"
-          },
-          "type": "json",
-          "source": "url",
-          "parser": "backend",
-          "format": "table",
-          "url": "http://localhost:8000/phase3/runs/${run}/fidelity_event.json",
-          "url_options": {
-            "method": "GET",
-            "data": ""
-          },
-          "root_selector": "( $r := $[labels.signal=\"${signal}\"].{\"time\": time, \"text\": \"approx \u2260 exact: \" & $replace(metric, \"_\", \" \") & ( $w := (labels.entity ? labels.entity : (labels.container ? labels.container : labels.client_id)); $w ? \" on \" & $w : \"\" ) & \", \" & $string(value) & \" evaluations\"}; $exists($r) ? $r : [] )",
-          "columns": [
-            {
-              "selector": "time",
-              "text": "time",
-              "type": "timestamp_epoch"
-            },
-            {
-              "selector": "text",
-              "text": "text",
-              "type": "string"
-            }
-          ]
-        }
       }
     ]
   },
@@ -467,14 +428,14 @@
       "title": "",
       "options": {
         "mode": "markdown",
-        "content": "Each query runs twice, once with the exact plan and once with the approximate plan. A rule reads query results and decides an action; exact and approx decide separately, and the dashboard compares their decisions. On the time charts below, shaded areas are the problem periods injected into the synthetic data, and vertical marks are the times when the selected rule decided differently on approx than on exact; a rule that always decides the same has no marks.\n\n**Queries**\n\n| query | PromQL | computed |\n|---|---|---|\n| top10_clients | `topk(10, sum by (client_id) (count_over_time(requests[5m])))` | every 60 s over the last 300 s |\n| top10_clients_1m | `topk(10, sum by (client_id) (count_over_time(requests[1m])))` | every 60 s over the last 60 s |\n\n**Rules**\n\n| rule | queries it uses | what it does |\n|---|---|---|\n| top_clients | top10_clients | A client is capped while it is in the top 10 list |\n| aws_waf | top10_clients | A client among the top 10 over 5 minutes with more than 2,000 requests is limited while it stays over (AWS WAF rate-based rule, the AWS blog's limit) |\n| cloud_armor | top10_clients_1m | A client among the top 10 over 1 minute with more than 500 requests is banned for the rest of the interval plus 600 s (Google Cloud Armor default policy's 500 per 60 s; ban_duration_sec ours) |\n| fastly | top10_clients_1m | A client among the top 10 over 1 minute above 20 requests per second goes into the penalty box for at least 2 minutes (Fastly; the rate ours, over 1 minute instead of 10 s) |"
+        "content": "Each query runs twice, once with the exact plan and once with the approximate plan. A rule reads query results and decides an action; exact and approx decide separately, and the dashboard compares their decisions. On the time charts below, shaded areas are the problem periods injected into the synthetic data.\n\n**Queries**\n\n| query | PromQL | computed |\n|---|---|---|\n| top10_clients | `topk(10, sum by (client_id) (count_over_time(requests[5m])))` | every 60 s over the last 300 s |\n| top10_clients_1m | `topk(10, sum by (client_id) (count_over_time(requests[1m])))` | every 60 s over the last 60 s |\n\n**Rules**\n\n| rule | queries it uses | what it does |\n|---|---|---|\n| top_clients | top10_clients | A client is capped while it is in the top 10 list |\n| aws_waf | top10_clients | A client among the top 10 over 5 minutes with more than 2,000 requests is limited while it stays over (AWS WAF rate-based rule, the AWS blog's limit) |\n| cloud_armor | top10_clients_1m | A client among the top 10 over 1 minute with more than 500 requests is banned for the rest of the interval plus 600 s (Google Cloud Armor default policy's 500 per 60 s; ban_duration_sec ours) |\n| fastly | top10_clients_1m | A client among the top 10 over 1 minute above 20 requests per second goes into the penalty box for at least 2 minutes (Fastly; the rate ours, over 1 minute instead of 10 s) |"
       },
       "id": 6,
       "gridPos": {
         "x": 0,
         "y": 26,
         "w": 24,
-        "h": 19
+        "h": 18
       },
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
@@ -488,7 +449,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 45,
+        "y": 44,
         "w": 24,
         "h": 1
       },
@@ -809,7 +770,7 @@
       "id": 8,
       "gridPos": {
         "x": 0,
-        "y": 46,
+        "y": 45,
         "w": 24,
         "h": 14
       },
@@ -926,7 +887,7 @@
       "id": 9,
       "gridPos": {
         "x": 0,
-        "y": 60,
+        "y": 59,
         "w": 24,
         "h": 8
       },
@@ -942,7 +903,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 68,
+        "y": 67,
         "w": 24,
         "h": 1
       },
@@ -1249,7 +1210,7 @@
       "id": 11,
       "gridPos": {
         "x": 0,
-        "y": 69,
+        "y": 68,
         "w": 24,
         "h": 16
       },
@@ -1265,7 +1226,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 85,
+        "y": 84,
         "w": 24,
         "h": 1
       },
@@ -1399,7 +1360,7 @@
       "id": 13,
       "gridPos": {
         "x": 0,
-        "y": 86,
+        "y": 85,
         "w": 12,
         "h": 7
       },
@@ -1497,7 +1458,7 @@
       "id": 14,
       "gridPos": {
         "x": 12,
-        "y": 86,
+        "y": 85,
         "w": 12,
         "h": 7
       },
@@ -1591,7 +1552,7 @@
       "id": 15,
       "gridPos": {
         "x": 0,
-        "y": 93,
+        "y": 92,
         "w": 24,
         "h": 5
       },
@@ -1607,7 +1568,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 98,
+        "y": 97,
         "w": 24,
         "h": 1
       },
@@ -1726,7 +1687,7 @@
       "id": 17,
       "gridPos": {
         "x": 0,
-        "y": 99,
+        "y": 98,
         "w": 14,
         "h": 9
       },
@@ -1798,7 +1759,7 @@
       "id": 18,
       "gridPos": {
         "x": 14,
-        "y": 99,
+        "y": 98,
         "w": 10,
         "h": 9
       },
@@ -1814,7 +1775,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 108,
+        "y": 107,
         "w": 24,
         "h": 1
       },
@@ -1970,7 +1931,7 @@
       "id": 20,
       "gridPos": {
         "x": 0,
-        "y": 109,
+        "y": 108,
         "w": 18,
         "h": 7
       },
@@ -2065,7 +2026,7 @@
       "id": 21,
       "gridPos": {
         "x": 18,
-        "y": 109,
+        "y": 108,
         "w": 6,
         "h": 7
       },
@@ -2294,7 +2255,7 @@
       "id": 22,
       "gridPos": {
         "x": 0,
-        "y": 116,
+        "y": 115,
         "w": 24,
         "h": 5
       },
@@ -2310,7 +2271,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 121,
+        "y": 120,
         "w": 24,
         "h": 1
       },
@@ -2401,7 +2362,7 @@
       "id": 24,
       "gridPos": {
         "x": 0,
-        "y": 122,
+        "y": 121,
         "w": 6,
         "h": 8
       },
@@ -2518,7 +2479,7 @@
       "id": 25,
       "gridPos": {
         "x": 6,
-        "y": 122,
+        "y": 121,
         "w": 6,
         "h": 8
       },
@@ -2618,7 +2579,7 @@
       "id": 26,
       "gridPos": {
         "x": 12,
-        "y": 122,
+        "y": 121,
         "w": 6,
         "h": 8
       },
@@ -2701,7 +2662,7 @@
       "id": 27,
       "gridPos": {
         "x": 18,
-        "y": 122,
+        "y": 121,
         "w": 6,
         "h": 8
       },
@@ -2717,7 +2678,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 130,
+        "y": 129,
         "w": 24,
         "h": 1
       },
@@ -2850,7 +2811,7 @@
       "id": 29,
       "gridPos": {
         "x": 0,
-        "y": 131,
+        "y": 130,
         "w": 24,
         "h": 8
       },
@@ -2866,7 +2827,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 139,
+        "y": 138,
         "w": 24,
         "h": 1
       },
@@ -2958,7 +2919,7 @@
       "id": 31,
       "gridPos": {
         "x": 0,
-        "y": 140,
+        "y": 139,
         "w": 8,
         "h": 8
       },
@@ -3041,7 +3002,7 @@
       "id": 32,
       "gridPos": {
         "x": 8,
-        "y": 140,
+        "y": 139,
         "w": 10,
         "h": 8
       },
@@ -3135,7 +3096,7 @@
       "id": 33,
       "gridPos": {
         "x": 18,
-        "y": 140,
+        "y": 139,
         "w": 6,
         "h": 8
       },
@@ -3364,7 +3325,7 @@
       "id": 34,
       "gridPos": {
         "x": 0,
-        "y": 148,
+        "y": 147,
         "w": 24,
         "h": 5
       },
@@ -3380,7 +3341,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 153,
+        "y": 152,
         "w": 24,
         "h": 1
       },
@@ -3626,7 +3587,7 @@
       "id": 36,
       "gridPos": {
         "x": 0,
-        "y": 154,
+        "y": 153,
         "w": 12,
         "h": 8
       },
@@ -3875,7 +3836,7 @@
       "id": 37,
       "gridPos": {
         "x": 12,
-        "y": 154,
+        "y": 153,
         "w": 12,
         "h": 8
       },

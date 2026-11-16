@@ -329,45 +329,6 @@
             }
           ]
         }
-      },
-      {
-        "name": "approx \u2260 exact",
-        "enable": true,
-        "hide": true,
-        "iconColor": "#FF9830",
-        "datasource": {
-          "type": "yesoreyeram-infinity-datasource",
-          "uid": "approx-rows"
-        },
-        "target": {
-          "refId": "Anno",
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "approx-rows"
-          },
-          "type": "json",
-          "source": "url",
-          "parser": "backend",
-          "format": "table",
-          "url": "http://localhost:8000/runs/${run}/fidelity_event.json",
-          "url_options": {
-            "method": "GET",
-            "data": ""
-          },
-          "root_selector": "( $r := $[labels.signal=\"${signal}\"].{\"time\": time, \"text\": \"approx \u2260 exact: \" & $replace(metric, \"_\", \" \") & ( $w := (labels.entity ? labels.entity : (labels.container ? labels.container : labels.client_id)); $w ? \" on \" & $w : \"\" ) & \", \" & $string(value) & \" evaluations\"}; $exists($r) ? $r : [] )",
-          "columns": [
-            {
-              "selector": "time",
-              "text": "time",
-              "type": "timestamp_epoch"
-            },
-            {
-              "selector": "text",
-              "text": "text",
-              "type": "string"
-            }
-          ]
-        }
       }
     ]
   },
@@ -455,7 +416,7 @@
       "title": "",
       "options": {
         "mode": "markdown",
-        "content": "Each query runs twice, once with the exact plan and once with the approximate plan. A rule reads query results and decides an action; exact and approx decide separately, and the dashboard compares their decisions. On the time charts below, shaded areas are the problem periods injected into the synthetic data, and vertical marks are the times when the selected rule decided differently on approx than on exact; a rule that always decides the same has no marks.\n\n**Queries**\n\n| query | PromQL | computed |\n|---|---|---|\n| p95_cpu | `quantile_over_time(0.95, container_cpu{dimension=\"used\"}[5m])` | every 60 s over the last 300 s |\n| p95_memory | `quantile_over_time(0.95, container_memory{dimension=\"used\"}[5m])` | every 60 s over the last 300 s |\n| p50_cpu_1h | `quantile_over_time(0.5, container_cpu{dimension=\"used\"}[1h])` | every 60 s over the last 3,600 s |\n| p95_cpu_1h | `quantile_over_time(0.95, container_cpu{dimension=\"used\"}[1h])` | every 60 s over the last 3,600 s |\n| p99_memory_1h | `quantile_over_time(0.99, container_memory{dimension=\"used\"}[1h])` | every 60 s over the last 3,600 s |\n| max_memory_1h | `max_over_time(container_memory{dimension=\"used\"}[1h])` | every 60 s over the last 3,600 s |\n\n**Rules**\n\n| rule | queries it uses | what it does |\n|---|---|---|\n| scale_decision | p95_cpu, p95_memory | Scale a container up when its p95 CPU > 0.8 cores or p95 memory > 1.5 GB; scale it down when p95 CPU < 0.4 cores and p95 memory < 0.75 GB |\n| ec2_scale_out | p95_cpu | p95 CPU over 5 minutes at or above 60% of one core for 3 periods in a row: the step alarm that adds capacity (AWS EC2 Auto Scaling; 3 periods ours) |\n| ec2_scale_in | p95_cpu | p95 CPU over 5 minutes below 40% of one core for 3 periods in a row: the step alarm that removes capacity (AWS EC2 Auto Scaling; 3 periods ours) |\n| vpa | p50_cpu_1h, p95_cpu_1h, max_memory_1h | The CPU request of 0.6 cores falls outside [p50, p95] \u00d7 1.15 of the last hour, or the memory peak \u00d7 1.15 exceeds the 1.6 GB request: the updater resizes the pod (Kubernetes Vertical Pod Autoscaler; 1 hour instead of 8 days; requests ours) |\n| grafana_labs | p95_cpu_1h | p95 CPU of the last hour above the 0.6-core request: under-provisioned (Grafana Labs; 1 hour instead of 7 days; request ours) |\n| azure_advisor | p95_cpu_1h, p99_memory_1h | On half the size (0.5 cores, 1 GB), p95 CPU of the last hour stays at most 40% and p99 memory at most 60%: recommend the smaller size (Azure Advisor, user-facing; 1 hour instead of 7 days; sizes ours) |"
+        "content": "Each query runs twice, once with the exact plan and once with the approximate plan. A rule reads query results and decides an action; exact and approx decide separately, and the dashboard compares their decisions. On the time charts below, shaded areas are the problem periods injected into the synthetic data.\n\n**Queries**\n\n| query | PromQL | computed |\n|---|---|---|\n| p95_cpu | `quantile_over_time(0.95, container_cpu{dimension=\"used\"}[5m])` | every 60 s over the last 300 s |\n| p95_memory | `quantile_over_time(0.95, container_memory{dimension=\"used\"}[5m])` | every 60 s over the last 300 s |\n| p50_cpu_1h | `quantile_over_time(0.5, container_cpu{dimension=\"used\"}[1h])` | every 60 s over the last 3,600 s |\n| p95_cpu_1h | `quantile_over_time(0.95, container_cpu{dimension=\"used\"}[1h])` | every 60 s over the last 3,600 s |\n| p99_memory_1h | `quantile_over_time(0.99, container_memory{dimension=\"used\"}[1h])` | every 60 s over the last 3,600 s |\n| max_memory_1h | `max_over_time(container_memory{dimension=\"used\"}[1h])` | every 60 s over the last 3,600 s |\n\n**Rules**\n\n| rule | queries it uses | what it does |\n|---|---|---|\n| scale_decision | p95_cpu, p95_memory | Scale a container up when its p95 CPU > 0.8 cores or p95 memory > 1.5 GB; scale it down when p95 CPU < 0.4 cores and p95 memory < 0.75 GB |\n| ec2_scale_out | p95_cpu | p95 CPU over 5 minutes at or above 60% of one core for 3 periods in a row: the step alarm that adds capacity (AWS EC2 Auto Scaling; 3 periods ours) |\n| ec2_scale_in | p95_cpu | p95 CPU over 5 minutes below 40% of one core for 3 periods in a row: the step alarm that removes capacity (AWS EC2 Auto Scaling; 3 periods ours) |\n| vpa | p50_cpu_1h, p95_cpu_1h, max_memory_1h | The CPU request of 0.6 cores falls outside [p50, p95] \u00d7 1.15 of the last hour, or the memory peak \u00d7 1.15 exceeds the 1.6 GB request: the updater resizes the pod (Kubernetes Vertical Pod Autoscaler; 1 hour instead of 8 days; requests ours) |\n| grafana_labs | p95_cpu_1h | p95 CPU of the last hour above the 0.6-core request: under-provisioned (Grafana Labs; 1 hour instead of 7 days; request ours) |\n| azure_advisor | p95_cpu_1h, p99_memory_1h | On half the size (0.5 cores, 1 GB), p95 CPU of the last hour stays at most 40% and p99 memory at most 60%: recommend the smaller size (Azure Advisor, user-facing; 1 hour instead of 7 days; sizes ours) |"
       },
       "id": 6,
       "gridPos": {

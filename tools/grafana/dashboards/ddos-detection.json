@@ -248,45 +248,6 @@
             }
           ]
         }
-      },
-      {
-        "name": "approx \u2260 exact",
-        "enable": true,
-        "hide": true,
-        "iconColor": "#FF9830",
-        "datasource": {
-          "type": "yesoreyeram-infinity-datasource",
-          "uid": "approx-rows"
-        },
-        "target": {
-          "refId": "Anno",
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "approx-rows"
-          },
-          "type": "json",
-          "source": "url",
-          "parser": "backend",
-          "format": "table",
-          "url": "http://localhost:8000/runs/${run}/fidelity_event.json",
-          "url_options": {
-            "method": "GET",
-            "data": ""
-          },
-          "root_selector": "( $r := $[labels.signal=\"${signal}\"].{\"time\": time, \"text\": \"approx \u2260 exact: \" & $replace(metric, \"_\", \" \") & ( $w := (labels.entity ? labels.entity : (labels.container ? labels.container : labels.client_id)); $w ? \" on \" & $w : \"\" ) & \", \" & $string(value) & \" evaluations\"}; $exists($r) ? $r : [] )",
-          "columns": [
-            {
-              "selector": "time",
-              "text": "time",
-              "type": "timestamp_epoch"
-            },
-            {
-              "selector": "text",
-              "text": "text",
-              "type": "string"
-            }
-          ]
-        }
       }
     ]
   },
@@ -374,14 +335,14 @@
       "title": "",
       "options": {
         "mode": "markdown",
-        "content": "Each query runs twice, once with the exact plan and once with the approximate plan. A rule reads query results and decides an action; exact and approx decide separately, and the dashboard compares their decisions. On the time charts below, shaded areas are the problem periods injected into the synthetic data, and vertical marks are the times when the selected rule decided differently on approx than on exact; a rule that always decides the same has no marks.\n\n**Queries**\n\n| query | PromQL | computed |\n|---|---|---|\n| entropy_10s | `entropy_over_time(src_ip{vm=\"instance1\"}[10s])` | every 5 s over the last 10 s |\n| distinct_10s | `distinct_over_time(src_ip{vm=\"instance1\"}[10s])` | every 5 s over the last 10 s |\n| distinct_5s | `distinct_over_time(src_ip{vm=\"instance1\"}[5s])` | every 5 s over the last 5 s |\n| packets_5s | `count_over_time(src_ip{vm=\"instance1\"}[5s])` | every 5 s over the last 5 s |\n| distinct_1m | `distinct_over_time(src_ip{vm=\"instance1\"}[1m])` | every 5 s over the last 60 s |\n\n**Rules**\n\n| rule | queries it uses | what it does |\n|---|---|---|\n| entropy_10s > 8.5 | entropy_10s | Fires at every evaluation where entropy_10s is above 8.5, with no waiting period (one of the PromSketch thresholds, taken one query at a time) |\n| distinct_10s > 3,000 | distinct_10s | Fires at every evaluation where distinct_10s is above 3,000 addresses, with no waiting period (one of the PromSketch thresholds, taken one query at a time) |\n| distinct_5s > 1,700 | distinct_5s | Fires at every evaluation where distinct_5s is above 1,700 addresses, with no waiting period (one of the PromSketch thresholds, taken one query at a time) |\n| packets_5s > 100,000 | packets_5s | Fires at every evaluation where packets_5s is above 100,000 packets, with no waiting period (threshold ours) |\n| distinct_1m > 18,000 | distinct_1m | Fires at every evaluation where distinct_1m is above 18,000 addresses, with no waiting period (threshold ours) |\n| promsketch_for_15s | entropy_10s, distinct_10s, distinct_5s | Any of the PromSketch thresholds (entropy_10s > 8.5, distinct_10s > 3,000, distinct_5s > 1,700) holds for 15 s: firing at the 4th evaluation in a row, as Prometheus does with for: 15s at a 5 s interval (Red Hat) |\n| datadog | distinct_10s | Distinct source IPs over 10 s above the mean plus 3 standard deviations of the previous 5 minutes (Datadog baseline deviation; window and width ours) |\n| kentik | distinct_10s | Distinct source IPs over 10 s above 200% of the mean of the previous 5 minutes, at least 3 times in the last 6 evaluations (Kentik; X, Y and baseline window ours) |\n| netflow_logic | entropy_10s | One-sided CUSUM on source IP entropy: mean and standard deviation from the first 50 evaluations, slack 0.5 and alarm at 5 standard deviations (NetFlow Logic patent; parameters ours) |\n| fastnetmon | packets_5s | More than 20,000 packets per second averaged over 5 s; ban for 1,900 s, and until the attack ends (FastNetMon defaults with unban_only_if_attack_finished) |\n| red_hat | distinct_1m | More than 300 SYN-only flows per second over 1 minute for 15 s, counting each source address as one flow; firing at the 4th evaluation in a row (Red Hat Network Observability; flows as distinct sources ours) |"
+        "content": "Each query runs twice, once with the exact plan and once with the approximate plan. A rule reads query results and decides an action; exact and approx decide separately, and the dashboard compares their decisions. On the time charts below, shaded areas are the problem periods injected into the synthetic data.\n\n**Queries**\n\n| query | PromQL | computed |\n|---|---|---|\n| entropy_10s | `entropy_over_time(src_ip{vm=\"instance1\"}[10s])` | every 5 s over the last 10 s |\n| distinct_10s | `distinct_over_time(src_ip{vm=\"instance1\"}[10s])` | every 5 s over the last 10 s |\n| distinct_5s | `distinct_over_time(src_ip{vm=\"instance1\"}[5s])` | every 5 s over the last 5 s |\n| packets_5s | `count_over_time(src_ip{vm=\"instance1\"}[5s])` | every 5 s over the last 5 s |\n| distinct_1m | `distinct_over_time(src_ip{vm=\"instance1\"}[1m])` | every 5 s over the last 60 s |\n\n**Rules**\n\n| rule | queries it uses | what it does |\n|---|---|---|\n| entropy_10s > 8.5 | entropy_10s | Fires at every evaluation where entropy_10s is above 8.5, with no waiting period (one of the PromSketch thresholds, taken one query at a time) |\n| distinct_10s > 3,000 | distinct_10s | Fires at every evaluation where distinct_10s is above 3,000 addresses, with no waiting period (one of the PromSketch thresholds, taken one query at a time) |\n| distinct_5s > 1,700 | distinct_5s | Fires at every evaluation where distinct_5s is above 1,700 addresses, with no waiting period (one of the PromSketch thresholds, taken one query at a time) |\n| packets_5s > 100,000 | packets_5s | Fires at every evaluation where packets_5s is above 100,000 packets, with no waiting period (threshold ours) |\n| distinct_1m > 18,000 | distinct_1m | Fires at every evaluation where distinct_1m is above 18,000 addresses, with no waiting period (threshold ours) |\n| promsketch_for_15s | entropy_10s, distinct_10s, distinct_5s | Any of the PromSketch thresholds (entropy_10s > 8.5, distinct_10s > 3,000, distinct_5s > 1,700) holds for 15 s: firing at the 4th evaluation in a row, as Prometheus does with for: 15s at a 5 s interval (Red Hat) |\n| datadog | distinct_10s | Distinct source IPs over 10 s above the mean plus 3 standard deviations of the previous 5 minutes (Datadog baseline deviation; window and width ours) |\n| kentik | distinct_10s | Distinct source IPs over 10 s above 200% of the mean of the previous 5 minutes, at least 3 times in the last 6 evaluations (Kentik; X, Y and baseline window ours) |\n| netflow_logic | entropy_10s | One-sided CUSUM on source IP entropy: mean and standard deviation from the first 50 evaluations, slack 0.5 and alarm at 5 standard deviations (NetFlow Logic patent; parameters ours) |\n| fastnetmon | packets_5s | More than 20,000 packets per second averaged over 5 s; ban for 1,900 s, and until the attack ends (FastNetMon defaults with unban_only_if_attack_finished) |\n| red_hat | distinct_1m | More than 300 SYN-only flows per second over 1 minute for 15 s, counting each source address as one flow; firing at the 4th evaluation in a row (Red Hat Network Observability; flows as distinct sources ours) |"
       },
       "id": 6,
       "gridPos": {
         "x": 0,
         "y": 29,
         "w": 24,
-        "h": 36
+        "h": 35
       },
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
@@ -395,7 +356,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 65,
+        "y": 64,
         "w": 24,
         "h": 1
       },
@@ -702,7 +663,7 @@
       "id": 8,
       "gridPos": {
         "x": 0,
-        "y": 66,
+        "y": 65,
         "w": 24,
         "h": 16
       },
@@ -888,7 +849,7 @@
       "id": 9,
       "gridPos": {
         "x": 0,
-        "y": 82,
+        "y": 81,
         "w": 24,
         "h": 12
       },
@@ -904,7 +865,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 94,
+        "y": 93,
         "w": 24,
         "h": 1
       },
@@ -1038,7 +999,7 @@
       "id": 11,
       "gridPos": {
         "x": 0,
-        "y": 95,
+        "y": 94,
         "w": 12,
         "h": 7
       },
@@ -1136,7 +1097,7 @@
       "id": 12,
       "gridPos": {
         "x": 12,
-        "y": 95,
+        "y": 94,
         "w": 12,
         "h": 7
       },
@@ -1230,7 +1191,7 @@
       "id": 13,
       "gridPos": {
         "x": 0,
-        "y": 102,
+        "y": 101,
         "w": 24,
         "h": 5
       },
@@ -1246,7 +1207,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 107,
+        "y": 106,
         "w": 24,
         "h": 1
       },
@@ -1458,7 +1419,7 @@
       "id": 15,
       "gridPos": {
         "x": 0,
-        "y": 108,
+        "y": 107,
         "w": 24,
         "h": 9
       },
@@ -1531,7 +1492,7 @@
       "id": 16,
       "gridPos": {
         "x": 0,
-        "y": 117,
+        "y": 116,
         "w": 24,
         "h": 6
       },
@@ -1547,7 +1508,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 123,
+        "y": 122,
         "w": 24,
         "h": 1
       },
@@ -1771,7 +1732,7 @@
       "id": 18,
       "gridPos": {
         "x": 0,
-        "y": 124,
+        "y": 123,
         "w": 24,
         "h": 7
       },
@@ -1787,7 +1748,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 131,
+        "y": 130,
         "w": 24,
         "h": 1
       },
@@ -1878,7 +1839,7 @@
       "id": 20,
       "gridPos": {
         "x": 0,
-        "y": 132,
+        "y": 131,
         "w": 6,
         "h": 8
       },
@@ -2013,7 +1974,7 @@
       "id": 21,
       "gridPos": {
         "x": 6,
-        "y": 132,
+        "y": 131,
         "w": 6,
         "h": 8
       },
@@ -2090,7 +2051,7 @@
       "id": 22,
       "gridPos": {
         "x": 12,
-        "y": 132,
+        "y": 131,
         "w": 6,
         "h": 8
       },
@@ -2167,7 +2128,7 @@
       "id": 23,
       "gridPos": {
         "x": 18,
-        "y": 132,
+        "y": 131,
         "w": 6,
         "h": 8
       },
@@ -2183,7 +2144,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 140,
+        "y": 139,
         "w": 24,
         "h": 1
       },
@@ -2316,7 +2277,7 @@
       "id": 25,
       "gridPos": {
         "x": 0,
-        "y": 141,
+        "y": 140,
         "w": 24,
         "h": 8
       },
@@ -2332,7 +2293,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 149,
+        "y": 148,
         "w": 24,
         "h": 1
       },
@@ -2424,7 +2385,7 @@
       "id": 27,
       "gridPos": {
         "x": 0,
-        "y": 150,
+        "y": 149,
         "w": 8,
         "h": 8
       },
@@ -2507,7 +2468,7 @@
       "id": 28,
       "gridPos": {
         "x": 8,
-        "y": 150,
+        "y": 149,
         "w": 10,
         "h": 8
       },
@@ -2601,7 +2562,7 @@
       "id": 29,
       "gridPos": {
         "x": 18,
-        "y": 150,
+        "y": 149,
         "w": 6,
         "h": 8
       },
@@ -2830,7 +2791,7 @@
       "id": 30,
       "gridPos": {
         "x": 0,
-        "y": 158,
+        "y": 157,
         "w": 24,
         "h": 5
       },
@@ -2846,7 +2807,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 163,
+        "y": 162,
         "w": 24,
         "h": 1
       },
@@ -2916,7 +2877,7 @@
       "id": 32,
       "gridPos": {
         "x": 0,
-        "y": 164,
+        "y": 163,
         "w": 24,
         "h": 7
       },
@@ -2932,7 +2893,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 171,
+        "y": 170,
         "w": 24,
         "h": 1
       },
@@ -3484,7 +3445,7 @@
       "id": 34,
       "gridPos": {
         "x": 0,
-        "y": 172,
+        "y": 171,
         "w": 12,
         "h": 8
       },
@@ -4039,7 +4000,7 @@
       "id": 35,
       "gridPos": {
         "x": 12,
-        "y": 172,
+        "y": 171,
         "w": 12,
         "h": 8
       },
@@ -4055,7 +4016,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 180,
+        "y": 179,
         "w": 24,
         "h": 1
       },
@@ -4325,7 +4286,7 @@
       "id": 37,
       "gridPos": {
         "x": 0,
-        "y": 181,
+        "y": 180,
         "w": 24,
         "h": 14
       },
