@@ -96,13 +96,15 @@ pub struct TimeSeriesDescription {
     /// How many distinct series (distinct label sets) to generate. At most the
     /// product of the label cardinalities.
     pub series_num: u64,
-    /// The timestamp of each series' first sample, in milliseconds.
+    /// The start of the generated window, in milliseconds (default 0). The
+    /// first sample is one interval after it.
     #[serde(default)]
     pub start_ms: i64,
     /// Milliseconds between two samples of one series.
     pub sample_interval_ms: u64,
     /// Milliseconds covered. Samples sit at `start_ms + k * sample_interval_ms`
-    /// for every `k` with `k * sample_interval_ms < duration_ms`.
+    /// for every `k >= 1` with `k * sample_interval_ms <= duration_ms`, the
+    /// grid of [`sample_offsets_ms`]. At least one interval.
     pub duration_ms: u64,
     /// The distribution each series draws its values from, independently of
     /// the other series. Its own seed is mixed with `seed` for the values
@@ -135,25 +137,24 @@ pub struct GeneratedTimeSeries {
 /// One sample: the series' label set, the timestamp in milliseconds, and the value.
 pub type TimeSeriesSample<'a> = (&'a [(String, String)], i64, f64);
 
-/// The seed of one independent stream of draws under the description's seed.
-fn stream_seed(seed: u64, stream: u64) -> u64 {
+/// The seed of stream `stream`'s random generator under `seed`:
+/// `splitmix64(seed ^ splitmix64(stream))`. Every generator in the workspace
+/// seeds its per-series streams through this, so two generators that describe
+/// the same series draw the same values. Example: series 3 of a description
+/// whose value seed is 22 draws from `series_stream_seed(22, 3)`.
+pub fn series_stream_seed(seed: u64, stream: u64) -> u64 {
     splitmix64(seed ^ splitmix64(stream))
 }
 
-/// The seed of stream `stream`'s random generator under `seed`. Stub: the
-/// next commit implements it.
-pub fn series_stream_seed(seed: u64, stream: u64) -> u64 {
-    let _ = (seed, stream);
-    todo!("#250: implemented in the next commit")
-}
-
-/// Offsets in ms from the window start of one series' samples. Stub: the
-/// next commit implements it.
+/// Offsets in ms from the window start of one series' samples: one interval,
+/// two intervals, ..., up to and including `duration_ms`. The samples cover
+/// `(start, start + duration]`, the left-open window every evaluation uses, so
+/// each sample falls in exactly one window of a grid of windows. Example:
+/// interval 10_000 and duration 60_000 give 10_000, 20_000, ..., 60_000.
+/// An interval of 0 gives no offsets.
 pub fn sample_offsets_ms(sample_interval_ms: u64, duration_ms: u64) -> impl Iterator<Item = u64> {
-    let _ = (sample_interval_ms, duration_ms);
-    todo!("#250: implemented in the next commit");
-    #[allow(unreachable_code)]
-    std::iter::empty()
+    let count = duration_ms.checked_div(sample_interval_ms).unwrap_or(0);
+    (1..=count).map(move |k| k * sample_interval_ms)
 }
 
 /// Label draws use one stream; series `i`'s values use stream `i`.
@@ -182,7 +183,15 @@ impl TimeSeriesDescription {
                 self.sample_interval_ms, self.duration_ms
             )));
         }
-        let last_offset = (self.samples_per_series() - 1).checked_mul(self.sample_interval_ms);
+        if self.duration_ms < self.sample_interval_ms {
+            return Err(bad(format!(
+                "time series: duration_ms ({}) is shorter than one sample_interval_ms ({}), so no sample fits",
+                self.duration_ms, self.sample_interval_ms
+            )));
+        }
+        let last_offset = self
+            .samples_per_series()
+            .checked_mul(self.sample_interval_ms);
         if last_offset
             .and_then(|o| i64::try_from(o).ok())
             .and_then(|o| self.start_ms.checked_add(o))
@@ -222,9 +231,11 @@ impl TimeSeriesDescription {
         self.value_distribution.sampler().map(|_| ())
     }
 
-    /// How many samples each series has: `ceil(duration_ms / sample_interval_ms)`.
+    /// How many samples each series has: `floor(duration_ms / sample_interval_ms)`.
     pub fn samples_per_series(&self) -> u64 {
-        self.duration_ms.div_ceil(self.sample_interval_ms.max(1))
+        self.duration_ms
+            .checked_div(self.sample_interval_ms)
+            .unwrap_or(0)
     }
 
     /// The product of the label cardinalities, or `None` past `u64::MAX`.
@@ -238,7 +249,8 @@ impl TimeSeriesDescription {
     /// [`GeneratedTimeSeries::samples`].
     pub fn generate(&self) -> Result<GeneratedTimeSeries, DataGenError> {
         self.validate()?;
-        let mut rng = Xoshiro256PlusPlus::seed_from_u64(stream_seed(self.seed, LABEL_STREAM));
+        let mut rng =
+            Xoshiro256PlusPlus::seed_from_u64(series_stream_seed(self.seed, LABEL_STREAM));
         let weighted_label_sets = self.label_set_count().filter(|&n| {
             n <= self
                 .series_num
@@ -348,7 +360,8 @@ impl TimeSeriesDescription {
 }
 
 impl GeneratedTimeSeries {
-    /// Every sample of every series, time-major: all series at the first
+    /// Every sample of every series, time-major, on the grid of
+    /// [`sample_offsets_ms`]: all series at the first
     /// timestamp in series order, then all at the second, and so on.
     /// Calling it again replays the same samples. Plain mode never fails; in
     /// counter mode, a running sum past 2^53 yields one `Err` naming the
@@ -357,7 +370,7 @@ impl GeneratedTimeSeries {
         let value_seed = self.description.seed ^ self.description.value_distribution.seed();
         let streams = (0..self.labels.len() as u64)
             .map(|i| SeriesStream {
-                rng: Xoshiro256PlusPlus::seed_from_u64(stream_seed(value_seed, i)),
+                rng: Xoshiro256PlusPlus::seed_from_u64(series_stream_seed(value_seed, i)),
                 counter: self.description.counter.then(|| {
                     // Primed at zero: `MonotonicAcc` returns its start for the
                     // first push and adds every later draw floored at zero, so
@@ -403,7 +416,8 @@ impl<'a> Iterator for TimeSeriesSamples<'a> {
         let (step, index) = (self.next / series_num, (self.next % series_num) as usize);
         self.next += 1;
         let description = &self.series.description;
-        let timestamp_ms = description.start_ms + (step * description.sample_interval_ms) as i64;
+        let timestamp_ms =
+            description.start_ms + ((step + 1) * description.sample_interval_ms) as i64;
         let stream = &mut self.streams[index];
         let draw = self.series.sampler.sample(&mut stream.rng);
         let value = match &mut stream.counter {

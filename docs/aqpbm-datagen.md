@@ -178,9 +178,9 @@ To make sure each column has the same length, helper function to check is requir
 pub struct TimeSeriesDescription {
     pub labels: Vec<SeriesLabelSpec>,       // label name, cardinality, Zipf skewness (0 = uniform)
     pub series_num: u64,                    // distinct label sets; at most the product of the cardinalities
-    pub start_ms: i64,                      // timestamp of the first sample (default 0)
+    pub start_ms: i64,                      // start of the window; the first sample is one interval after it (default 0)
     pub sample_interval_ms: u64,            // milliseconds between two samples of one series
-    pub duration_ms: u64,                   // ceil(duration_ms / sample_interval_ms) samples per series
+    pub duration_ms: u64,                   // floor(duration_ms / sample_interval_ms) samples per series; at least one interval
     pub value_distribution: DataDistribution, // drawn independently per series; its seed is mixed with `seed`
     pub counter: bool,                      // value = running sum of the draws, each floored at 0
     pub seed: u64,                          // fixes the label sets and, with the distribution's seed, every value
@@ -198,13 +198,23 @@ pub struct SeriesLabelSpec {
 lazily.
 
 - **Timestamps:** series `i`'s samples sit at `start_ms + k * sample_interval_ms`
-  for every `k` with `k * sample_interval_ms < duration_ms`, so the first one
-  is `start_ms` itself.
+  for every `k >= 1` with `k * sample_interval_ms <= duration_ms`
+  (`sample_offsets_ms`). The samples cover `(start_ms, start_ms + duration_ms]`,
+  the left-open window that evaluations use: with a 10 s interval over 60 s,
+  windows `(t - 10 s, t]` at t = 10 s, ..., 60 s each hold exactly one sample
+  of each series. A duration shorter than one interval is refused.
 - **Seeds:** label sets come from `seed`. Series `i`'s values come from its own
-  stream, seeded `splitmix64(s ^ splitmix64(i))` with
-  `s = seed ^ value_distribution.seed`, so the distribution's own seed changes
-  every value and leaves the label sets alone. At 0 it leaves `seed` alone in
-  charge.
+  stream, seeded `series_stream_seed(s, i) = splitmix64(s ^ splitmix64(i))`
+  with `s = seed ^ value_distribution.seed`, so the distribution's own seed
+  changes every value and leaves the label sets alone. At 0 it leaves `seed`
+  alone in charge.
+- **One grid and one seed rule for every generator:** `aqpbm-usecase` draws its
+  synthetic series through the same `sample_offsets_ms` and
+  `series_stream_seed`, and keeps only its label templates and phases on top.
+  A use-case group of 3 series from `Normal(0.45, 0.08)` with seed 22 and a
+  `TimeSeriesDescription` with one label of cardinality 3, `seed: 0` and the
+  same distribution give the same timestamps and bit-identical values per
+  series index.
 - **Label skew:** `skewness` is the skew of each draw. Series are distinct label
   sets, so once a heavy set is taken the next series must use another one.
   Far below the product of the cardinalities the series keep the draw skew;

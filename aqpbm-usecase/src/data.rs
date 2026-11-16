@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::Result;
-use aqpbm_datagen::{DataDistribution, Sampler};
+use aqpbm_datagen::{sample_offsets_ms, series_stream_seed, DataDistribution, Sampler};
 use rand::{Rng, SeedableRng};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
@@ -61,10 +61,6 @@ pub fn intensity(phase: &Phase, offset_ms: i64, shift_ms: i64) -> f64 {
     rise.min(fall).min(1.0)
 }
 
-fn mixed_seed(seed: u64, stream: u64) -> u64 {
-    seed ^ stream.wrapping_mul(0x9E37_79B9_7F4A_7C15)
-}
-
 struct Stream<'a> {
     metric: &'a MetricSpec,
     group: &'a SeriesGroup,
@@ -103,7 +99,7 @@ impl<'a> Stream<'a> {
             .map(|d| {
                 Ok((
                     d.sampler()?,
-                    Xoshiro256PlusPlus::seed_from_u64(mixed_seed(d.seed(), stream)),
+                    Xoshiro256PlusPlus::seed_from_u64(series_stream_seed(d.seed(), stream)),
                 ))
             })
             .collect::<Result<_>>()?;
@@ -113,7 +109,7 @@ impl<'a> Stream<'a> {
             index,
             distributions,
             phase_distribution,
-            choice: Xoshiro256PlusPlus::seed_from_u64(mixed_seed(spec.seed, stream)),
+            choice: Xoshiro256PlusPlus::seed_from_u64(series_stream_seed(spec.seed, stream)),
         })
     }
 
@@ -150,7 +146,8 @@ impl<'a> Stream<'a> {
     }
 }
 
-/// Offsets in ms of one stream's samples: one every `interval_ms`, more often while a rate phase holds.
+/// Offsets in ms of one stream's samples: one every `interval_ms` on `aqpbm-datagen`'s grid
+/// (`sample_offsets_ms`, the first one interval after the start), more often while a rate phase holds.
 fn offsets(group: &SeriesGroup, interval_ms: i64, duration_ms: i64, index: i64) -> Vec<i64> {
     let rates: Vec<(&Phase, f64)> = group
         .phases
@@ -161,8 +158,8 @@ fn offsets(group: &SeriesGroup, interval_ms: i64, duration_ms: i64, index: i64) 
         })
         .collect();
     if rates.is_empty() {
-        return (1..=duration_ms / interval_ms)
-            .map(|i| i * interval_ms)
+        return sample_offsets_ms(interval_ms as u64, duration_ms as u64)
+            .map(|offset| offset as i64)
             .collect();
     }
     let mut out = Vec::new();
