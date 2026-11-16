@@ -161,24 +161,42 @@ pub struct StepCost {
     pub report: StepReport,
 }
 
-/// The answers of one evaluation: one value per output series.
+/// The answers of one evaluation: one value per output series of every query.
+/// An output series keeps its input labels and carries the query id under
+/// [`QUERY_LABEL`], so two queries over one metric never share a key.
+/// Example: `sum_over_time(probe[10s])` with id `sum` over the series
+/// `probe{instance="instance_0"}` answers under
+/// `{__name__="probe", instance="instance_0", query="sum"}`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Answers(pub BTreeMap<SeriesLabels, f64>);
+
+/// The label that names the query an answer belongs to.
+pub const QUERY_LABEL: &str = "query";
 
 /// Serialized as a list of `[labels, value]` pairs: JSON object keys must be
 /// strings, and a series is a label map.
 impl Serialize for Answers {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let _ = serializer;
-        todo!("implemented after test approval")
+        serializer.collect_seq(self.0.iter())
     }
 }
 
 impl<'de> Deserialize<'de> for Answers {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let _ = deserializer;
-        todo!("implemented after test approval")
+        let pairs = Vec::<(SeriesLabels, f64)>::deserialize(deserializer)?;
+        Ok(Answers(pairs.into_iter().collect()))
     }
+}
+
+/// `name{a="1",b="2"}`: a series as PromQL writes it, `__name__` in front.
+pub fn format_series(labels: &SeriesLabels) -> String {
+    let name = labels.get("__name__").map(String::as_str).unwrap_or("");
+    let rest: Vec<String> = labels
+        .iter()
+        .filter(|(label, _)| label.as_str() != "__name__")
+        .map(|(label, value)| format!("{label}={value:?}"))
+        .collect();
+    format!("{name}{{{}}}", rest.join(","))
 }
 
 /// What an engine installed for one arm.

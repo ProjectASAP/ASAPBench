@@ -71,6 +71,18 @@ pub fn calibration_staleness(
     recorded: &EngineDescription,
     current: &EngineDescription,
 ) -> Option<String> {
-    let _ = (recorded, current);
-    todo!("implemented after test approval")
+    if recorded.id != current.id || recorded.version != current.version {
+        return Some(format!(
+            "the calibration was measured on {} {} but the engine is {} {}: rerun calibrate",
+            recorded.id, recorded.version, current.id, current.version
+        ));
+    }
+    if recorded.version_dirty || current.version_dirty {
+        return Some(format!(
+            "the engine {} {} is dirty (uncommitted changes), so it may not be the build \
+             the calibration was measured on: commit and rerun calibrate",
+            current.id, current.version
+        ));
+    }
+    None
 }
