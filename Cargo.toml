@@ -9,6 +9,7 @@ members = [
     "aqpbm-usecase",
     "aqpbm-planeval",
     "aqpbm-systemeval",
+    "aqpbm-harness",
 ]
 
 exclude = ["sketch-runtime"]
@@ -48,6 +49,9 @@ clap = { version = "4", features = ["derive", "wrap_help", "env"] }
 thiserror = "2"
 anyhow = "1"
 
+# OS calls: CPU clocks, thread pinning (aqpbm-core, aqpbm-harness).
+libc = "0.2"
+
 # Bitflags for MetricsMask.
 bitflags = "2"
 
@@ -62,6 +66,7 @@ aqpbm-datagen = { path = "aqpbm-datagen" }
 aqpbm-core = { path = "aqpbm-core", default-features = false }
 sketch-bench = { path = "sketch-bench" }
 aqpbm-usecase = { path = "aqpbm-usecase" }
+aqpbm-harness = { path = "aqpbm-harness" }
 # sketch-runtime = { path = "sketch-runtime" }  # parked;
 
 [profile.release]

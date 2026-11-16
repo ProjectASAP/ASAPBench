@@ -155,6 +155,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "aqpbm-harness"
+version = "0.1.0"
+dependencies = [
+ "aqpbm-core",
+ "aqpbm-datagen",
+ "chrono",
+ "libc",
+ "rand 0.9.4",
+ "rand_xoshiro",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "aqpbm-planeval"
 version = "0.1.0"
 dependencies = [
