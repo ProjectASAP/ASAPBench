@@ -96,7 +96,7 @@ DASHBOARD = {"uid": "ddos-detection", "title": "1 · DDoS detection", "figure": 
                                  "the packet's source IP address.",
                       "columns": {"vm": "The server under attack; there is only one, instance1",
                                   "src_ip": "Source IP address of the packet, as an integer"}},
-             "parts": ("overview", "runs", "alert", "rules", "rule_error", "cost", "stage1"),
+             "parts": ("overview", "runs", "alert", "rules", "rule_error", "cost"),
              "rule_error": {"metrics": ("relative_error",)}}
 
 CASE = {

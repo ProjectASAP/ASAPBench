@@ -307,10 +307,110 @@
       "id": 1,
       "type": "row",
       "title": "Scenario",
-      "collapsed": false,
+      "collapsed": true,
       "gridPos": {
         "x": 0,
         "y": 0,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [
+        {
+          "type": "text",
+          "title": "",
+          "transparent": true,
+          "options": {
+            "mode": "html",
+            "content": "<img src=\"http://localhost:8001/uc3-video-experience.svg\" style=\"height: 100%; max-width: 100%\">"
+          },
+          "id": 2,
+          "gridPos": {
+            "x": 0,
+            "y": 1,
+            "w": 24,
+            "h": 13
+          },
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "approx-rows"
+          }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "row",
+      "title": "Data",
+      "collapsed": true,
+      "gridPos": {
+        "x": 0,
+        "y": 1,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [
+        {
+          "type": "text",
+          "title": "",
+          "options": {
+            "mode": "markdown",
+            "content": "Video sessions grouped into subpopulations, one per city, ISP, CDN and device; each sample is one session's measurement, and larger subpopulations send samples more often. The synthetic data runs 120 minutes with 72 series per metric.\n\n| column | what it is | values |\n|---|---|---|\n| time | Time of the sample | One sample every 136 ms to 4.29 s, depending on the series |\n| city | City of the viewer | 6 values: city-0, city-1, city-2, city-3, city-4, city-5 |\n| isp | Internet service provider of the viewer | 3 values: isp-0, isp-1, isp-2 |\n| cdn | Content delivery network serving the video | 2 values: cdn-0, cdn-1 |\n| device | Device type of the viewer | 2 values: mobile, tv |\n| bitrate | Bitrate level of the session, one of 10 levels | Usual values: Zipf distribution (skew 1) over 10 values<br>Minutes 70 to 85, ramping in and out over 2 minutes: 50% of samples are random values, uniform over the whole numbers 8 to 10 on the 4 series where city is city-1 and isp is isp-2<br>Note: whole numbers |\n| buffering | Rebuffering time of the session, in seconds | Usual values: normal distribution (mean 0.3, standard deviation 0.6)<br>Minutes 40 to 55, ramping in and out over 2 minutes: 40% of samples are random values, uniform between 5 and 20 on the 6 series where cdn is cdn-1 and city is city-0<br>Note: never below 0 |\n| play_time | Play time of the session, in seconds | Usual values: uniform between 55 and 60 |\n| startup_time | Time until the video starts, in seconds | Usual values: Pareto distribution (alpha 3, scale 1)<br>Minutes 95 to 110, ramping in and out over 2 minutes: values multiplied by 2 on the 18 series where cdn is cdn-0 and device is tv<br>Note: never below 0 |\n| device_id | ID of the viewer's device | Usual values: uniform, upper bound from 42 to 1,317 depending on the series<br>Note: whole numbers |"
+          },
+          "id": 4,
+          "gridPos": {
+            "x": 0,
+            "y": 2,
+            "w": 24,
+            "h": 23
+          },
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "approx-rows"
+          }
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "row",
+      "title": "Queries and rules",
+      "collapsed": true,
+      "gridPos": {
+        "x": 0,
+        "y": 2,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [
+        {
+          "type": "text",
+          "title": "",
+          "options": {
+            "mode": "markdown",
+            "content": "Each query runs twice, once with the exact plan and once with the approximate plan. A rule reads query results and decides an action; exact and approx decide separately, and the dashboard compares their decisions. On the time charts below, shaded areas are the problem periods injected into the synthetic data.\n\n**Queries**\n\n| query | PromQL | computed |\n|---|---|---|\n| entropy_bitrate | `entropy_over_time(bitrate[1m])` | every 60 s over the last 60 s |\n| buffering_l1 | `sum_over_time(buffering[1m])` | every 60 s over the last 60 s |\n| sessions | `count_over_time(bitrate[1m])` | every 60 s over the last 60 s |\n| distinct_devices | `distinct_over_time(device_id[1m])` | every 60 s over the last 60 s |\n| startup_p95 | `quantile_over_time(0.95, startup_time[5m])` | every 60 s over the last 300 s |\n| rebuffer_ratio | `sum_over_time(buffering[5m]) / (sum_over_time(play_time[5m]) + sum_over_time(buffering[5m]))` | every 60 s over the last 300 s |\n\n**Rules**\n\n| rule | queries it uses | what it does |\n|---|---|---|\n| hydra | buffering_l1 | Buffering L1 norm above the mean plus 3 standard deviations of the previous 30 minutes (Hydra) |\n| hydra_entropy | entropy_bitrate | Bitrate entropy more than 3 standard deviations from the mean of the previous 30 minutes (Hydra) |\n| mux | rebuffer_ratio, startup_p95, sessions | Rebuffering above 5% or p95 start time above 4 s over 5 minutes, with at least 100 viewers (Mux) |\n| conviva_ai | startup_p95, sessions | p95 start time above the mean plus 3 standard deviations of up to 6 hours, with at least 25 plays; the alert then holds for 1 hour (Conviva AI Alerts) |\n| conviva_patent | rebuffer_ratio, distinct_devices | Rebuffering above a baseline decaying by 0.998 per minute plus 3 standard deviations for 5 minutes, with at least 100 devices (Conviva patent) |"
+          },
+          "id": 6,
+          "gridPos": {
+            "x": 0,
+            "y": 3,
+            "w": 24,
+            "h": 28
+          },
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "approx-rows"
+          }
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "row",
+      "title": "VictoriaMetrics vs ASAPQuery-backend",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 3,
         "w": 24,
         "h": 1
       },
@@ -321,97 +421,20 @@
       "title": "",
       "transparent": true,
       "options": {
-        "mode": "html",
-        "content": "<img src=\"http://localhost:8001/uc3-video-experience.svg\" style=\"height: 100%; max-width: 100%\">"
-      },
-      "id": 2,
-      "gridPos": {
-        "x": 0,
-        "y": 1,
-        "w": 24,
-        "h": 13
-      },
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "approx-rows"
-      }
-    },
-    {
-      "id": 3,
-      "type": "row",
-      "title": "Data",
-      "collapsed": false,
-      "gridPos": {
-        "x": 0,
-        "y": 14,
-        "w": 24,
-        "h": 1
-      },
-      "panels": []
-    },
-    {
-      "type": "text",
-      "title": "",
-      "options": {
         "mode": "markdown",
-        "content": "Video sessions grouped into subpopulations, one per city, ISP, CDN and device; each sample is one session's measurement, and larger subpopulations send samples more often. The synthetic data runs 120 minutes with 72 series per metric.\n\n| column | what it is | values |\n|---|---|---|\n| time | Time of the sample | One sample every 136 ms to 4.29 s, depending on the series |\n| city | City of the viewer | 6 values: city-0, city-1, city-2, city-3, city-4, city-5 |\n| isp | Internet service provider of the viewer | 3 values: isp-0, isp-1, isp-2 |\n| cdn | Content delivery network serving the video | 2 values: cdn-0, cdn-1 |\n| device | Device type of the viewer | 2 values: mobile, tv |\n| bitrate | Bitrate level of the session, one of 10 levels | Usual values: Zipf distribution (skew 1) over 10 values<br>Minutes 70 to 85, ramping in and out over 2 minutes: 50% of samples are random values, uniform over the whole numbers 8 to 10 on the 4 series where city is city-1 and isp is isp-2<br>Note: whole numbers |\n| buffering | Rebuffering time of the session, in seconds | Usual values: normal distribution (mean 0.3, standard deviation 0.6)<br>Minutes 40 to 55, ramping in and out over 2 minutes: 40% of samples are random values, uniform between 5 and 20 on the 6 series where cdn is cdn-1 and city is city-0<br>Note: never below 0 |\n| play_time | Play time of the session, in seconds | Usual values: uniform between 55 and 60 |\n| startup_time | Time until the video starts, in seconds | Usual values: Pareto distribution (alpha 3, scale 1)<br>Minutes 95 to 110, ramping in and out over 2 minutes: values multiplied by 2 on the 18 series where cdn is cdn-0 and device is tv<br>Note: never below 0 |\n| device_id | ID of the viewer's device | Usual values: uniform, upper bound from 42 to 1,317 depending on the series<br>Note: whole numbers |"
+        "content": "Light **blue** shading on the time charts marks the problem periods injected into the synthetic data. Colored strips list their states in the legend under each strip."
       },
-      "id": 4,
+      "id": 29,
       "gridPos": {
         "x": 0,
-        "y": 15,
+        "y": 4,
         "w": 24,
-        "h": 23
+        "h": 2
       },
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
         "uid": "approx-rows"
       }
-    },
-    {
-      "id": 5,
-      "type": "row",
-      "title": "Queries and rules",
-      "collapsed": false,
-      "gridPos": {
-        "x": 0,
-        "y": 38,
-        "w": 24,
-        "h": 1
-      },
-      "panels": []
-    },
-    {
-      "type": "text",
-      "title": "",
-      "options": {
-        "mode": "markdown",
-        "content": "Each query runs twice, once with the exact plan and once with the approximate plan. A rule reads query results and decides an action; exact and approx decide separately, and the dashboard compares their decisions. On the time charts below, shaded areas are the problem periods injected into the synthetic data.\n\n**Queries**\n\n| query | PromQL | computed |\n|---|---|---|\n| entropy_bitrate | `entropy_over_time(bitrate[1m])` | every 60 s over the last 60 s |\n| buffering_l1 | `sum_over_time(buffering[1m])` | every 60 s over the last 60 s |\n| sessions | `count_over_time(bitrate[1m])` | every 60 s over the last 60 s |\n| distinct_devices | `distinct_over_time(device_id[1m])` | every 60 s over the last 60 s |\n| startup_p95 | `quantile_over_time(0.95, startup_time[5m])` | every 60 s over the last 300 s |\n| rebuffer_ratio | `sum_over_time(buffering[5m]) / (sum_over_time(play_time[5m]) + sum_over_time(buffering[5m]))` | every 60 s over the last 300 s |\n\n**Rules**\n\n| rule | queries it uses | what it does |\n|---|---|---|\n| hydra | buffering_l1 | Buffering L1 norm above the mean plus 3 standard deviations of the previous 30 minutes (Hydra) |\n| hydra_entropy | entropy_bitrate | Bitrate entropy more than 3 standard deviations from the mean of the previous 30 minutes (Hydra) |\n| mux | rebuffer_ratio, startup_p95, sessions | Rebuffering above 5% or p95 start time above 4 s over 5 minutes, with at least 100 viewers (Mux) |\n| conviva_ai | startup_p95, sessions | p95 start time above the mean plus 3 standard deviations of up to 6 hours, with at least 25 plays; the alert then holds for 1 hour (Conviva AI Alerts) |\n| conviva_patent | rebuffer_ratio, distinct_devices | Rebuffering above a baseline decaying by 0.998 per minute plus 3 standard deviations for 5 minutes, with at least 100 devices (Conviva patent) |"
-      },
-      "id": 6,
-      "gridPos": {
-        "x": 0,
-        "y": 39,
-        "w": 24,
-        "h": 28
-      },
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "approx-rows"
-      }
-    },
-    {
-      "id": 7,
-      "type": "row",
-      "title": "VictoriaMetrics vs ASAPQuery-backend",
-      "collapsed": false,
-      "gridPos": {
-        "x": 0,
-        "y": 67,
-        "w": 24,
-        "h": 1
-      },
-      "panels": []
     },
     {
       "type": "table",
@@ -728,7 +751,7 @@
       "id": 8,
       "gridPos": {
         "x": 0,
-        "y": 68,
+        "y": 6,
         "w": 24,
         "h": 14
       },
@@ -845,7 +868,7 @@
       "id": 9,
       "gridPos": {
         "x": 0,
-        "y": 82,
+        "y": 20,
         "w": 24,
         "h": 8
       },
@@ -858,815 +881,818 @@
       "id": 10,
       "type": "row",
       "title": "Every run",
-      "collapsed": false,
+      "collapsed": true,
       "gridPos": {
         "x": 0,
-        "y": 90,
+        "y": 28,
         "w": 24,
         "h": 1
       },
-      "panels": []
-    },
-    {
-      "type": "table",
-      "title": "Every run and query: plan, query error, and what the application saw",
-      "description": "Each row is one query in one run, paired with one rule or alert that reads it; a query read by three rules has three rows. Sketch and parameters are the approximate plan the planner chose: the sketch type and its size (for KMV, k is how many hashes it keeps; for HLL, precision p means 2^p registers). Fidelity compares the rule's decisions on the exact and approx answers: an episode is a stretch of consecutive evaluations where the exact rule fires, an incident is an attack or change the data generator injected (synthetic data only). Hover a fidelity cell to read all of it.",
-      "targets": [
+      "panels": [
         {
-          "refId": "A",
+          "type": "table",
+          "title": "Every run and query: plan, query error, and what the application saw",
+          "description": "Each row is one query in one run, paired with one rule or alert that reads it; a query read by three rules has three rows. Sketch and parameters are the approximate plan the planner chose: the sketch type and its size (for KMV, k is how many hashes it keeps; for HLL, precision p means 2^p registers). Fidelity compares the rule's decisions on the exact and approx answers: an episode is a stretch of consecutive evaluations where the exact rule fires, an incident is an attack or change the data generator injected (synthetic data only). Hover a fidelity cell to read all of it.",
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "approx-rows"
+              },
+              "type": "json",
+              "source": "url",
+              "parser": "backend",
+              "format": "table",
+              "url": "http://localhost:8000/phase3/runs/index.json",
+              "url_options": {
+                "method": "GET",
+                "data": ""
+              },
+              "root_selector": "( $r := $[use_case=\"video_experience\" and $not($contains(run_id, \"-real\")) and $exists(details.fidelity)].( $e := $; $append($keys($e.details.plans), $keys($e.details.unsupported)).( $q := $; $p := $lookup($e.details.plans, $q); $lookup($e.details.signals, $q).( $s := $; $f := $lookup($e.details.fidelity, $s); {\"run_id\": $e.run_id, \"use_case\": $e.use_case, \"start\": $e.start, \"end\": $e.end, \"query\": $q, \"sketch\": $type($p) = \"string\" ? $substringBefore($p, \" \") : \"\", \"parameters\": $type($p) = \"string\" ? ($contains($p, \"{\") ? $replace($replace($substringBefore($substringAfter($p, \":{\"), \"}}\"), \"\\\"\", \"\"), \",\", \", \") : \"\") : \"\", \"why no approx plan\": $lookup($e.details.unsupported, $q), \"target error\": $e.details.arm.max_error, \"measured max error\": $lookup($e.details.max_relative_error, $q), \"rule_id\": $s, \"rule\": ( $t := $lookup({}, $s); $exists($t) ? $t : $s ), \"agreement\": $f.agreement, \"fidelity\": $f.fidelity, \"dashboard\": ( $d := $lookup($e.details.signal_dashboards, $s); $exists($d) ? $d : $e.details.dashboard )} ) ) ); $exists($r) ? $r : [] )",
+              "columns": [
+                {
+                  "selector": "use_case",
+                  "text": "use_case",
+                  "type": "string"
+                },
+                {
+                  "selector": "run_id",
+                  "text": "run_id",
+                  "type": "string"
+                },
+                {
+                  "selector": "query",
+                  "text": "query",
+                  "type": "string"
+                },
+                {
+                  "selector": "sketch",
+                  "text": "sketch",
+                  "type": "string"
+                },
+                {
+                  "selector": "parameters",
+                  "text": "parameters",
+                  "type": "string"
+                },
+                {
+                  "selector": "why no approx plan",
+                  "text": "why no approx plan",
+                  "type": "string"
+                },
+                {
+                  "selector": "rule",
+                  "text": "rule",
+                  "type": "string"
+                },
+                {
+                  "selector": "fidelity",
+                  "text": "fidelity",
+                  "type": "string"
+                },
+                {
+                  "selector": "dashboard",
+                  "text": "dashboard",
+                  "type": "string"
+                },
+                {
+                  "selector": "rule_id",
+                  "text": "rule_id",
+                  "type": "string"
+                },
+                {
+                  "selector": "start",
+                  "text": "start",
+                  "type": "number"
+                },
+                {
+                  "selector": "end",
+                  "text": "end",
+                  "type": "number"
+                },
+                {
+                  "selector": "target error",
+                  "text": "target error",
+                  "type": "number"
+                },
+                {
+                  "selector": "measured max error",
+                  "text": "measured max error",
+                  "type": "number"
+                },
+                {
+                  "selector": "agreement",
+                  "text": "agreement",
+                  "type": "number"
+                }
+              ]
+            }
+          ],
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "indexByName": {
+                  "use_case": 0,
+                  "run_id": 1,
+                  "query": 2,
+                  "sketch": 3,
+                  "parameters": 4,
+                  "why no approx plan": 5,
+                  "target error": 6,
+                  "measured max error": 7,
+                  "rule": 8,
+                  "agreement": 9,
+                  "fidelity": 10
+                },
+                "excludeByName": {},
+                "renameByName": {}
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "run_id"
+                  }
+                ]
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "minWidth": 60,
+                "cellOptions": {
+                  "type": "auto"
+                },
+                "wrapHeaderText": true
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^(dashboard|start|end|use_case|rule_id)$"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hidden",
+                    "value": true
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^(target error|measured max error)$"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "percentunit"
+                  },
+                  {
+                    "id": "decimals",
+                    "value": 1
+                  },
+                  {
+                    "id": "custom.width",
+                    "value": 90
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "agreement"
+                },
+                "properties": [
+                  {
+                    "id": "description",
+                    "value": "Defined per application. Threshold alert: evaluations where exact and approx agree on firing. Autoscaler: matched scaling actions over matched, false and missed ones. Rollout controller: rollouts decided the same. Top clients: mean clients shared by the exact and approx top lists, as a fraction of the list size. Rule: entity-evaluations where exact and approx agree on whether the rule is active."
+                  },
+                  {
+                    "id": "unit",
+                    "value": "percentunit"
+                  },
+                  {
+                    "id": "decimals",
+                    "value": 1
+                  },
+                  {
+                    "id": "min",
+                    "value": 0
+                  },
+                  {
+                    "id": "max",
+                    "value": 1
+                  },
+                  {
+                    "id": "custom.width",
+                    "value": 110
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-background",
+                      "mode": "basic"
+                    }
+                  },
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "continuous-RdYlGr"
+                    }
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "special",
+                        "options": {
+                          "match": "null+nan",
+                          "result": {
+                            "text": "not run: a query it uses has no approximate plan",
+                            "color": "transparent",
+                            "index": 0
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "parameters"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 230
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "why no approx plan"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 150
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^(query|rule|sketch)$"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 115
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "run_id"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 170
+                  },
+                  {
+                    "id": "links",
+                    "value": [
+                      {
+                        "title": "Open this run",
+                        "url": "/d/phase3-video-experience/phase3-video-experience?var-run=${__data.fields.run_id}&var-signal=${__data.fields.rule_id}&from=${__data.fields.start}&to=${__data.fields.end}"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true
+          },
+          "id": 11,
+          "gridPos": {
+            "x": 0,
+            "y": 29,
+            "w": 24,
+            "h": 16
+          },
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
             "uid": "approx-rows"
-          },
-          "type": "json",
-          "source": "url",
-          "parser": "backend",
-          "format": "table",
-          "url": "http://localhost:8000/phase3/runs/index.json",
-          "url_options": {
-            "method": "GET",
-            "data": ""
-          },
-          "root_selector": "( $r := $[use_case=\"video_experience\" and $not($contains(run_id, \"-real\")) and $exists(details.fidelity)].( $e := $; $append($keys($e.details.plans), $keys($e.details.unsupported)).( $q := $; $p := $lookup($e.details.plans, $q); $lookup($e.details.signals, $q).( $s := $; $f := $lookup($e.details.fidelity, $s); {\"run_id\": $e.run_id, \"use_case\": $e.use_case, \"start\": $e.start, \"end\": $e.end, \"query\": $q, \"sketch\": $type($p) = \"string\" ? $substringBefore($p, \" \") : \"\", \"parameters\": $type($p) = \"string\" ? ($contains($p, \"{\") ? $replace($replace($substringBefore($substringAfter($p, \":{\"), \"}}\"), \"\\\"\", \"\"), \",\", \", \") : \"\") : \"\", \"why no approx plan\": $lookup($e.details.unsupported, $q), \"target error\": $e.details.arm.max_error, \"measured max error\": $lookup($e.details.max_relative_error, $q), \"rule_id\": $s, \"rule\": ( $t := $lookup({}, $s); $exists($t) ? $t : $s ), \"agreement\": $f.agreement, \"fidelity\": $f.fidelity, \"dashboard\": ( $d := $lookup($e.details.signal_dashboards, $s); $exists($d) ? $d : $e.details.dashboard )} ) ) ); $exists($r) ? $r : [] )",
-          "columns": [
-            {
-              "selector": "use_case",
-              "text": "use_case",
-              "type": "string"
-            },
-            {
-              "selector": "run_id",
-              "text": "run_id",
-              "type": "string"
-            },
-            {
-              "selector": "query",
-              "text": "query",
-              "type": "string"
-            },
-            {
-              "selector": "sketch",
-              "text": "sketch",
-              "type": "string"
-            },
-            {
-              "selector": "parameters",
-              "text": "parameters",
-              "type": "string"
-            },
-            {
-              "selector": "why no approx plan",
-              "text": "why no approx plan",
-              "type": "string"
-            },
-            {
-              "selector": "rule",
-              "text": "rule",
-              "type": "string"
-            },
-            {
-              "selector": "fidelity",
-              "text": "fidelity",
-              "type": "string"
-            },
-            {
-              "selector": "dashboard",
-              "text": "dashboard",
-              "type": "string"
-            },
-            {
-              "selector": "rule_id",
-              "text": "rule_id",
-              "type": "string"
-            },
-            {
-              "selector": "start",
-              "text": "start",
-              "type": "number"
-            },
-            {
-              "selector": "end",
-              "text": "end",
-              "type": "number"
-            },
-            {
-              "selector": "target error",
-              "text": "target error",
-              "type": "number"
-            },
-            {
-              "selector": "measured max error",
-              "text": "measured max error",
-              "type": "number"
-            },
-            {
-              "selector": "agreement",
-              "text": "agreement",
-              "type": "number"
-            }
-          ]
-        }
-      ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "indexByName": {
-              "use_case": 0,
-              "run_id": 1,
-              "query": 2,
-              "sketch": 3,
-              "parameters": 4,
-              "why no approx plan": 5,
-              "target error": 6,
-              "measured max error": 7,
-              "rule": 8,
-              "agreement": 9,
-              "fidelity": 10
-            },
-            "excludeByName": {},
-            "renameByName": {}
-          }
-        },
-        {
-          "id": "sortBy",
-          "options": {
-            "sort": [
-              {
-                "field": "run_id"
-              }
-            ]
           }
         }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "minWidth": 60,
-            "cellOptions": {
-              "type": "auto"
-            },
-            "wrapHeaderText": true
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^(dashboard|start|end|use_case|rule_id)$"
-            },
-            "properties": [
-              {
-                "id": "custom.hidden",
-                "value": true
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^(target error|measured max error)$"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "percentunit"
-              },
-              {
-                "id": "decimals",
-                "value": 1
-              },
-              {
-                "id": "custom.width",
-                "value": 90
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "agreement"
-            },
-            "properties": [
-              {
-                "id": "description",
-                "value": "Defined per application. Threshold alert: evaluations where exact and approx agree on firing. Autoscaler: matched scaling actions over matched, false and missed ones. Rollout controller: rollouts decided the same. Top clients: mean clients shared by the exact and approx top lists, as a fraction of the list size. Rule: entity-evaluations where exact and approx agree on whether the rule is active."
-              },
-              {
-                "id": "unit",
-                "value": "percentunit"
-              },
-              {
-                "id": "decimals",
-                "value": 1
-              },
-              {
-                "id": "min",
-                "value": 0
-              },
-              {
-                "id": "max",
-                "value": 1
-              },
-              {
-                "id": "custom.width",
-                "value": 110
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "color-background",
-                  "mode": "basic"
-                }
-              },
-              {
-                "id": "color",
-                "value": {
-                  "mode": "continuous-RdYlGr"
-                }
-              },
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "special",
-                    "options": {
-                      "match": "null+nan",
-                      "result": {
-                        "text": "not run: a query it uses has no approximate plan",
-                        "color": "transparent",
-                        "index": 0
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "parameters"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 230
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "why no approx plan"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 150
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^(query|rule|sketch)$"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 115
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "run_id"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 170
-              },
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "Open this run",
-                    "url": "/d/phase3-video-experience/phase3-video-experience?var-run=${__data.fields.run_id}&var-signal=${__data.fields.rule_id}&from=${__data.fields.start}&to=${__data.fields.end}"
-                  }
-                ]
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "showHeader": true
-      },
-      "id": 11,
-      "gridPos": {
-        "x": 0,
-        "y": 91,
-        "w": 24,
-        "h": 16
-      },
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "approx-rows"
-      }
+      ]
     },
     {
       "id": 12,
       "type": "row",
       "title": "Runs",
-      "collapsed": false,
+      "collapsed": true,
       "gridPos": {
         "x": 0,
-        "y": 107,
+        "y": 29,
         "w": 24,
         "h": 1
       },
-      "panels": []
-    },
-    {
-      "type": "table",
-      "title": "Runs",
-      "description": "Dataset: the Data section above describes it. Configuration: the largest relative error the approximate plan may have, whether raw samples are kept so a query can still read them, and whether the planner may pick a plan that cannot promise that error target. Policy: what a rule does when an answer's error bound leaves its check open (plain ignores the bound, bound takes no action, rerun asks the exact plan).",
-      "targets": [
+      "panels": [
         {
-          "refId": "A",
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "approx-rows"
-          },
-          "type": "json",
-          "source": "url",
-          "parser": "backend",
-          "format": "table",
-          "url": "http://localhost:8000/phase3/runs/index.json",
-          "url_options": {
-            "method": "GET",
-            "data": ""
-          },
-          "root_selector": "( $r := $[use_case in [\"video_experience\"] and $not($contains(run_id, \"-real\"))].{\"run_id\": run_id, \"use_case\": use_case, \"start\": start, \"end\": end, \"planner_rev\": details.planner_rev, \"dataset\": $contains(run_id, \"-real\") ? ( $d := $substringAfter(run_id, \"-\"); $d := $substringBefore($d, \"-systems\"); $d := $substringBefore($d, \"-noraw\"); $d := $substringBefore($d, \"-raw\"); $replace($d, \"-\", \" \", 1) ) : \"synthetic\", \"configuration\": \"error target \" & $string(details.arm.max_error * 100) & \"%\" & (details.arm.raw_data_retained ? \", raw samples kept\" : \", raw samples not kept\") & (details.arm.ignore_guarantees ? \", plans without an accuracy guarantee allowed\" : \"\"), \"policy\": $contains(run_id, \"-rerun\") ? \"rerun\" : ($contains(run_id, \"-bound\") ? \"bound\" : \"plain\")}; $exists($r) ? $r : [] )",
-          "columns": [
+          "type": "table",
+          "title": "Runs",
+          "description": "Dataset: the Data section above describes it. Configuration: the largest relative error the approximate plan may have, whether raw samples are kept so a query can still read them, and whether the planner may pick a plan that cannot promise that error target. Policy: what a rule does when an answer's error bound leaves its check open (plain ignores the bound, bound takes no action, rerun asks the exact plan).",
+          "targets": [
             {
-              "selector": "run_id",
-              "text": "run_id",
-              "type": "string"
-            },
-            {
-              "selector": "dataset",
-              "text": "dataset",
-              "type": "string"
-            },
-            {
-              "selector": "configuration",
-              "text": "configuration",
-              "type": "string"
-            },
-            {
-              "selector": "policy",
-              "text": "policy",
-              "type": "string"
-            },
-            {
-              "selector": "use_case",
-              "text": "use_case",
-              "type": "string"
-            },
-            {
-              "selector": "start",
-              "text": "start",
-              "type": "number"
-            },
-            {
-              "selector": "end",
-              "text": "end",
-              "type": "number"
-            },
-            {
-              "selector": "planner_rev",
-              "text": "planner_rev",
-              "type": "string"
+              "refId": "A",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "approx-rows"
+              },
+              "type": "json",
+              "source": "url",
+              "parser": "backend",
+              "format": "table",
+              "url": "http://localhost:8000/phase3/runs/index.json",
+              "url_options": {
+                "method": "GET",
+                "data": ""
+              },
+              "root_selector": "( $r := $[use_case in [\"video_experience\"] and $not($contains(run_id, \"-real\"))].{\"run_id\": run_id, \"use_case\": use_case, \"start\": start, \"end\": end, \"planner_rev\": details.planner_rev, \"dataset\": $contains(run_id, \"-real\") ? ( $d := $substringAfter(run_id, \"-\"); $d := $substringBefore($d, \"-systems\"); $d := $substringBefore($d, \"-noraw\"); $d := $substringBefore($d, \"-raw\"); $replace($d, \"-\", \" \", 1) ) : \"synthetic\", \"configuration\": \"error target \" & $string(details.arm.max_error * 100) & \"%\" & (details.arm.raw_data_retained ? \", raw samples kept\" : \", raw samples not kept\") & (details.arm.ignore_guarantees ? \", plans without an accuracy guarantee allowed\" : \"\"), \"policy\": $contains(run_id, \"-rerun\") ? \"rerun\" : ($contains(run_id, \"-bound\") ? \"bound\" : \"plain\")}; $exists($r) ? $r : [] )",
+              "columns": [
+                {
+                  "selector": "run_id",
+                  "text": "run_id",
+                  "type": "string"
+                },
+                {
+                  "selector": "dataset",
+                  "text": "dataset",
+                  "type": "string"
+                },
+                {
+                  "selector": "configuration",
+                  "text": "configuration",
+                  "type": "string"
+                },
+                {
+                  "selector": "policy",
+                  "text": "policy",
+                  "type": "string"
+                },
+                {
+                  "selector": "use_case",
+                  "text": "use_case",
+                  "type": "string"
+                },
+                {
+                  "selector": "start",
+                  "text": "start",
+                  "type": "number"
+                },
+                {
+                  "selector": "end",
+                  "text": "end",
+                  "type": "number"
+                },
+                {
+                  "selector": "planner_rev",
+                  "text": "planner_rev",
+                  "type": "string"
+                }
+              ]
             }
-          ]
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "wrapHeaderText": true
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "start|end"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "dateTimeAsIso"
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "wrapHeaderText": true
               }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "run_id"
             },
-            "properties": [
+            "overrides": [
               {
-                "id": "links",
-                "value": [
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "start|end"
+                },
+                "properties": [
                   {
-                    "title": "Open this run",
-                    "url": "/d/phase3-video-experience/phase3-video-experience?var-run=${__data.fields.run_id}&from=${__data.fields.start}&to=${__data.fields.end}"
+                    "id": "unit",
+                    "value": "dateTimeAsIso"
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "run_id"
+                },
+                "properties": [
+                  {
+                    "id": "links",
+                    "value": [
+                      {
+                        "title": "Open this run",
+                        "url": "/d/phase3-video-experience/phase3-video-experience?var-run=${__data.fields.run_id}&from=${__data.fields.start}&to=${__data.fields.end}"
+                      }
+                    ]
                   }
                 ]
               }
             ]
-          }
-        ]
-      },
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "indexByName": {
-              "run_id": 0,
-              "dataset": 1,
-              "configuration": 2,
-              "policy": 3,
-              "use_case": 4,
-              "start": 5,
-              "end": 6,
-              "planner_rev": 7
-            },
-            "excludeByName": {},
-            "renameByName": {}
-          }
-        }
-      ],
-      "options": {
-        "showHeader": true
-      },
-      "id": 13,
-      "gridPos": {
-        "x": 0,
-        "y": 108,
-        "w": 12,
-        "h": 7
-      },
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "approx-rows"
-      }
-    },
-    {
-      "type": "table",
-      "title": "Plans in ${run}",
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "approx-rows"
           },
-          "type": "json",
-          "source": "url",
-          "parser": "backend",
-          "format": "table",
-          "url": "http://localhost:8000/phase3/runs/index.json",
-          "url_options": {
-            "method": "GET",
-            "data": ""
-          },
-          "root_selector": "( $r := ( $e := $[run_id=\"${run}\"]; $append($e.details.plans ~> $each(function($v, $k) { {\"query\": $k, \"sketch\": $type($v) = \"string\" ? $substringBefore($v, \" \") : \"\", \"parameters\": $type($v) = \"string\" ? ($contains($v, \"{\") ? $replace($replace($substringBefore($substringAfter($v, \":{\"), \"}}\"), \"\\\"\", \"\"), \",\", \", \") : \"\") : \"\", \"exact plan\": $lookup($e.details.exact_plans, $k), \"promql\": $lookup($e.details.promql, $k)} }), $e.details.unsupported ~> $each(function($v, $k) { {\"query\": $k, \"why no approx plan\": $v, \"promql\": $lookup($e.details.promql, $k)} })) ); $exists($r) ? $r : [] )",
-          "columns": [
+          "transformations": [
             {
-              "selector": "query",
-              "text": "query",
-              "type": "string"
-            },
-            {
-              "selector": "sketch",
-              "text": "sketch",
-              "type": "string"
-            },
-            {
-              "selector": "parameters",
-              "text": "parameters",
-              "type": "string"
-            },
-            {
-              "selector": "exact plan",
-              "text": "exact plan",
-              "type": "string"
-            },
-            {
-              "selector": "why no approx plan",
-              "text": "why no approx plan",
-              "type": "string"
-            },
-            {
-              "selector": "promql",
-              "text": "promql",
-              "type": "string"
-            }
-          ]
-        }
-      ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "indexByName": {
-              "query": 0,
-              "sketch": 1,
-              "parameters": 2,
-              "exact plan": 3,
-              "why no approx plan": 4,
-              "promql": 5
-            },
-            "excludeByName": {},
-            "renameByName": {}
-          }
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "cellOptions": {
-              "type": "auto",
-              "wrapText": true
-            },
-            "wrapHeaderText": true
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "showHeader": true
-      },
-      "id": 14,
-      "gridPos": {
-        "x": 12,
-        "y": 108,
-        "w": 12,
-        "h": 7
-      },
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "approx-rows"
-      }
-    },
-    {
-      "type": "table",
-      "title": "What the selected rule does",
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "approx-rows"
-          },
-          "type": "json",
-          "source": "inline",
-          "parser": "backend",
-          "format": "table",
-          "url": "",
-          "url_options": {
-            "method": "GET",
-            "data": ""
-          },
-          "root_selector": "( $r := $[rule=\"${signal}\"].{\"rule\": name, \"queries it uses\": uses, \"what it does\": does}; $exists($r) ? $r : [] )",
-          "columns": [
-            {
-              "selector": "rule",
-              "text": "rule",
-              "type": "string"
-            },
-            {
-              "selector": "queries it uses",
-              "text": "queries it uses",
-              "type": "string"
-            },
-            {
-              "selector": "what it does",
-              "text": "what it does",
-              "type": "string"
+              "id": "organize",
+              "options": {
+                "indexByName": {
+                  "run_id": 0,
+                  "dataset": 1,
+                  "configuration": 2,
+                  "policy": 3,
+                  "use_case": 4,
+                  "start": 5,
+                  "end": 6,
+                  "planner_rev": 7
+                },
+                "excludeByName": {},
+                "renameByName": {}
+              }
             }
           ],
-          "data": "[{\"rule\": \"hydra\", \"name\": \"hydra\", \"uses\": \"buffering_l1\", \"does\": \"Buffering L1 norm above the mean plus 3 standard deviations of the previous 30 minutes (Hydra)\"}, {\"rule\": \"hydra_entropy\", \"name\": \"hydra_entropy\", \"uses\": \"entropy_bitrate\", \"does\": \"Bitrate entropy more than 3 standard deviations from the mean of the previous 30 minutes (Hydra)\"}, {\"rule\": \"mux\", \"name\": \"mux\", \"uses\": \"rebuffer_ratio, startup_p95, sessions\", \"does\": \"Rebuffering above 5% or p95 start time above 4 s over 5 minutes, with at least 100 viewers (Mux)\"}, {\"rule\": \"conviva_ai\", \"name\": \"conviva_ai\", \"uses\": \"startup_p95, sessions\", \"does\": \"p95 start time above the mean plus 3 standard deviations of up to 6 hours, with at least 25 plays; the alert then holds for 1 hour (Conviva AI Alerts)\"}, {\"rule\": \"conviva_patent\", \"name\": \"conviva_patent\", \"uses\": \"rebuffer_ratio, distinct_devices\", \"does\": \"Rebuffering above a baseline decaying by 0.998 per minute plus 3 standard deviations for 5 minutes, with at least 100 devices (Conviva patent)\"}]"
-        }
-      ],
-      "transformations": [
-        {
-          "id": "organize",
           "options": {
-            "indexByName": {
-              "rule": 0,
-              "queries it uses": 1,
-              "what it does": 2
-            },
-            "excludeByName": {},
-            "renameByName": {}
-          }
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "cellOptions": {
-              "type": "auto",
-              "wrapText": true
-            },
-            "wrapHeaderText": true
+            "showHeader": true
+          },
+          "id": 13,
+          "gridPos": {
+            "x": 0,
+            "y": 30,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "approx-rows"
           }
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^(rule|queries it uses)$"
+        {
+          "type": "table",
+          "title": "Plans in ${run}",
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "approx-rows"
+              },
+              "type": "json",
+              "source": "url",
+              "parser": "backend",
+              "format": "table",
+              "url": "http://localhost:8000/phase3/runs/index.json",
+              "url_options": {
+                "method": "GET",
+                "data": ""
+              },
+              "root_selector": "( $r := ( $e := $[run_id=\"${run}\"]; $append($e.details.plans ~> $each(function($v, $k) { {\"query\": $k, \"sketch\": $type($v) = \"string\" ? $substringBefore($v, \" \") : \"\", \"parameters\": $type($v) = \"string\" ? ($contains($v, \"{\") ? $replace($replace($substringBefore($substringAfter($v, \":{\"), \"}}\"), \"\\\"\", \"\"), \",\", \", \") : \"\") : \"\", \"exact plan\": $lookup($e.details.exact_plans, $k), \"promql\": $lookup($e.details.promql, $k)} }), $e.details.unsupported ~> $each(function($v, $k) { {\"query\": $k, \"why no approx plan\": $v, \"promql\": $lookup($e.details.promql, $k)} })) ); $exists($r) ? $r : [] )",
+              "columns": [
+                {
+                  "selector": "query",
+                  "text": "query",
+                  "type": "string"
+                },
+                {
+                  "selector": "sketch",
+                  "text": "sketch",
+                  "type": "string"
+                },
+                {
+                  "selector": "parameters",
+                  "text": "parameters",
+                  "type": "string"
+                },
+                {
+                  "selector": "exact plan",
+                  "text": "exact plan",
+                  "type": "string"
+                },
+                {
+                  "selector": "why no approx plan",
+                  "text": "why no approx plan",
+                  "type": "string"
+                },
+                {
+                  "selector": "promql",
+                  "text": "promql",
+                  "type": "string"
+                }
+              ]
+            }
+          ],
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "indexByName": {
+                  "query": 0,
+                  "sketch": 1,
+                  "parameters": 2,
+                  "exact plan": 3,
+                  "why no approx plan": 4,
+                  "promql": 5
+                },
+                "excludeByName": {},
+                "renameByName": {}
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "cellOptions": {
+                  "type": "auto",
+                  "wrapText": true
+                },
+                "wrapHeaderText": true
+              }
             },
-            "properties": [
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true
+          },
+          "id": 14,
+          "gridPos": {
+            "x": 12,
+            "y": 30,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "approx-rows"
+          }
+        },
+        {
+          "type": "table",
+          "title": "What the selected rule does",
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "approx-rows"
+              },
+              "type": "json",
+              "source": "inline",
+              "parser": "backend",
+              "format": "table",
+              "url": "",
+              "url_options": {
+                "method": "GET",
+                "data": ""
+              },
+              "root_selector": "( $r := $[rule=\"${signal}\"].{\"rule\": name, \"queries it uses\": uses, \"what it does\": does}; $exists($r) ? $r : [] )",
+              "columns": [
+                {
+                  "selector": "rule",
+                  "text": "rule",
+                  "type": "string"
+                },
+                {
+                  "selector": "queries it uses",
+                  "text": "queries it uses",
+                  "type": "string"
+                },
+                {
+                  "selector": "what it does",
+                  "text": "what it does",
+                  "type": "string"
+                }
+              ],
+              "data": "[{\"rule\": \"hydra\", \"name\": \"hydra\", \"uses\": \"buffering_l1\", \"does\": \"Buffering L1 norm above the mean plus 3 standard deviations of the previous 30 minutes (Hydra)\"}, {\"rule\": \"hydra_entropy\", \"name\": \"hydra_entropy\", \"uses\": \"entropy_bitrate\", \"does\": \"Bitrate entropy more than 3 standard deviations from the mean of the previous 30 minutes (Hydra)\"}, {\"rule\": \"mux\", \"name\": \"mux\", \"uses\": \"rebuffer_ratio, startup_p95, sessions\", \"does\": \"Rebuffering above 5% or p95 start time above 4 s over 5 minutes, with at least 100 viewers (Mux)\"}, {\"rule\": \"conviva_ai\", \"name\": \"conviva_ai\", \"uses\": \"startup_p95, sessions\", \"does\": \"p95 start time above the mean plus 3 standard deviations of up to 6 hours, with at least 25 plays; the alert then holds for 1 hour (Conviva AI Alerts)\"}, {\"rule\": \"conviva_patent\", \"name\": \"conviva_patent\", \"uses\": \"rebuffer_ratio, distinct_devices\", \"does\": \"Rebuffering above a baseline decaying by 0.998 per minute plus 3 standard deviations for 5 minutes, with at least 100 devices (Conviva patent)\"}]"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "indexByName": {
+                  "rule": 0,
+                  "queries it uses": 1,
+                  "what it does": 2
+                },
+                "excludeByName": {},
+                "renameByName": {}
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "cellOptions": {
+                  "type": "auto",
+                  "wrapText": true
+                },
+                "wrapHeaderText": true
+              }
+            },
+            "overrides": [
               {
-                "id": "custom.width",
-                "value": 200
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^(rule|queries it uses)$"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 200
+                  }
+                ]
               }
             ]
+          },
+          "options": {
+            "showHeader": true
+          },
+          "id": 15,
+          "gridPos": {
+            "x": 0,
+            "y": 37,
+            "w": 24,
+            "h": 5
+          },
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "approx-rows"
           }
-        ]
-      },
-      "options": {
-        "showHeader": true
-      },
-      "id": 15,
-      "gridPos": {
-        "x": 0,
-        "y": 115,
-        "w": 24,
-        "h": 5
-      },
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "approx-rows"
-      }
+        }
+      ]
     },
     {
       "id": 16,
       "type": "row",
       "title": "Rules in ${run}",
-      "collapsed": false,
+      "collapsed": true,
       "gridPos": {
         "x": 0,
-        "y": 120,
+        "y": 30,
         "w": 24,
         "h": 1
       },
-      "panels": []
-    },
-    {
-      "type": "table",
-      "title": "Every rule: exact against approx, counted per subpopulation and evaluation",
-      "targets": [
+      "panels": [
         {
-          "refId": "A",
+          "type": "table",
+          "title": "Every rule: exact against approx, counted per subpopulation and evaluation",
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "approx-rows"
+              },
+              "type": "json",
+              "source": "url",
+              "parser": "backend",
+              "format": "table",
+              "url": "http://localhost:8000/phase3/runs/${run}/fidelity_summary.json",
+              "url_options": {
+                "method": "GET",
+                "data": ""
+              },
+              "root_selector": "( $r := ( $m := $[labels.app=\"rule\" and $not($exists(labels.entity))]; $m[metric=\"agreement\"].( $s := labels.signal; $merge([{\"rule\": $s}, $m[labels.signal=$s]{metric: value}]) ) ); $exists($r) ? $r : [] )",
+              "columns": [
+                {
+                  "selector": "rule",
+                  "text": "rule",
+                  "type": "string"
+                },
+                {
+                  "selector": "agreement",
+                  "text": "agreement",
+                  "type": "number"
+                },
+                {
+                  "selector": "true_positive",
+                  "text": "true positive",
+                  "type": "number"
+                },
+                {
+                  "selector": "false_positive",
+                  "text": "false positive",
+                  "type": "number"
+                },
+                {
+                  "selector": "false_negative",
+                  "text": "false negative",
+                  "type": "number"
+                },
+                {
+                  "selector": "entries",
+                  "text": "exact episodes",
+                  "type": "number"
+                },
+                {
+                  "selector": "missed_entries",
+                  "text": "missed episodes",
+                  "type": "number"
+                },
+                {
+                  "selector": "gaps",
+                  "text": "gaps",
+                  "type": "number"
+                },
+                {
+                  "selector": "mean_onset_delay",
+                  "text": "mean onset delay (evaluations)",
+                  "type": "number"
+                },
+                {
+                  "selector": "entities",
+                  "text": "subpopulations",
+                  "type": "number"
+                }
+              ]
+            }
+          ],
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "indexByName": {
+                  "rule": 0,
+                  "agreement": 1,
+                  "true positive": 2,
+                  "false positive": 3,
+                  "false negative": 4,
+                  "exact episodes": 5,
+                  "missed episodes": 6,
+                  "gaps": 7,
+                  "mean onset delay (evaluations)": 8,
+                  "subpopulations": 9
+                },
+                "excludeByName": {},
+                "renameByName": {}
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "minWidth": 60,
+                "wrapHeaderText": true
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "agreement"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "percentunit"
+                  },
+                  {
+                    "id": "decimals",
+                    "value": 2
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true
+          },
+          "id": 17,
+          "gridPos": {
+            "x": 0,
+            "y": 31,
+            "w": 24,
+            "h": 8
+          },
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
             "uid": "approx-rows"
-          },
-          "type": "json",
-          "source": "url",
-          "parser": "backend",
-          "format": "table",
-          "url": "http://localhost:8000/phase3/runs/${run}/fidelity_summary.json",
-          "url_options": {
-            "method": "GET",
-            "data": ""
-          },
-          "root_selector": "( $r := ( $m := $[labels.app=\"rule\" and $not($exists(labels.entity))]; $m[metric=\"agreement\"].( $s := labels.signal; $merge([{\"rule\": $s}, $m[labels.signal=$s]{metric: value}]) ) ); $exists($r) ? $r : [] )",
-          "columns": [
-            {
-              "selector": "rule",
-              "text": "rule",
-              "type": "string"
-            },
-            {
-              "selector": "agreement",
-              "text": "agreement",
-              "type": "number"
-            },
-            {
-              "selector": "true_positive",
-              "text": "true positive",
-              "type": "number"
-            },
-            {
-              "selector": "false_positive",
-              "text": "false positive",
-              "type": "number"
-            },
-            {
-              "selector": "false_negative",
-              "text": "false negative",
-              "type": "number"
-            },
-            {
-              "selector": "entries",
-              "text": "exact episodes",
-              "type": "number"
-            },
-            {
-              "selector": "missed_entries",
-              "text": "missed episodes",
-              "type": "number"
-            },
-            {
-              "selector": "gaps",
-              "text": "gaps",
-              "type": "number"
-            },
-            {
-              "selector": "mean_onset_delay",
-              "text": "mean onset delay (evaluations)",
-              "type": "number"
-            },
-            {
-              "selector": "entities",
-              "text": "subpopulations",
-              "type": "number"
-            }
-          ]
-        }
-      ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "indexByName": {
-              "rule": 0,
-              "agreement": 1,
-              "true positive": 2,
-              "false positive": 3,
-              "false negative": 4,
-              "exact episodes": 5,
-              "missed episodes": 6,
-              "gaps": 7,
-              "mean onset delay (evaluations)": 8,
-              "subpopulations": 9
-            },
-            "excludeByName": {},
-            "renameByName": {}
           }
         }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "minWidth": 60,
-            "wrapHeaderText": true
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "agreement"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "percentunit"
-              },
-              {
-                "id": "decimals",
-                "value": 2
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "showHeader": true
-      },
-      "id": 17,
-      "gridPos": {
-        "x": 0,
-        "y": 121,
-        "w": 24,
-        "h": 8
-      },
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "approx-rows"
-      }
+      ]
     },
     {
       "id": 18,
@@ -1675,7 +1701,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 129,
+        "y": 31,
         "w": 24,
         "h": 1
       },
@@ -1767,7 +1793,7 @@
       "id": 19,
       "gridPos": {
         "x": 0,
-        "y": 130,
+        "y": 32,
         "w": 8,
         "h": 8
       },
@@ -1850,7 +1876,7 @@
       "id": 20,
       "gridPos": {
         "x": 8,
-        "y": 130,
+        "y": 32,
         "w": 10,
         "h": 8
       },
@@ -1944,7 +1970,7 @@
       "id": 21,
       "gridPos": {
         "x": 18,
-        "y": 130,
+        "y": 32,
         "w": 6,
         "h": 8
       },
@@ -2061,7 +2087,7 @@
               "options": {
                 "none": {
                   "color": "transparent",
-                  "text": " ",
+                  "text": "",
                   "index": 0
                 },
                 "onset delay": {
@@ -2099,7 +2125,7 @@
                 },
                 "idle": {
                   "color": "transparent",
-                  "text": " ",
+                  "text": "",
                   "index": 9
                 }
               }
@@ -2161,7 +2187,9 @@
         "rowHeight": 0.8,
         "alignValue": "center",
         "legend": {
-          "showLegend": false
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
@@ -2173,7 +2201,7 @@
       "id": 22,
       "gridPos": {
         "x": 0,
-        "y": 138,
+        "y": 40,
         "w": 24,
         "h": 5
       },
@@ -2189,7 +2217,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 143,
+        "y": 45,
         "w": 24,
         "h": 1
       },
@@ -2261,7 +2289,7 @@
       "id": 24,
       "gridPos": {
         "x": 0,
-        "y": 144,
+        "y": 46,
         "w": 24,
         "h": 7
       },
@@ -2336,7 +2364,7 @@
       "id": 25,
       "gridPos": {
         "x": 0,
-        "y": 151,
+        "y": 53,
         "w": 24,
         "h": 7
       },
@@ -2352,7 +2380,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 158,
+        "y": 60,
         "w": 24,
         "h": 1
       },
@@ -3006,7 +3034,7 @@
       "id": 27,
       "gridPos": {
         "x": 0,
-        "y": 159,
+        "y": 61,
         "w": 12,
         "h": 8
       },
@@ -3663,7 +3691,7 @@
       "id": 28,
       "gridPos": {
         "x": 12,
-        "y": 159,
+        "y": 61,
         "w": 12,
         "h": 8
       },
