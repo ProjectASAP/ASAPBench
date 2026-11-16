@@ -47,6 +47,20 @@ impl CpuTimeSampler {
     }
 }
 
+/// CPU time of the calling thread (user + system), from
+/// `CLOCK_THREAD_CPUTIME_ID`; 0 off unix. Unlike [`CpuTimeSampler`], work on
+/// other threads of the process does not count: a thread that sleeps 100 ms
+/// while another thread spins reads about 0 ns.
+#[derive(Debug, Clone, Copy)]
+pub struct ThreadCpuTime;
+
+impl ThreadCpuTime {
+    /// The calling thread's CPU time so far, in ns.
+    pub fn now_ns() -> u64 {
+        todo!("implemented after test approval")
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CpuTimeSample {
     pub user_ns: u64,
@@ -117,6 +131,22 @@ mod tests {
             "expected some CPU time, got user={} sys={}",
             sample.user_ns,
             sample.sys_ns
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn thread_cpu_time_advances_with_work_on_this_thread() {
+        let before = ThreadCpuTime::now_ns();
+        let mut acc: u64 = 0;
+        for i in 0..10_000_000u64 {
+            acc = acc.wrapping_add(i);
+        }
+        std::hint::black_box(acc);
+        let after = ThreadCpuTime::now_ns();
+        assert!(
+            after > before,
+            "thread CPU did not advance: {before} -> {after}"
         );
     }
 }
