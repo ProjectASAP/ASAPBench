@@ -1,5 +1,5 @@
 Written by ASAPPlanner's `installable_plan_of` (crates/planner/src/installable/mod.rs) at
-ProjectASAP/ASAPPlanner PR #1374 head 7834fed4dc4bb0c1c8b4beb3682b2d1f8ac018a1, from the public
+ProjectASAP/ASAPPlanner main bc725bda8b174fe7fc97c62f19db8054c700e471 (which merged #1374), from the public
 synthetic workloads under `../workloads/`, with the production planning stages (Stages 1-2,
 then Stage 3 `select_plan`). `installable_plan_of` validates each plan and runs the executor
 compile check.
@@ -28,6 +28,8 @@ sweep produces. The full sweep plans all 206 public PromQL workloads (showcase, 
 heldout, and the paper's mixed and range-heavy sets) with each of the four capability
 files; every ClickHouse plan of it translates, and no equivalent-only one has a
 substitution.
+The sweep ran at #1374's last head, 7834fed4d. At main bc725bda8 every committed fixture was
+regenerated and is byte-identical.
 
 How each file was made: the workload was planned with
 `planning_stages::run_stages_until(.., RunUntil::Stage2)` (with
