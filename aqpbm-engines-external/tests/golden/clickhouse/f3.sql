@@ -1,7 +1,7 @@
 -- Prometheus extrapolatedRate (promql/functions.go, v3.15.1) over the raw samples
 -- in (t - 5m, t]: the increase adds the previous value at each drop (counter reset);
 -- the 1.1 x average-gap threshold applies first, then the zero-point clamp.
-CREATE TABLE src_requests_total (ts DateTime64(3, 'UTC'), value Float64, `job` String, `$promql_series_identity` String)
+CREATE TABLE src_requests_total (ts DateTime64(3, 'UTC'), value Float64, `job` LowCardinality(String), `$promql_series_identity` LowCardinality(String))
   ENGINE = MergeTree ORDER BY (ts, `$promql_series_identity`);
 
 SELECT `job`, sum(value) AS value
