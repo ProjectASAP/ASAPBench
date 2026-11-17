@@ -1,5 +1,5 @@
 //! K1: the committed deployment-capabilities files (ASAPPlanner #1374
-//! format, valid at its head `7834fed4d`) are exactly the hand-computed values of the design. An edit to a
+//! format, as merged into ASAPPlanner main at `bc725bda8`) are exactly the hand-computed values of the design. An edit to a
 //! file must also edit this test and the README row it comes from.
 
 use serde_json::{json, Value};
