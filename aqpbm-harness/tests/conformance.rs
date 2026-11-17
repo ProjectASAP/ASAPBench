@@ -58,7 +58,7 @@ fn a_fake_with_nondeterministic_answers_fails_and_shows_the_differing_answer() {
         )),
         "{message}"
     );
-    assert!(series.contains("probe"), "{series}");
+    assert!(series.contains("instance_0"), "{series}");
 }
 
 /// A fake that counts the sample on the window start answers 2 for

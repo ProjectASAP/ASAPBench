@@ -387,8 +387,8 @@ fn consecutive_jobs_share_one_idle_sample() {
 
 /// A series that already carries a `query` label keeps it: answers are keyed
 /// by query id outside the labels, so no label name is reserved. Query `q`
-/// over `m{query="x", s="s_0"}` answers under `"q" -> {__name__="m",
-/// query="x", s="s_0"}`.
+/// over `m{query="x", s="s_0"}` answers under `"q" -> {query="x",
+/// s="s_0"}` (a range function drops `__name__`).
 #[test]
 fn a_series_label_named_query_is_kept() {
     let engine = FakeEngine::default();
@@ -412,7 +412,9 @@ fn a_series_label_named_query_is_kept() {
     };
     installed.ingest(&samples).unwrap();
     let (answers, _) = installed.evaluate(10_000).unwrap();
-    assert_eq!(answers.get("q", &labels), Some(2.5));
+    let mut output_labels = labels.clone();
+    output_labels.remove("__name__");
+    assert_eq!(answers.get("q", &output_labels), Some(2.5));
     assert_eq!(answers.iter().count(), 1);
 }
 

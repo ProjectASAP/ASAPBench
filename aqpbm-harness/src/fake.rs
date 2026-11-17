@@ -582,10 +582,13 @@ impl InstalledArm for FakeArm {
                     OverTime::Sum => values.iter().sum(),
                     OverTime::Count => values.len() as f64,
                 };
+                // A range function drops the metric name (PromQL's output labels).
+                let mut output_labels = SeriesLabels::clone(labels);
+                output_labels.remove("__name__");
                 answers
                     .entry(query.id.clone())
                     .or_default()
-                    .insert(SeriesLabels::clone(labels), value + self.answer_offset);
+                    .insert(output_labels, value + self.answer_offset);
             }
             self.charge_node(&query.id, self.ns_per_series * answered_series);
         }
