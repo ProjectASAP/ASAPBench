@@ -481,13 +481,16 @@ fn server_cpu_is_the_sum_of_its_threads_schedstat() {
 }
 
 /// Puts `pids` in the cgroup v2 group `group` (their `<pid>/cgroup` reads
-/// `0::<group>`) and writes the group's `cpu.stat` with `usage_usec`.
+/// `0::<group>`, the group's `cgroup.procs` lists them) and writes the
+/// group's `cpu.stat` with `usage_usec`.
 fn write_fake_cgroup(root: &std::path::Path, pids: &[u32], group: &str, usage_usec: u64) {
     for pid in pids {
         std::fs::write(root.join(format!("{pid}/cgroup")), format!("0::{group}\n")).unwrap();
     }
     let dir = root.join("cgroup").join(group.trim_start_matches('/'));
     std::fs::create_dir_all(&dir).unwrap();
+    let procs: String = pids.iter().map(|pid| format!("{pid}\n")).collect();
+    std::fs::write(dir.join("cgroup.procs"), procs).unwrap();
     std::fs::write(
         dir.join("cpu.stat"),
         format!("usage_usec {usage_usec}\nuser_usec {usage_usec}\nsystem_usec 0\n"),

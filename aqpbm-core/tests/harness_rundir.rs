@@ -96,6 +96,7 @@ fn arm_result(workload: &str) -> ArmResult {
         server_memory_before: None,
         server_memory_after: None,
         server_cpu_ns_whole_arm: None,
+        cpu_source: "calling-thread".into(),
         installs_held: 1,
     }
 }
@@ -109,6 +110,7 @@ fn job(core: usize, busy_before: f64, busy_after: f64, loadavg: [f64; 2]) -> Job
         marks: Vec::new(),
         samples: vec![StepCost::default()],
         median: StepCost::default(),
+        median_run: 0,
     }
 }
 
