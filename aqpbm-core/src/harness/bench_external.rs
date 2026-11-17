@@ -31,7 +31,7 @@ use crate::harness::arm_run::{run_arm, ArmSchedule};
 use crate::harness::engine::{ArmSpec, CpuAccounting, EngineDescription, EngineUnderTest, WorkloadSpec};
 use crate::harness::protocol::{LoadProbe, MeasurementClocks, Protocol};
 use crate::harness::records::ArmResult;
-use crate::harness::rundir::{write_json, RunDir, RunDirError};
+use crate::harness::rundir::{check_result_name, write_json, RunDir, RunDirError};
 
 /// `plans/<variant>/variant.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +106,8 @@ pub fn read_workloads(
     let mut workloads = BTreeMap::new();
     for path in sorted_files(&run_dir.path().join("workloads"))? {
         let stem = file_stem_with_suffix(&path, ".json")?;
+        // Refused here, before any cell runs, not when its result is written.
+        check_result_name("workload", &stem, true)?;
         let spec: WorkloadSpec = read_json(&path)?;
         if spec.name != stem {
             return Err(BenchExternalError::Layout(format!(
@@ -133,6 +135,7 @@ pub fn read_variants(
             )));
         }
         let name = file_name(&dir);
+        check_result_name("variant", &name, true)?;
         let mut record = None;
         let mut entries = BTreeMap::new();
         for path in sorted_files(&dir)? {

@@ -619,3 +619,26 @@ fn the_report_refuses_lanes_that_did_not_run_the_same_data_or_times() {
         "{error}"
     );
 }
+
+/// A workload or variant name that cannot be part of a result file name is
+/// refused before any cell runs, not after its arm ran.
+#[test]
+fn result_file_names_are_checked_before_any_cell_runs() {
+    let temp = TempDir::new("names");
+    let run = fixture(&temp, "{}", "{}");
+    let workloads = run.path().join("workloads");
+    let spec = workload("w__3");
+    write(
+        &workloads.join("w__3.json"),
+        &serde_json::to_string(&spec).unwrap(),
+    );
+    for variant in ["v1", "v2"] {
+        write(
+            &run.path().join(format!("plans/{variant}/w__3.plan.json")),
+            "{}",
+        );
+    }
+    let error = run_fake(&run, None).unwrap_err();
+    assert!(error.contains("w__3") && error.contains("__"), "{error}");
+    assert!(!run.path().join("results/fake").exists());
+}
