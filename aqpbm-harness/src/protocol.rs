@@ -14,6 +14,7 @@ use aqpbm_core::metrics::{CpuTimeSampler, ThreadCpuTime};
 
 use serde::{Deserialize, Serialize};
 
+use crate::cgroup::{CgroupCpu, CgroupError, CgroupSource};
 use crate::engine::{CpuAccounting, EngineError, StepCost, StepReport};
 use crate::fit::FitPoint;
 
@@ -161,6 +162,68 @@ impl CpuClock for ProcessesCpuClock {
     }
 }
 
+/// The clock of a [`CpuAccounting::Cgroup`] engine: an external server in
+/// its own cgroup v2 group, read locally or through the agent on the server
+/// host. Process CPU is the group's `cpu.stat` `usage_usec` (µs resolution,
+/// every thread and child of the group); thread CPU is 0; wall time is the
+/// OS monotonic clock. A reading whose `nr_throttled` is above the one at
+/// creation is [`ProtocolError::CgroupThrottled`]: a CPU quota stopped the
+/// server, so the step's CPU is not the work's.
+#[derive(Debug)]
+pub struct CgroupCpuClock {
+    source: CgroupSource,
+    nr_throttled_at_start: u64,
+    last_process_cpu_ns: Cell<u64>,
+    read_error: RefCell<Option<ProtocolError>>,
+}
+
+impl CgroupCpuClock {
+    /// Reads `cpu.stat` once, so an unreachable group fails before any job.
+    pub fn new(source: CgroupSource) -> Result<Self, ProtocolError> {
+        let cpu = source.cpu()?;
+        Ok(CgroupCpuClock {
+            source,
+            nr_throttled_at_start: cpu.nr_throttled,
+            last_process_cpu_ns: Cell::new(cpu.usage_ns),
+            read_error: RefCell::new(None),
+        })
+    }
+
+    fn read_cpu_ns(&self) -> Result<u64, ProtocolError> {
+        let cpu = self.source.cpu()?;
+        if cpu.nr_throttled > self.nr_throttled_at_start {
+            return Err(ProtocolError::CgroupThrottled {
+                nr_throttled: cpu.nr_throttled - self.nr_throttled_at_start,
+            });
+        }
+        Ok(cpu.usage_ns)
+    }
+}
+
+impl CpuClock for CgroupCpuClock {
+    fn thread_cpu_ns(&self) -> u64 {
+        0
+    }
+    fn process_cpu_ns(&self) -> u64 {
+        match self.read_cpu_ns() {
+            Ok(ns) => {
+                self.last_process_cpu_ns.set(ns);
+                ns
+            }
+            Err(error) => {
+                self.read_error.borrow_mut().get_or_insert(error);
+                self.last_process_cpu_ns.get()
+            }
+        }
+    }
+    fn wall_ns(&self) -> u64 {
+        OsCpuClock.wall_ns()
+    }
+    fn take_read_error(&self) -> Option<ProtocolError> {
+        self.read_error.borrow_mut().take()
+    }
+}
+
 /// The cgroup v2 path of `<proc_root>/<pid>/cgroup` (its `0::` line), such
 /// as `/system.slice/docker-1a2b.scope`; `None` when unreadable or v1 only.
 fn cgroup_v2_path(proc_root: &Path, pid: &str) -> Option<String> {
@@ -188,21 +251,13 @@ fn own_cgroup_cpu_stat(files: &ProcessCpuFiles, pids: &[u32]) -> Option<PathBuf>
     cgroup_usage_ns(&cpu_stat).ok().map(|_| cpu_stat)
 }
 
-/// `usage_usec` of a cgroup v2 `cpu.stat`, in ns.
+/// `usage_usec` of a cgroup v2 `cpu.stat`, in ns ([`CgroupCpu::parse`]).
 fn cgroup_usage_ns(cpu_stat: &Path) -> Result<u64, ProtocolError> {
-    let parse_error = |message: String| ProtocolError::Parse {
+    let text = std::fs::read_to_string(cpu_stat).map_err(|error| ProtocolError::Parse {
         what: cpu_stat.display().to_string(),
-        message,
-    };
-    let text = std::fs::read_to_string(cpu_stat).map_err(|error| parse_error(error.to_string()))?;
-    let usage_usec: u64 = text
-        .lines()
-        .find_map(|line| line.strip_prefix("usage_usec "))
-        .ok_or_else(|| parse_error("no usage_usec line".into()))?
-        .trim()
-        .parse()
-        .map_err(|_| parse_error("usage_usec is not a number".into()))?;
-    Ok(usage_usec * 1_000)
+        message: error.to_string(),
+    })?;
+    Ok(CgroupCpu::parse(&text)?.usage_ns)
 }
 
 /// The state (field 3) of one `/proc/<pid>/stat` line, such as `S` or `Z`.
@@ -293,6 +348,9 @@ impl<'a> MeasurementClocks<'a> {
                 pids.clone(),
                 self.process_cpu_files.clone(),
             )?),
+            CpuAccounting::Cgroup(source) => {
+                EngineClock::Cgroup(CgroupCpuClock::new(source.clone())?)
+            }
         })
     }
 }
@@ -303,6 +361,7 @@ impl<'a> MeasurementClocks<'a> {
 pub enum EngineClock<'a> {
     CallingThread(&'a dyn CpuClock),
     Processes(ProcessesCpuClock),
+    Cgroup(CgroupCpuClock),
 }
 
 impl EngineClock<'_> {
@@ -310,6 +369,7 @@ impl EngineClock<'_> {
         match self {
             EngineClock::CallingThread(clock) => *clock,
             EngineClock::Processes(clock) => clock,
+            EngineClock::Cgroup(clock) => clock,
         }
     }
 
@@ -318,7 +378,7 @@ impl EngineClock<'_> {
     pub fn engine_cpu_ns(&self, cost: &StepCost) -> u64 {
         match self {
             EngineClock::CallingThread(_) => cost.thread_cpu_ns.unwrap_or(0),
-            EngineClock::Processes(_) => cost.process_cpu_ns,
+            EngineClock::Processes(_) | EngineClock::Cgroup(_) => cost.process_cpu_ns,
         }
     }
 }
@@ -829,6 +889,13 @@ pub enum ProtocolError {
     /// Pinning failed in the OS.
     #[error("pinning to core {core} failed: {message}")]
     Pin { core: usize, message: String },
+    /// A server's cgroup file that cannot be read.
+    #[error(transparent)]
+    Cgroup(#[from] CgroupError),
+    /// The server's cgroup was throttled by a CPU quota during the run
+    /// (`nr_throttled` grew by this many periods); start it without `--cpus`.
+    #[error("the server's cgroup was throttled {nr_throttled} times by a CPU quota: start it without --cpus")]
+    CgroupThrottled { nr_throttled: u64 },
     /// The job's engine call failed.
     #[error("the job failed: {0}")]
     Job(#[from] EngineError),
