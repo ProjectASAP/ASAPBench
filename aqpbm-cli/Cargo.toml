@@ -29,6 +29,7 @@ heap-track = ["sketch-bench/heap-track", "aqpbm-core/heap-track"]
 aqpbm-datagen = { workspace = true, features = ["import"] }
 aqpbm-core.workspace = true
 aqpbm-harness.workspace = true
+aqpbm-engines-external.workspace = true
 sketch-bench.workspace = true
 clap.workspace = true
 serde.workspace = true
