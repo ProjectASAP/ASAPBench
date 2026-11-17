@@ -1,7 +1,8 @@
-CREATE TABLE src_latency (ts DateTime64(3, 'UTC'), value Float64, `instance` LowCardinality(String), `$promql_series_identity` LowCardinality(String))
-  ENGINE = MergeTree ORDER BY (ts, `$promql_series_identity`);
+CREATE TABLE src_latency (ts DateTime64(3, 'UTC'), value Float64, `instance` LowCardinality(String), `$promql_series_identity` String,
+                          INDEX ts_minmax ts TYPE minmax GRANULARITY 1)
+  ENGINE = MergeTree ORDER BY (`$promql_series_identity`, ts);
 
-CREATE TABLE v1 (`instance` LowCardinality(String), `$promql_series_identity` LowCardinality(String), window_end_ms Int64,
+CREATE TABLE v1 (`instance` LowCardinality(String), `$promql_series_identity` String, window_end_ms Int64,
                  state AggregateFunction(count))
   ENGINE = AggregatingMergeTree ORDER BY (window_end_ms, `instance`, `$promql_series_identity`);
 
@@ -19,6 +20,7 @@ FROM (
     SELECT `instance`, `$promql_series_identity`, countMerge(state) AS value
     FROM v1
     WHERE window_end_ms > {t:Int64} - 300000 AND window_end_ms <= {t:Int64}
+      AND (SELECT throwIf({t:Int64} % 60000 != 0, 'the evaluation time is not a multiple of the window width, 60000 ms')) = 0
     GROUP BY `instance`, `$promql_series_identity`)
   GROUP BY `instance`)
 HAVING count() > 0;

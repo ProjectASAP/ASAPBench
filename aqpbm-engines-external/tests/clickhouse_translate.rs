@@ -4,10 +4,12 @@
 
 mod common;
 
-use aqpbm_engines_external::clickhouse::{translate, ClickHouseDeployment};
+use aqpbm_engines_external::clickhouse::{translate, ClickHouseDeployment, TableRetention};
 use aqpbm_engines_external::plan_file::PlanFile;
 use aqpbm_engines_external::{SharingLost, Substitution, TranslationError};
-use common::{fixture, fixture_value, golden, normalized, payload_body};
+use common::{
+    fixture, fixture_value, fixture_value_public, golden, normalized, payload_body, public_fixture,
+};
 use serde_json::{json, Value};
 
 fn translated(name: &str) -> ClickHouseDeployment {
@@ -119,13 +121,14 @@ fn shared_query_time_node_is_reported() {
         vec![
             normalized(
                 "CREATE TABLE src_latency (ts DateTime64(3, 'UTC'), value Float64, `job` LowCardinality(String), \
-                 `$promql_series_identity` LowCardinality(String)) \
-                 ENGINE = MergeTree ORDER BY (ts, `$promql_series_identity`)"
+                 `$promql_series_identity` String, INDEX ts_minmax ts TYPE minmax GRANULARITY 1) \
+                 ENGINE = MergeTree ORDER BY (`$promql_series_identity`, ts)"
             ),
             normalized(
                 "CREATE TABLE src_requests_total (ts DateTime64(3, 'UTC'), value Float64, \
-                 `job` LowCardinality(String), `$promql_series_identity` LowCardinality(String)) \
-                 ENGINE = MergeTree ORDER BY (ts, `$promql_series_identity`)"
+                 `job` LowCardinality(String), `$promql_series_identity` String, \
+                 INDEX ts_minmax ts TYPE minmax GRANULARITY 1) \
+                 ENGINE = MergeTree ORDER BY (`$promql_series_identity`, ts)"
             ),
         ]
     );
@@ -236,10 +239,13 @@ fn unknown_operator_is_refused_at_its_node() {
 
 #[test]
 fn answer_changing_fields_are_refused_at_their_node() {
-    // M3: a regrouping merge.
+    // M3: a regrouping merge of stored windows.
     let mut value = fixture_value("sot_1h_stored_sum");
     payload_body(&mut value, 3)["group_by"] = json!([2]);
-    assert_eq!(refusal(value), shape(3, "regrouping merge"));
+    assert_eq!(
+        refusal(value),
+        shape(3, "regrouping merge of stored windows")
+    );
 
     // M4: `without` grouping.
     let mut value = fixture_value("sot_1h_stored_sum");
@@ -251,10 +257,22 @@ fn answer_changing_fields_are_refused_at_their_node() {
     payload_body(&mut value, 0)["predicates"][0]["Compare"]["op"] = json!("Ne");
     assert_eq!(refusal(value), shape(0, "predicate"));
 
-    // M8: Aggregate filters.
+    // M8: Aggregate filters, one per measure.
     let mut value = fixture_value("joint_5m");
     payload_body(&mut value, 2)["filters"] = json!([{"Literal": {"Boolean": true}}]);
     assert_eq!(refusal(value), shape(2, "filter"));
+    // L2: a measure without a filter (`[null]`) is no filter.
+    let mut value = fixture_value("joint_5m");
+    payload_body(&mut value, 2)["filters"] = json!([null]);
+    assert_eq!(
+        translate(&PlanFile::from_value(value).unwrap()).unwrap(),
+        translated("joint_5m")
+    );
+
+    // L1: label equality with SQL semantics.
+    let mut value = fixture_value("max_5m_label_filter");
+    payload_body(&mut value, 0)["predicates"][0]["Compare"]["semantics"] = json!("sql");
+    assert_eq!(refusal(value), shape(0, "predicate"));
 
     // M9: Aggregate having.
     let mut value = fixture_value("joint_5m");
@@ -285,6 +303,211 @@ fn irate_state_is_refused() {
     assert_eq!(refusal(value), shape(1, "exact IRate"));
 }
 
+#[test]
+fn retention_is_recorded_and_ttl_is_separate() {
+    // T2: the chain keeps 1 h of windows; its Scan runs at ingestion only, so
+    // the source table has no raw-data retention.
+    let deployment = translated("sot_1h_stored_sum");
+    assert_eq!(
+        deployment.table_retention,
+        vec![TableRetention {
+            table: "v1".into(),
+            row_time_sql: "toDateTime(intDiv(window_end_ms, 1000))".into(),
+            retention_ms: 3_600_000,
+        }]
+    );
+    assert_eq!(
+        deployment.ttl_statements(),
+        vec!["ALTER TABLE v1 MODIFY TTL toDateTime(intDiv(window_end_ms, 1000)) + toIntervalSecond(3600)"]
+    );
+    assert!(!deployment.script().contains("TTL"));
+    // A query-time Scan keeps the 5 m its range reads.
+    assert_eq!(
+        translated("rate_5m_query_time").table_retention,
+        vec![TableRetention {
+            table: "src_requests_total".into(),
+            row_time_sql: "toDateTime(ts)".into(),
+            retention_ms: 300_000,
+        }]
+    );
+}
+
+#[test]
+fn grouped_query_time_summary_groups_by_its_columns() {
+    // G1: the showcase q4c shape, `sum by (job) (sum_over_time(latency[1m]))`
+    // every 10 s: a query-time SummaryAgg(Sum) reduced to `job`.
+    let deployment = translate(&public_fixture(
+        "q4c_sum_over_time__1m_1hz_10s",
+        "clickhouse.equivalent-only",
+    ))
+    .expect("translates");
+    assert_eq!(
+        normalized(&deployment.script()),
+        normalized(
+            "CREATE TABLE src_latency (ts DateTime64(3, 'UTC'), value Float64, `job` LowCardinality(String), \
+             `$promql_series_identity` String, INDEX ts_minmax ts TYPE minmax GRANULARITY 1) \
+             ENGINE = MergeTree ORDER BY (`$promql_series_identity`, ts);\n\n\
+             SELECT `job`, sum(value) AS value FROM src_latency \
+             WHERE ts > fromUnixTimestamp64Milli({t:Int64} - 60000) \
+             AND ts <= fromUnixTimestamp64Milli({t:Int64}) GROUP BY `job`;"
+        )
+    );
+    assert_eq!(deployment.query_time_steps_ms, vec![1]);
+    assert!(deployment.substitutions.is_empty());
+}
+
+#[test]
+fn top_k_keeps_k_series_per_group() {
+    // G5: `topk(10, sum by (instance) (rate(requests_total[5m])))`.
+    let deployment = translate(&public_fixture(
+        "topk__5m__1hz__60s",
+        "clickhouse.equivalent-only",
+    ))
+    .expect("translates");
+    let query = normalized(&deployment.queries[0]);
+    assert!(
+        query.starts_with(
+            "SELECT `instance`, value FROM ( SELECT `instance`, sum(value) AS value FROM ( \
+             SELECT `instance`, `$promql_series_identity`, increase * ("
+        ),
+        "{query}"
+    );
+    assert!(
+        query.ends_with(") GROUP BY `instance`) ORDER BY value DESC, `instance` LIMIT 10"),
+        "{query}"
+    );
+    // `topk(4, ...) by (region)` in mixed-03 (root 21): k per region.
+    let deployment =
+        translate(&public_fixture("mixed-03", "clickhouse.equivalent-only")).expect("translates");
+    assert!(normalized(&deployment.queries[7]).ends_with(
+        "ORDER BY value DESC, `region`, `service`, `$promql_series_identity` LIMIT 8 BY `region`, `service`"
+    ));
+}
+
+#[test]
+fn instant_selector_reads_each_series_latest_sample() {
+    // G6: `sum by (job) (data)`; the plan's lookback is 5 ms.
+    let deployment =
+        translate(&public_fixture("rangeheavy", "clickhouse.equivalent-only")).expect("translates");
+    assert_eq!(
+        normalized(&deployment.queries[0]),
+        normalized(
+            "SELECT `job`, sum(value) AS value FROM ( \
+             SELECT `job`, `$promql_series_identity`, argMax(value, ts) AS value FROM src_data \
+             WHERE ts > fromUnixTimestamp64Milli({t:Int64} - 5) \
+             AND ts <= fromUnixTimestamp64Milli({t:Int64}) \
+             GROUP BY `job`, `$promql_series_identity`) GROUP BY `job`"
+        )
+    );
+}
+
+#[test]
+fn average_as_sum_over_count_translates() {
+    // G2, G4, G7, G8: mixed-03 root 11 is `avg by (region, service)
+    // (quantile_over_time(0.9, data[100s]))`, planned as the sum and the
+    // count of the per-series p90s by (job, region, service), each regrouped
+    // to (region, service), the count cast to Float64, then divided.
+    let plan = public_fixture("mixed-03", "clickhouse.equivalent-only");
+    let deployment = translate(&plan).expect("translates");
+    assert_eq!(plan.roots[3], 11);
+    let query = normalized(&deployment.queries[3]);
+    let p90 = "SELECT `job`, `region`, `service`, `$promql_series_identity`, \
+               quantileExactInclusive(0.9)(value) AS value FROM src_data \
+               WHERE ts > fromUnixTimestamp64Milli({t:Int64} - 100000) \
+               AND ts <= fromUnixTimestamp64Milli({t:Int64}) \
+               GROUP BY `job`, `region`, `service`, `$promql_series_identity`";
+    let regrouped = |f: &str| {
+        format!(
+            "SELECT `region`, `service`, sum(value) AS value FROM ( \
+             SELECT `job`, `region`, `service`, {f} AS value FROM ( {p90}) \
+             GROUP BY `job`, `region`, `service`) GROUP BY `region`, `service`"
+        )
+    };
+    let count = format!(
+        "SELECT `region` AS `region`, `service` AS `service`, toFloat64(value) AS value FROM ( {})",
+        regrouped("count()")
+    );
+    let expected = format!(
+        "SELECT `region` AS `region`, `service` AS `service`, value AS value FROM ( \
+         SELECT `region`, `service`, toFloat64(lhs_value) / toFloat64(rhs_value) AS value \
+         FROM ( SELECT `region`, `service`, value AS lhs_value FROM ( {sum})) \
+         INNER JOIN ( SELECT `region`, `service`, value AS rhs_value FROM ( {count})) \
+         USING (`region`, `service`) \
+         WHERE throwIf(isFinite(toFloat64(lhs_value)) AND isFinite(toFloat64(rhs_value)) \
+         AND NOT isFinite(toFloat64(lhs_value) / toFloat64(rhs_value)), \
+         'a checked division of finite values is not finite') = 0)",
+        sum = regrouped("sum(value)"),
+    );
+    assert_eq!(query, normalized(&expected));
+    // L8: each query's step is the window width of the stored chains it
+    // reads: roots 33 and 34 read 1 s windows, 40 1 s, 45 30 s.
+    assert_eq!(
+        deployment.query_time_steps_ms,
+        vec![1000, 1000, 1, 1, 1, 1000, 30_000, 1, 1]
+    );
+    // G9: root 34 sums column 3 (`sum`) of node 33's output.
+    assert!(normalized(&deployment.queries[1])
+        .starts_with("SELECT `region`, `service`, sum(value) AS value FROM ("));
+    assert!(deployment.substitutions.is_empty());
+}
+
+#[test]
+fn unsupported_binary_operators_and_projections_are_refused() {
+    let mixed = || fixture_value_public("mixed-03", "clickhouse.equivalent-only");
+    let mut value = mixed();
+    payload_body(&mut value, 10)["operator"]["vector_match"] = json!({"card": "OneToOne"});
+    assert_eq!(refusal(value), shape(10, "vector matching"));
+    let mut value = mixed();
+    payload_body(&mut value, 10)["return_bool"] = json!(true);
+    assert_eq!(refusal(value), shape(10, "bool comparison"));
+    let mut value = mixed();
+    payload_body(&mut value, 10)["operator"]["checked_relative_division"] = json!(true);
+    assert_eq!(refusal(value), shape(10, "checked relative division"));
+    let mut value = mixed();
+    payload_body(&mut value, 10)["operator"]["kind"] = json!({"Arithmetic": "Mod"});
+    assert_eq!(
+        refusal(value),
+        shape(10, r#"binary operator {"Arithmetic":"Mod"}"#)
+    );
+    let mut value = mixed();
+    payload_body(&mut value, 6)["cols"][2]["expr"] = json!({"Literal": {"Float64": 1.0}});
+    assert_eq!(refusal(value), shape(6, "projected expression"));
+    // G9: a measure over a label column.
+    let mut value = mixed();
+    payload_body(&mut value, 34)["measures"][0]["col"] = json!(0);
+    assert_eq!(refusal(value), shape(34, "measure over a label column"));
+}
+
+#[test]
+fn grouped_stored_chain_groups_its_view() {
+    // G3: a chain reduced to `job` (output without the series identity).
+    let mut value = fixture_value("sot_1h_stored_sum");
+    payload_body(&mut value, 1)["reduction"] = json!({"Reduce": [2]});
+    value["dag"]["nodes"][1]["output_schema"]["fields"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|field| field["name"] != "$promql_series_identity");
+    let deployment = translate(&PlanFile::from_value(value).unwrap()).expect("translates");
+    assert_eq!(
+        normalized(&deployment.tables[1]),
+        normalized(
+            "CREATE TABLE v1 (`job` LowCardinality(String), window_end_ms Int64, \
+             state AggregateFunction(sum, Float64)) \
+             ENGINE = AggregatingMergeTree ORDER BY (window_end_ms, `job`)"
+        )
+    );
+    assert!(normalized(&deployment.materialized_views[0])
+        .ends_with("FROM src_latency GROUP BY `job`, window_end_ms"));
+}
+
+#[test]
+fn a_label_filter_leads_the_source_sorting_key() {
+    // L4 (and F4's golden): `job` is filtered on, so it leads the key.
+    let deployment = translated("max_5m_label_filter");
+    assert!(normalized(&deployment.tables[0])
+        .ends_with("ORDER BY (`job`, `$promql_series_identity`, ts)"));
+}
+
 /// X10: the goldens run on ClickHouse 26.8.39.13 (the 26.8 LTS build for CPUs without AVX2) and give the hand-computed
 /// answers. Needs a `clickhouse local` of that release: set
 /// `AQPBM_CLICKHOUSE_LOCAL` to a shell command that runs it reading SQL on
@@ -294,7 +517,15 @@ fn irate_state_is_refused() {
 #[ignore = "needs ClickHouse 26.8.39.13 (AQPBM_CLICKHOUSE_LOCAL)"]
 fn goldens_run_on_clickhouse() {
     let command = std::env::var("AQPBM_CLICKHOUSE_LOCAL").expect("AQPBM_CLICKHOUSE_LOCAL");
-    assert_eq!(version(&command), "26.8.39.13");
+    assert_eq!(version(&command, "version()"), "26.8.39.13");
+    // L6: the 26.8 amd64compat build in use (sha256 aae73dc5…fe36ca) reports this git hash.
+    assert_eq!(
+        version(
+            &command,
+            "(SELECT value FROM system.build_options WHERE name = 'VERSION_GITHASH')"
+        ),
+        "d5bbb64d525197f84f9dd21489f5f6d6fdb966e5"
+    );
     // F1: series a/1 = 1.0, a/2 = 0.5, b/1 = 2.0 every second for 1 h; at t = 1 h:
     // a = 3600 · 1.0 + 3600 · 0.5 = 5400, b = 3600 · 2.0 = 7200.
     let latency_three = "INSERT INTO src_latency SELECT \
@@ -378,7 +609,7 @@ fn assert_rates(rows: &str, expected: &[(&str, f64)]) {
     }
 }
 
-fn version(command: &str) -> String {
+fn version(command: &str, expression: &str) -> String {
     use std::io::Write;
     let mut child = std::process::Command::new("sh")
         .arg("-c")
@@ -391,7 +622,7 @@ fn version(command: &str) -> String {
         .stdin
         .take()
         .unwrap()
-        .write_all(b"SELECT version() FORMAT TSV;\n")
+        .write_all(format!("SELECT {expression} FORMAT TSV;\n").as_bytes())
         .unwrap();
     let output = child.wait_with_output().unwrap();
     String::from_utf8(output.stdout).unwrap().trim().to_string()
