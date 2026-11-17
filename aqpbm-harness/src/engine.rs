@@ -55,6 +55,10 @@ pub enum CpuAccounting {
     /// around each step (their own cgroup's `cpu.stat`, or their threads'
     /// `schedstat`; see [`crate::protocol::ProcessesCpuClock`]).
     Processes(Vec<u32>),
+    /// An external server in its own cgroup v2 group (a container), whose
+    /// `cpu.stat` and memory files the harness reads, on this host or through
+    /// the agent on the server host ([`crate::cgroup::serve_agent`]).
+    Cgroup(crate::cgroup::CgroupSource),
 }
 
 /// One arm of a workload: how the engine is asked to run it.
@@ -228,6 +232,14 @@ pub struct PlanSummary {
     pub node_kinds: Vec<String>,
     /// Outputs the arm stores between evaluations (views, sketches).
     pub stored_outputs: Vec<String>,
+    /// Rules of a translating engine whose answers differ from the plan's
+    /// guarantee, such as `quantileDD for Kll at node 3`.
+    #[serde(default)]
+    pub substitutions: Vec<String>,
+    /// Shared query-time nodes the engine recomputes for each reader, such
+    /// as `node 4 for nodes 6, 7`.
+    #[serde(default)]
+    pub sharing_lost: Vec<String>,
 }
 
 /// The engine's own predicted cost of an arm, recorded in each
