@@ -47,9 +47,7 @@ fi
 
 python3 -m http.server 8000 --bind 127.0.0.1 --directory "$data" >/dev/null 2>&1 &
 server=$!
-python3 -m http.server 8001 --bind 127.0.0.1 --directory "$repo/docs/figures/phase2-use-cases" >/dev/null 2>&1 &
-figures=$!
-trap 'kill $server $figures 2>/dev/null' EXIT
+trap 'kill $server 2>/dev/null' EXIT
 
 echo "dashboards at http://localhost:3000 reading $data" >&2
 GRAFANA_DASHBOARDS_DIR=$dashboards "$grafana" server \

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import base64
 import glob
 import json
 import os
@@ -17,7 +18,7 @@ DATA = "http://localhost:8000/runs/"
 PHASE3_DATA = "http://localhost:8000/phase3/runs/"
 RUN = DATA + "${run}/"
 INDEX = DATA + "index.json"
-FIGURES = "http://localhost:8001/"
+FIGURES = os.path.join(REPO, "docs", "figures", "phase2-use-cases")
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboards")
 REAL_DATA = False
 OPEN_ROWS = ("Query result", "Application", "Query cost")
@@ -311,12 +312,17 @@ def runs_part(uid, use_case):
     return part(b, [run_variable([use_case])])
 
 
+def svg_data_uri(figure):
+    with open(os.path.join(FIGURES, figure), "rb") as f:
+        return "data:image/svg+xml;base64," + base64.b64encode(f.read()).decode()
+
+
 def figure_part(figure):
     b = Board()
     b.row("Scenario", 0)
     b.panel({"type": "text", "title": "", "transparent": True,
              "options": {"mode": "html",
-                         "content": f'<img src="{FIGURES}{figure}" style="height: 100%; max-width: 100%">'}},
+                         "content": f'<img src="{svg_data_uri(figure)}" style="height: 100%; max-width: 100%">'}},
             0, 1, 24, 13)
     return part(b)
 
