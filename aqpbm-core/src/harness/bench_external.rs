@@ -100,7 +100,9 @@ pub struct LaneRecord {
 
 /// The workloads of a run directory, by name (the file stem, which must
 /// equal the spec's `name`).
-pub fn read_workloads(run_dir: &RunDir) -> Result<BTreeMap<String, WorkloadSpec>, BenchExternalError> {
+pub fn read_workloads(
+    run_dir: &RunDir,
+) -> Result<BTreeMap<String, WorkloadSpec>, BenchExternalError> {
     let mut workloads = BTreeMap::new();
     for path in sorted_files(&run_dir.path().join("workloads"))? {
         let stem = file_stem_with_suffix(&path, ".json")?;
@@ -201,7 +203,10 @@ pub fn run_lane(
     let workloads = read_workloads(run_dir)?;
     let mut variants = read_variants(run_dir, &workloads)?;
     if let Some(only) = only_variants {
-        if let Some(unknown) = only.iter().find(|v| !variants.iter().any(|x| &x.name == *v)) {
+        if let Some(unknown) = only
+            .iter()
+            .find(|v| !variants.iter().any(|x| &x.name == *v))
+        {
             return Err(BenchExternalError::Layout(format!(
                 "no variant {unknown} under plans/"
             )));
@@ -220,7 +225,10 @@ pub fn run_lane(
     }
     std::fs::create_dir_all(&lane_dir).map_err(|e| io(&lane_dir, e))?;
     write_json(
-        &lane_dir.join(format!("lane-{}.json", Utc::now().format("%Y%m%dT%H%M%S%.3fZ"))),
+        &lane_dir.join(format!(
+            "lane-{}.json",
+            Utc::now().format("%Y%m%dT%H%M%S%.3fZ")
+        )),
         &LaneRecord {
             engine: engine.description(),
             cpu_accounting: engine.cpu_accounting(),
@@ -402,12 +410,21 @@ fn point_errors(errors: &[f64], missing_points: u64, extra_points: u64) -> Point
     }
 }
 
+/// One query's errors against the truth, before they are summarized.
+#[derive(Debug, Default)]
+struct QueryErrors {
+    /// One relative error per point both answered.
+    errors: Vec<f64>,
+    missing_points: u64,
+    extra_points: u64,
+}
+
 /// Per query, the errors of `result`'s answers against `truth`'s. The two
 /// must answer at the same times.
 fn errors_against(
     result: &ArmResult,
     truth: &ArmResult,
-) -> Result<BTreeMap<String, (Vec<f64>, u64, u64)>, String> {
+) -> Result<BTreeMap<String, QueryErrors>, String> {
     let times = |r: &ArmResult| r.answers.iter().map(|(t, _)| *t).collect::<Vec<_>>();
     if times(result) != times(truth) {
         return Err(format!(
@@ -419,7 +436,7 @@ fn errors_against(
             times(truth)
         ));
     }
-    let mut per_query: BTreeMap<String, (Vec<f64>, u64, u64)> = BTreeMap::new();
+    let mut per_query: BTreeMap<String, QueryErrors> = BTreeMap::new();
     for ((_, answers), (_, truth_answers)) in result.answers.iter().zip(&truth.answers) {
         let queries: std::collections::BTreeSet<&String> =
             answers.0.keys().chain(truth_answers.0.keys()).collect();
@@ -430,11 +447,14 @@ fn errors_against(
             let want = truth_answers.0.get(query).unwrap_or(&empty);
             for (series, truth_value) in want {
                 match got.get(series) {
-                    Some(value) => entry.0.push(relative_error(*value, *truth_value)),
-                    None => entry.1 += 1,
+                    Some(value) => entry.errors.push(relative_error(*value, *truth_value)),
+                    None => entry.missing_points += 1,
                 }
             }
-            entry.2 += got.keys().filter(|series| !want.contains_key(*series)).count() as u64;
+            entry.extra_points += got
+                .keys()
+                .filter(|series| !want.contains_key(*series))
+                .count() as u64;
         }
     }
     Ok(per_query)
@@ -524,18 +544,23 @@ pub fn report(
         if let Some(result) = result {
             fill_measurements(&mut row, result);
             if let Some(truth) = truth_of(&cell.workload) {
-                let per_query = errors_against(result, truth).map_err(BenchExternalError::Report)?;
+                let per_query =
+                    errors_against(result, truth).map_err(BenchExternalError::Report)?;
                 let (mut all, mut missing, mut extra) = (Vec::new(), 0, 0);
-                for (query, (errors, query_missing, query_extra)) in per_query {
-                    all.extend_from_slice(&errors);
-                    missing += query_missing;
-                    extra += query_extra;
+                for (query, errors) in per_query {
+                    all.extend_from_slice(&errors.errors);
+                    missing += errors.missing_points;
+                    extra += errors.extra_points;
                     accuracy.push(QueryAccuracy {
                         workload: cell.workload.clone(),
                         lane: cell.lane.clone(),
                         variant: cell.variant.clone(),
                         query,
-                        errors: point_errors(&errors, query_missing, query_extra),
+                        errors: point_errors(
+                            &errors.errors,
+                            errors.missing_points,
+                            errors.extra_points,
+                        ),
                     });
                 }
                 row.accuracy = Some(point_errors(&all, missing, extra));
@@ -553,7 +578,8 @@ pub fn report(
 const MIB: f64 = 1024.0 * 1024.0;
 
 fn fill_measurements(row: &mut ReportRow, result: &ArmResult) {
-    let step_cpu_ns = |cost: &crate::harness::engine::StepCost| cost.thread_cpu_ns.unwrap_or(cost.process_cpu_ns);
+    let step_cpu_ns =
+        |cost: &crate::harness::engine::StepCost| cost.thread_cpu_ns.unwrap_or(cost.process_cpu_ns);
     let first = result.ingest.first().or(result.evaluate.first());
     row.cpu_accounting = first.map(|job| {
         if job.median.thread_cpu_ns.is_some() {
@@ -564,12 +590,20 @@ fn fill_measurements(row: &mut ReportRow, result: &ArmResult) {
             "processes"
         }
     });
-    let ingest_ns: u64 = result.ingest.iter().map(|job| step_cpu_ns(&job.median)).sum();
+    let ingest_ns: u64 = result
+        .ingest
+        .iter()
+        .map(|job| step_cpu_ns(&job.median))
+        .sum();
     row.ingest_cpu_ns_per_sample =
         (result.ingested_samples > 0).then(|| ingest_ns as f64 / result.ingested_samples as f64);
     let evaluations = result.evaluate.len();
     if evaluations > 0 {
-        let query_ns: u64 = result.evaluate.iter().map(|job| step_cpu_ns(&job.median)).sum();
+        let query_ns: u64 = result
+            .evaluate
+            .iter()
+            .map(|job| step_cpu_ns(&job.median))
+            .sum();
         row.query_cpu_ms_per_eval = Some(query_ns as f64 / 1e6 / evaluations as f64);
         row.engine_counter_cpu_ms_per_eval = result
             .evaluate
@@ -700,8 +734,10 @@ impl Report {
                     None => String::new(),
                     Some(row) if row.status == "ok" => format!(
                         "q {} ms, i {} ns/sample, err {} [{}]",
-                        row.query_cpu_ms_per_eval.map_or("-".into(), |v| format!("{v:.3}")),
-                        row.ingest_cpu_ns_per_sample.map_or("-".into(), |v| format!("{v:.1}")),
+                        row.query_cpu_ms_per_eval
+                            .map_or("-".into(), |v| format!("{v:.3}")),
+                        row.ingest_cpu_ns_per_sample
+                            .map_or("-".into(), |v| format!("{v:.1}")),
                         row.accuracy
                             .as_ref()
                             .and_then(|e| e.max_rel_error)
@@ -710,7 +746,11 @@ impl Report {
                     ),
                     Some(row) => {
                         let first_line = row.status.lines().next().unwrap_or("");
-                        first_line.chars().take(80).collect::<String>().replace('|', "/")
+                        first_line
+                            .chars()
+                            .take(80)
+                            .collect::<String>()
+                            .replace('|', "/")
                     }
                 };
                 text.push_str(&format!(" {cell} |"));
