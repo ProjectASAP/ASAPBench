@@ -57,11 +57,7 @@ pub fn golden(name: &str) -> String {
 /// `fixtures/plans/public/`, e.g. `("q4c_sum_over_time__1m_1hz_10s",
 /// "clickhouse.equivalent-only")`.
 pub fn public_fixture(workload: &str, variant: &str) -> PlanFile {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/plans/public")
-        .join(format!("{workload}.{variant}.plan.json"));
-    let text = std::fs::read_to_string(path).expect("public fixture");
-    PlanFile::from_json(&text).expect("public fixture decodes")
+    PlanFile::from_value(fixture_value_public(workload, variant)).expect("public fixture decodes")
 }
 
 /// A public fixture as JSON, to be changed by a mutation.
@@ -108,4 +104,13 @@ pub fn run_clickhouse(script: &str, t: i64) -> Result<String, String> {
         .collect();
     rows.sort_unstable();
     Ok(rows.join("\n"))
+}
+
+/// The least common multiple, e.g. of window widths.
+pub fn lcm(a: u64, b: u64) -> u64 {
+    let (mut x, mut y) = (a, b);
+    while y != 0 {
+        (x, y) = (y, x % y);
+    }
+    a / x * b
 }
