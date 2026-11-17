@@ -1,10 +1,13 @@
 //! `aqpbm-core` — the benchmark framework: everything needed to measure *a*
 //! sketch, nothing that knows *which* sketches exist. See `docs/aqpbm-core.md`.
 //! Hand a sketch's primed closures to [`measure()`](fn@measure); it times them.
+//! To measure a whole engine (a planner and executor, or an external server)
+//! instead of one sketch, see [`harness`] (`docs/aqpbm-core-harness.md`).
 
 pub mod accuracy;
 pub mod benchmark_result;
 pub mod error;
+pub mod harness;
 pub mod measure;
 pub mod metrics;
 

@@ -16,4 +16,4 @@ pub use mask::{is_measurable, Metric, MetricsMask, Operation, OperationMask};
 pub use memory::{JemallocAllocated, Rss};
 pub use run::RunMetrics;
 pub use throughput::ItemsPerSec;
-pub use time::{CpuTimeSample, CpuTimeSampler, WallClock};
+pub use time::{CpuTimeSample, CpuTimeSampler, ThreadCpuTime, WallClock};

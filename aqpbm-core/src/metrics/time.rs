@@ -47,6 +47,39 @@ impl CpuTimeSampler {
     }
 }
 
+/// CPU time of the calling thread (user + system), from
+/// `CLOCK_THREAD_CPUTIME_ID`; 0 off unix. Unlike [`CpuTimeSampler`], work on
+/// other threads of the process does not count: a thread that sleeps 100 ms
+/// while another thread spins reads about 0 ns.
+#[derive(Debug, Clone, Copy)]
+pub struct ThreadCpuTime;
+
+impl ThreadCpuTime {
+    /// The calling thread's CPU time so far, in ns.
+    #[cfg(unix)]
+    pub fn now_ns() -> u64 {
+        let mut now = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: `clock_gettime` writes one timespec into `now`, which this
+        // frame owns; the return value is checked.
+        let rc = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut now) };
+        if rc != 0 {
+            return 0;
+        }
+        (now.tv_sec as u64)
+            .saturating_mul(1_000_000_000)
+            .saturating_add(now.tv_nsec as u64)
+    }
+
+    /// The calling thread's CPU time so far, in ns: 0 off unix.
+    #[cfg(not(unix))]
+    pub fn now_ns() -> u64 {
+        0
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CpuTimeSample {
     pub user_ns: u64,
@@ -117,6 +150,22 @@ mod tests {
             "expected some CPU time, got user={} sys={}",
             sample.user_ns,
             sample.sys_ns
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn thread_cpu_time_advances_with_work_on_this_thread() {
+        let before = ThreadCpuTime::now_ns();
+        let mut acc: u64 = 0;
+        for i in 0..10_000_000u64 {
+            acc = acc.wrapping_add(i);
+        }
+        std::hint::black_box(acc);
+        let after = ThreadCpuTime::now_ns();
+        assert!(
+            after > before,
+            "thread CPU did not advance: {before} -> {after}"
         );
     }
 }

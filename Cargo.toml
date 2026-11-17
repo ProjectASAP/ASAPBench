@@ -48,6 +48,9 @@ clap = { version = "4", features = ["derive", "wrap_help", "env"] }
 thiserror = "2"
 anyhow = "1"
 
+# OS calls: CPU clocks, thread pinning (aqpbm-core).
+libc = "0.2"
+
 # Bitflags for MetricsMask.
 bitflags = "2"
 
