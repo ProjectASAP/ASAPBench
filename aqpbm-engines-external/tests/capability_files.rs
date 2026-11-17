@@ -1,5 +1,5 @@
 //! K1: the committed deployment-capabilities files (ASAPPlanner #1374
-//! format) are exactly the hand-computed values of the design. An edit to a
+//! format, valid at its head `7834fed4d`) are exactly the hand-computed values of the design. An edit to a
 //! file must also edit this test and the README row it comes from.
 
 use serde_json::{json, Value};
@@ -79,4 +79,27 @@ fn capability_files_match_the_design() {
             "excluded_candidates": []
         })
     );
+}
+
+#[test]
+fn capability_files_are_pretty_printed() {
+    // L10: one format for all four files: `serde_json::to_string_pretty`
+    // plus a final newline.
+    for name in [
+        "clickhouse.equivalent-only.json",
+        "clickhouse.with-substitutes.json",
+        "victoriametrics.equivalent-only.json",
+        "victoriametrics.with-substitutes.json",
+    ] {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("capabilities")
+            .join(name);
+        let text = std::fs::read_to_string(path).expect("file");
+        let value: Value = serde_json::from_str(&text).expect("JSON");
+        assert_eq!(
+            text,
+            format!("{}\n", serde_json::to_string_pretty(&value).unwrap()),
+            "{name}"
+        );
+    }
 }
