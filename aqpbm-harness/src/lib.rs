@@ -14,6 +14,8 @@
 
 pub mod accuracy;
 pub mod arm_run;
+pub mod bench_external;
+pub mod cgroup;
 pub mod conformance;
 pub mod data;
 pub mod data_stats;

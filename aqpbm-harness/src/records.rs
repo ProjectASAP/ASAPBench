@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::engine::{
     Answers, EngineDescription, Footprint, NodeProfile, PlanSummary, PredictedCost,
 };
+use crate::cgroup::CgroupMemory;
 use crate::fit::{ConstantsFit, FitPoint};
 use crate::machine::MachineDescription;
 use crate::protocol::{JobRecord, Protocol};
@@ -39,6 +40,21 @@ pub struct ArmResult {
     /// The answers at each evaluation time.
     pub answers: Vec<(i64, Answers)>,
     pub footprint: Footprint,
+    /// Samples ingested by one install: the sum over refresh chunks.
+    pub ingested_samples: u64,
+    /// For a [`crate::engine::CpuAccounting::Cgroup`] engine, the server's
+    /// memory before the installs.
+    pub server_memory_before: Option<CgroupMemory>,
+    /// The same after the last step. The server then holds every install of
+    /// the arm at once (`installs_held` of them), so this is not one
+    /// install's memory.
+    pub server_memory_after: Option<CgroupMemory>,
+    /// For a `Cgroup` engine, the server's CPU from before the installs to
+    /// after the footprint, in ns: the steps plus work between them, such
+    /// as background merges, over every install.
+    pub server_cpu_ns_whole_arm: Option<u64>,
+    /// Installs held at once while the arm ran: warm-up plus measured runs.
+    pub installs_held: u32,
     /// The usage the harness measured, priced at the engine's own prices
     /// ([`crate::engine::InstalledArm::price`]); `None` for an engine without
     /// a cost model. Compare with the engine's own prediction,
