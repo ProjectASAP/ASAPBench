@@ -5,14 +5,15 @@
 //! The group's files are read either from a local directory or, when the
 //! server runs on another host than the harness, through a small agent on
 //! the server host ([`serve_agent`]) that answers `GET /<file>` with the
-//! file's current text. Only the four files below are served.
+//! file's current text. Only [`CGROUP_FILES`] and the host's `/proc/stat`
+//! ([`PROC_STAT`]) are served.
 //!
 //! Example: `cpu.stat` with `usage_usec 2500` reads 2,500,000 ns; a group
 //! whose `nr_throttled` grows during a step was throttled by a CPU quota,
 //! and that step is not a sample.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -54,9 +55,15 @@ impl CgroupSource {
                 } else {
                     dir.join(file)
                 };
-                std::fs::read_to_string(&path).map_err(|error| CgroupError::Read {
-                    file: path.display().to_string(),
-                    message: error.to_string(),
+                std::fs::read_to_string(&path).map_err(|error| {
+                    if error.kind() == std::io::ErrorKind::NotFound {
+                        CgroupError::NotFound(path.display().to_string())
+                    } else {
+                        CgroupError::Read {
+                            file: path.display().to_string(),
+                            message: error.to_string(),
+                        }
+                    }
                 })
             }
             CgroupSource::Agent { url } => http_get(url, file),
@@ -73,7 +80,7 @@ impl CgroupSource {
         let current_bytes = parse_number("memory.current", self.read("memory.current")?.trim())?;
         let lifetime_peak_bytes = match self.read("memory.peak") {
             Ok(text) => Some(parse_number("memory.peak", text.trim())?),
-            Err(CgroupError::Read { .. }) => None,
+            Err(CgroupError::NotFound(_)) => None,
             Err(error) => return Err(error),
         };
         let stat = self.read("memory.stat")?;
@@ -159,7 +166,17 @@ fn http_get(url: &str, file: &str) -> Result<String, CgroupError> {
         .strip_prefix("http://")
         .ok_or_else(|| failed("the agent url must start with http://".into()))?
         .trim_end_matches('/');
-    let mut stream = TcpStream::connect(address).map_err(|error| failed(error.to_string()))?;
+    let socket = address
+        .to_socket_addrs()
+        .map_err(|error| failed(error.to_string()))?
+        .next()
+        .ok_or_else(|| failed("the agent address resolves to nothing".into()))?;
+    let mut stream = TcpStream::connect_timeout(&socket, AGENT_CONNECT_TIMEOUT)
+        .map_err(|error| failed(error.to_string()))?;
+    stream
+        .set_read_timeout(Some(AGENT_IO_TIMEOUT))
+        .and_then(|()| stream.set_write_timeout(Some(AGENT_IO_TIMEOUT)))
+        .map_err(|error| failed(error.to_string()))?;
     write!(stream, "GET /{file} HTTP/1.0\r\nHost: {address}\r\n\r\n")
         .map_err(|error| failed(error.to_string()))?;
     let mut response = String::new();
@@ -174,13 +191,22 @@ fn http_get(url: &str, file: &str) -> Result<String, CgroupError> {
         Some("200") => {}
         // The client asks only for served names, so a 404 is a missing file,
         // such as `memory.peak` before Linux 5.19.
-        Some("404") => {
-            return Err(CgroupError::Read {
-                file: format!("{url}/{file}"),
-                message: "not found on the agent".into(),
-            })
-        }
+        Some("404") => return Err(CgroupError::NotFound(format!("{url}/{file}"))),
         _ => return Err(failed(format!("status '{status}'"))),
+    }
+    let content_length = head
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())?
+        })
+        .ok_or_else(|| failed("no Content-Length".into()))?;
+    if body.len() != content_length {
+        return Err(failed(format!(
+            "body of {} bytes, Content-Length {content_length}: truncated",
+            body.len()
+        )));
     }
     Ok(body.to_string())
 }
@@ -220,7 +246,11 @@ pub fn serve_agent(listener: TcpListener, dir: &Path, proc_stat: &Path) -> std::
 }
 
 fn answer(stream: &mut TcpStream, dir: &Path, proc_stat: &Path) -> std::io::Result<()> {
-    let mut reader = BufReader::new(&*stream);
+    // A client that connects and sends nothing must not stall the agent,
+    // which answers one connection at a time.
+    stream.set_read_timeout(Some(AGENT_REQUEST_TIMEOUT))?;
+    stream.set_write_timeout(Some(AGENT_IO_TIMEOUT))?;
+    let mut reader = BufReader::new((&*stream).take(MAX_REQUEST_BYTES));
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
     // Read the headers up to the blank line: closing a socket with unread
@@ -251,6 +281,16 @@ fn answer(stream: &mut TcpStream, dir: &Path, proc_stat: &Path) -> std::io::Resu
     }
 }
 
+/// How long the client waits to connect to the agent.
+const AGENT_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long the agent waits for a request: shorter than the client's wait,
+/// so an idle connection delays a waiting client by at most this long.
+const AGENT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+/// How long either side waits on one read or write.
+const AGENT_IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// The most of a request the agent reads: a request line and a few headers.
+const MAX_REQUEST_BYTES: u64 = 8192;
+
 /// A cgroup file that cannot be read or parsed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CgroupError {
@@ -262,6 +302,9 @@ pub enum CgroupError {
     Parse { file: String, message: String },
     #[error("cgroup agent {url}: {message}")]
     Agent { url: String, message: String },
+    /// The file does not exist, such as `memory.peak` before Linux 5.19.
+    #[error("{0} does not exist")]
+    NotFound(String),
     #[error("{0} is not one of the served cgroup files")]
     NotServed(String),
 }
