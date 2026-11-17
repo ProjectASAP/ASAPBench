@@ -1,6 +1,5 @@
-CREATE TABLE src_latency (ts DateTime64(3, 'UTC'), value Float64, `job` LowCardinality(String), `$promql_series_identity` String,
-                          INDEX ts_minmax ts TYPE minmax GRANULARITY 1)
-  ENGINE = MergeTree ORDER BY (`$promql_series_identity`, ts);
+CREATE TABLE src_latency (ts DateTime64(3, 'UTC'), value Float64, `job` LowCardinality(String), `$promql_series_identity` String)
+  ENGINE = Null;
 
 CREATE TABLE v1 (`job` LowCardinality(String), `$promql_series_identity` String, window_end_ms Int64,
                  state AggregateFunction(sum, Float64))

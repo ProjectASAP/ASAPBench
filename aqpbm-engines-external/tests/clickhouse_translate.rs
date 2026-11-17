@@ -479,6 +479,58 @@ fn unsupported_binary_operators_and_projections_are_refused() {
 }
 
 #[test]
+fn per_series_binary_operation_across_metrics_is_refused() {
+    // joint_5m node 7 is the p90 of each `latency` series (labels `job` and
+    // the series identity), node 12 the rate of each `requests_total` series
+    // (the same labels). The series identity names the metric, so a join on
+    // it would match nothing, where PromQL matches without `__name__`.
+    let mut value = fixture_value("joint_5m");
+    let schema = value["dag"]["nodes"][12]["output_schema"].clone();
+    value["dag"]["nodes"].as_array_mut().unwrap().push(json!({
+        "id": 14,
+        "payload": {"NonASAP": {"BinaryOp": {
+            "operator": {"checked_relative_division": false, "checked_finite_division": false,
+                         "kind": {"Arithmetic": "Div"}, "vector_match": null},
+            "return_bool": false, "lhs": 7, "rhs": 12}}},
+        "output_state": {"timing": "query_time", "primitive": "Raw"},
+        "lifetime": "None",
+        "output_schema": schema,
+    }));
+    value["dag"]["roots"] = json!([14]);
+    value["query_texts"] = json!(["a / b"]);
+    assert_eq!(
+        refusal(value),
+        shape(14, "binary operation across metrics per series")
+    );
+}
+
+#[test]
+fn projections_keep_every_label_and_one_value() {
+    // mixed-03 node 11 projects (region, service, value) of node 10.
+    let mut value = fixture_value_public("mixed-03", "clickhouse.equivalent-only");
+    payload_body(&mut value, 11)["cols"][2]["expr"] = json!({"Column": 0});
+    assert_eq!(refusal(value), shape(11, "projected value"));
+    let mut value = fixture_value_public("mixed-03", "clickhouse.equivalent-only");
+    payload_body(&mut value, 11)["cols"]
+        .as_array_mut()
+        .unwrap()
+        .remove(1);
+    value["dag"]["nodes"][11]["output_schema"]["fields"]
+        .as_array_mut()
+        .unwrap()
+        .remove(1);
+    assert_eq!(refusal(value), shape(11, "projection that drops a label"));
+}
+
+#[test]
+fn a_metric_only_chains_read_keeps_no_rows() {
+    // F1's Scan runs at ingestion only: the source is a Null table whose
+    // inserts reach the view; F3's query-time Scan keeps rows.
+    assert!(translated("sot_1h_stored_sum").tables[0].ends_with("ENGINE = Null"));
+    assert!(translated("rate_5m_query_time").tables[0].contains("ENGINE = MergeTree"));
+}
+
+#[test]
 fn grouped_stored_chain_groups_its_view() {
     // G3: a chain reduced to `job` (output without the series identity).
     let mut value = fixture_value("sot_1h_stored_sum");
@@ -516,14 +568,10 @@ fn a_label_filter_leads_the_source_sorting_key() {
 #[test]
 #[ignore = "needs ClickHouse 26.8.39.13 (AQPBM_CLICKHOUSE_LOCAL)"]
 fn goldens_run_on_clickhouse() {
-    let command = std::env::var("AQPBM_CLICKHOUSE_LOCAL").expect("AQPBM_CLICKHOUSE_LOCAL");
-    assert_eq!(version(&command, "version()"), "26.8.39.13");
+    assert_eq!(version("version()"), "26.8.39.13");
     // L6: the 26.8 amd64compat build in use (sha256 aae73dc5…fe36ca) reports this git hash.
     assert_eq!(
-        version(
-            &command,
-            "(SELECT value FROM system.build_options WHERE name = 'VERSION_GITHASH')"
-        ),
+        version("(SELECT value FROM system.build_options WHERE name = 'VERSION_GITHASH')"),
         "d5bbb64d525197f84f9dd21489f5f6d6fdb966e5"
     );
     // F1: series a/1 = 1.0, a/2 = 0.5, b/1 = 2.0 every second for 1 h; at t = 1 h:
@@ -533,10 +581,7 @@ fn goldens_run_on_clickhouse() {
         ARRAY JOIN [1.0, 0.5, 2.0] AS v, ['a', 'a', 'b'] AS j, \
         ['latency{job=\"a\",i=\"1\"}', 'latency{job=\"a\",i=\"2\"}', 'latency{job=\"b\",i=\"1\"}'] AS id \
         ORDER BY 1";
-    assert_eq!(
-        run(&command, "f1.sql", latency_three, 3_600_000),
-        "a\t5400\nb\t7200"
-    );
+    assert_eq!(run("f1.sql", latency_three, 3_600_000), "a\t5400\nb\t7200");
     // F2/F3: three counters, each in its own job; at t = 600 s the window is
     // (300 s, 600 s]; Prometheus extrapolatedRate (v3.15.1) by hand:
     // x: v(s) = s for s <= 450, then s - 450 (a reset at 451 s). Samples 301..600
@@ -559,26 +604,20 @@ fn goldens_run_on_clickhouse() {
               UNION ALL SELECT number + 301, 'z', 2 * number + 0.5 FROM numbers(300)) \
         ORDER BY 1";
     let expected_query_time = [("x", 1.0), ("y", 290.5 / 300.0), ("z", 598.5 / 300.0)];
-    assert_rates(
-        &run(&command, "f3.sql", counters, 600_000),
-        &expected_query_time,
-    );
+    assert_rates(&run("f3.sql", counters, 600_000), &expected_query_time);
     let expected_stored = [
         ("x", 298.0 / 299.0),
         ("y", 290.5 / 300.0),
         ("z", 598.5 / 300.0),
     ];
-    assert_rates(
-        &run(&command, "f2.sql", counters, 600_000),
-        &expected_stored,
-    );
+    assert_rates(&run("f2.sql", counters, 600_000), &expected_stored);
     // F4: j3 = s, j4 = 10 s; max over (300 s, 600 s] of j3 only = 600.
     let latency_two = "INSERT INTO src_latency SELECT \
         fromUnixTimestamp64Milli(toInt64(number + 1) * 1000), (number + 1) * m, j, id \
         FROM numbers(600) ARRAY JOIN [1, 10] AS m, ['j3', 'j4'] AS j, \
         ['latency{job=\"j3\"}', 'latency{job=\"j4\"}'] AS id ORDER BY 1";
     assert_eq!(
-        run(&command, "f4.sql", latency_two, 600_000),
+        run("f4.sql", latency_two, 600_000),
         "j3\tlatency{job=\"j3\"}\t600"
     );
     // F5: three instances; 3 at 600 s, and no row once the window is empty.
@@ -586,9 +625,9 @@ fn goldens_run_on_clickhouse() {
         fromUnixTimestamp64Milli(toInt64(number + 1) * 1000), 1.0, i, \
         concat('latency{instance=\"', i, '\"}') FROM numbers(600) \
         ARRAY JOIN ['i1', 'i2', 'i3'] AS i ORDER BY 1";
-    assert_eq!(run(&command, "f5.sql", instances, 600_000), "3");
+    assert_eq!(run("f5.sql", instances, 600_000), "3");
     // 9,960,000 ms is a window end (166 windows of 60 s), long after the data.
-    assert_eq!(run(&command, "f5.sql", instances, 9_960_000), "");
+    assert_eq!(run("f5.sql", instances, 9_960_000), "");
 }
 
 /// `job<TAB>rate` rows equal `expected` to 1e-9 (relative).
@@ -610,29 +649,14 @@ fn assert_rates(rows: &str, expected: &[(&str, f64)]) {
     }
 }
 
-fn version(command: &str, expression: &str) -> String {
-    use std::io::Write;
-    let mut child = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(command)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .expect("clickhouse local");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(format!("SELECT {expression} FORMAT TSV;\n").as_bytes())
-        .unwrap();
-    let output = child.wait_with_output().unwrap();
-    String::from_utf8(output.stdout).unwrap().trim().to_string()
+fn version(expression: &str) -> String {
+    common::run_clickhouse(&format!("SELECT {expression} FORMAT TSV;\n"), 0)
+        .expect("clickhouse local")
 }
 
 /// Runs a golden's CREATE statements, then `insert`, then its query at `t`;
 /// returns the TSV rows, sorted, joined by newlines.
-fn run(command: &str, golden_name: &str, insert: &str, t: i64) -> String {
-    use std::io::Write;
+fn run(golden_name: &str, insert: &str, t: i64) -> String {
     let text: String = golden(golden_name)
         .lines()
         .filter(|line| !line.trim_start().starts_with("--"))
@@ -654,28 +678,6 @@ fn run(command: &str, golden_name: &str, insert: &str, t: i64) -> String {
         script.push_str(statement);
         script.push_str(" FORMAT TSV;\n");
     }
-    let mut child = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!("{command} --param_t={t}"))
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .expect("clickhouse local");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(script.as_bytes())
-        .unwrap();
-    let output = child.wait_with_output().unwrap();
-    assert!(
-        output.status.success(),
-        "clickhouse local failed on {golden_name}"
-    );
-    let mut rows: Vec<&str> = std::str::from_utf8(&output.stdout)
-        .unwrap()
-        .lines()
-        .collect();
-    rows.sort_unstable();
-    rows.join("\n")
+    common::run_clickhouse(&script, t)
+        .unwrap_or_else(|error| panic!("clickhouse local failed on {golden_name}: {error}"))
 }
