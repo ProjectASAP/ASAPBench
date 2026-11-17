@@ -110,30 +110,9 @@ impl RunDir {
     /// A workload or arm name containing `__` is refused: the file name would
     /// be ambiguous.
     pub fn write_arm(&self, result: &ArmResult) -> Result<PathBuf, RunDirError> {
-        for (what, name) in [
-            ("engine", &result.engine),
-            ("workload", &result.workload),
-            ("arm", &result.arm),
-        ] {
-            check_name(what, name, FILE_NAME_CHARSET, |c| {
-                c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'
-            })?;
-            if name.starts_with('.') {
-                return Err(RunDirError::BadName {
-                    what: what.into(),
-                    name: name.clone(),
-                    allowed: FILE_NAME_CHARSET,
-                });
-            }
-        }
-        for (what, name) in [("workload", &result.workload), ("arm", &result.arm)] {
-            if name.contains("__") {
-                return Err(RunDirError::AmbiguousName {
-                    what: what.into(),
-                    name: name.clone(),
-                });
-            }
-        }
+        check_result_name("engine", &result.engine, false)?;
+        check_result_name("workload", &result.workload, true)?;
+        check_result_name("arm", &result.arm, true)?;
         let dir = self.path.join("results").join(&result.engine);
         std::fs::create_dir_all(&dir).map_err(|source| io(&dir, source))?;
         let path = dir.join(format!("{}__{}.json", result.workload, result.arm));
@@ -170,6 +149,34 @@ impl RunDir {
             .and_then(|mut file| file.write_all(line.as_bytes()))
             .map_err(|source| io(&path, source))
     }
+}
+
+/// Refuses a name that cannot be part of a result file name: outside
+/// `[a-zA-Z0-9._-]`, starting with `.`, or, for a workload or arm
+/// (`separated`), containing `__`, which separates them in
+/// `<workload>__<arm>.json`.
+pub(crate) fn check_result_name(
+    what: &str,
+    name: &str,
+    separated: bool,
+) -> Result<(), RunDirError> {
+    check_name(what, name, FILE_NAME_CHARSET, |c| {
+        c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'
+    })?;
+    if name.starts_with('.') {
+        return Err(RunDirError::BadName {
+            what: what.into(),
+            name: name.into(),
+            allowed: FILE_NAME_CHARSET,
+        });
+    }
+    if separated && name.contains("__") {
+        return Err(RunDirError::AmbiguousName {
+            what: what.into(),
+            name: name.into(),
+        });
+    }
+    Ok(())
 }
 
 /// The subdirectories of every run directory.
