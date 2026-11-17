@@ -3,10 +3,10 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::cgroup::CgroupMemory;
 use crate::engine::{
     Answers, EngineDescription, Footprint, NodeProfile, PlanSummary, PredictedCost,
 };
-use crate::cgroup::CgroupMemory;
 use crate::fit::{ConstantsFit, FitPoint};
 use crate::machine::MachineDescription;
 use crate::protocol::{JobRecord, Protocol};
@@ -53,6 +53,10 @@ pub struct ArmResult {
     /// after the footprint, in ns: the steps plus work between them, such
     /// as background merges, over every install.
     pub server_cpu_ns_whole_arm: Option<u64>,
+    /// Where the engine's CPU was read ([`crate::protocol::EngineClock::cpu_source`]),
+    /// such as `cgroup /sys/fs/cgroup/system.slice/docker-1a2b.scope/cpu.stat`
+    /// or `schedstat`.
+    pub cpu_source: String,
     /// Installs held at once while the arm ran: warm-up plus measured runs.
     pub installs_held: u32,
     /// The usage the harness measured, priced at the engine's own prices

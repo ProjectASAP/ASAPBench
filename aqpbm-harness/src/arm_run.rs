@@ -4,7 +4,8 @@
 
 use crate::data::{workload_chunks, DataError};
 use crate::engine::{
-    Answers, ArmSpec, CpuAccounting, EngineError, EngineUnderTest, InstalledArm, MeasuredUsage, WorkloadSpec,
+    Answers, ArmSpec, CpuAccounting, EngineError, EngineUnderTest, InstalledArm, MeasuredUsage,
+    WorkloadSpec,
 };
 use crate::protocol::{
     CoreLoad, EngineClock, JobRecord, LoadProbe, MeasurementClocks, Protocol, ProtocolError,
@@ -49,7 +50,12 @@ impl ArmSchedule {
                 other_query: other.id.clone(),
             });
         }
-        let longest_window_ms = workload.queries.iter().map(|q| q.window_ms).max().unwrap_or(0);
+        let longest_window_ms = workload
+            .queries
+            .iter()
+            .map(|q| q.window_ms)
+            .max()
+            .unwrap_or(0);
         let start_ms = workload
             .data
             .iter()
@@ -67,7 +73,11 @@ impl ArmSchedule {
         let interval = interval_ms as i64;
         let earliest_ms = start_ms + longest_window_ms as i64;
         let first_ms = earliest_ms.div_euclid(interval) * interval
-            + if earliest_ms.rem_euclid(interval) == 0 { 0 } else { interval };
+            + if earliest_ms.rem_euclid(interval) == 0 {
+                0
+            } else {
+                interval
+            };
         let evaluate_at_ms: Vec<i64> = (0..)
             .map(|k| first_ms + k * interval)
             .take_while(|&at_ms| at_ms <= end_ms)
@@ -256,6 +266,7 @@ pub fn run_arm(
         server_cpu_ns_whole_arm: server_before
             .zip(server_after)
             .map(|((before_ns, _), (after_ns, _))| after_ns.saturating_sub(before_ns)),
+        cpu_source: clock.cpu_source(),
         installs_held: runs as u32,
     })
 }

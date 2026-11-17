@@ -110,6 +110,7 @@ dependencies = [
  "anyhow",
  "aqpbm-core",
  "aqpbm-datagen",
+ "aqpbm-harness",
  "clap",
  "serde",
  "serde_json",

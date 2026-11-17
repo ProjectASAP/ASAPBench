@@ -17,8 +17,19 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// The files the agent serves: CPU, current and peak memory, memory breakdown.
-pub const CGROUP_FILES: [&str; 4] = ["cpu.stat", "memory.current", "memory.peak", "memory.stat"];
+/// The group files the agent serves: CPU, current and peak memory, memory
+/// breakdown, and the cores the group may run on.
+pub const CGROUP_FILES: [&str; 5] = [
+    "cpu.stat",
+    "memory.current",
+    "memory.peak",
+    "memory.stat",
+    "cpuset.cpus.effective",
+];
+
+/// The name under which the agent serves its host's `/proc/stat`, so the
+/// harness can check the server's cores are idle around a step.
+pub const PROC_STAT: &str = "proc-stat";
 
 /// Where a server's cgroup v2 files are read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,14 +41,19 @@ pub enum CgroupSource {
 }
 
 impl CgroupSource {
-    /// The current text of one of [`CGROUP_FILES`].
+    /// The current text of one of [`CGROUP_FILES`], or of the server
+    /// host's `/proc/stat` for [`PROC_STAT`].
     pub fn read(&self, file: &str) -> Result<String, CgroupError> {
-        if !CGROUP_FILES.contains(&file) {
+        if !CGROUP_FILES.contains(&file) && file != PROC_STAT {
             return Err(CgroupError::NotServed(file.into()));
         }
         match self {
             CgroupSource::Local(dir) => {
-                let path = dir.join(file);
+                let path = if file == PROC_STAT {
+                    PathBuf::from("/proc/stat")
+                } else {
+                    dir.join(file)
+                };
                 std::fs::read_to_string(&path).map_err(|error| CgroupError::Read {
                     file: path.display().to_string(),
                     message: error.to_string(),
@@ -175,27 +191,35 @@ fn http_get(url: &str, file: &str) -> Result<String, CgroupError> {
 /// be charged to the server it measures.
 /// Example: `0::/system.slice/docker-1a2b.scope` with root `/sys/fs/cgroup`
 /// is inside `/sys/fs/cgroup/system.slice/docker-1a2b.scope`.
-pub fn agent_in_served_group(proc_self_cgroup: &str, cgroup_root: &Path, served_dir: &Path) -> bool {
-    let Some(own) = proc_self_cgroup.lines().find_map(|line| line.strip_prefix("0::")) else {
+pub fn agent_in_served_group(
+    proc_self_cgroup: &str,
+    cgroup_root: &Path,
+    served_dir: &Path,
+) -> bool {
+    let Some(own) = proc_self_cgroup
+        .lines()
+        .find_map(|line| line.strip_prefix("0::"))
+    else {
         return false;
     };
     let own_dir = cgroup_root.join(own.trim().trim_start_matches('/'));
     own_dir.starts_with(served_dir)
 }
 
-/// Serves `GET /<file>` for each of [`CGROUP_FILES`] in `dir`, read afresh
+/// Serves `GET /<file>` for each of [`CGROUP_FILES`] in `dir`, and
+/// `GET /proc-stat` from `proc_stat` (the host's `/proc/stat`), read afresh
 /// per request; every other path is 404. Runs until the listener fails.
 /// One request per connection (HTTP/1.0), answered on the accepting thread.
-pub fn serve_agent(listener: TcpListener, dir: &Path) -> std::io::Result<()> {
+pub fn serve_agent(listener: TcpListener, dir: &Path, proc_stat: &Path) -> std::io::Result<()> {
     for stream in listener.incoming() {
         let mut stream = stream?;
         // A broken client never stops the agent.
-        let _ = answer(&mut stream, dir);
+        let _ = answer(&mut stream, dir, proc_stat);
     }
     Ok(())
 }
 
-fn answer(stream: &mut TcpStream, dir: &Path) -> std::io::Result<()> {
+fn answer(stream: &mut TcpStream, dir: &Path, proc_stat: &Path) -> std::io::Result<()> {
     let mut reader = BufReader::new(&*stream);
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
@@ -209,6 +233,8 @@ fn answer(stream: &mut TcpStream, dir: &Path) -> std::io::Result<()> {
     let file = path.strip_prefix('/').unwrap_or("");
     let body = if CGROUP_FILES.contains(&file) {
         std::fs::read_to_string(dir.join(file)).ok()
+    } else if file == PROC_STAT {
+        std::fs::read_to_string(proc_stat).ok()
     } else {
         None
     };
@@ -218,7 +244,10 @@ fn answer(stream: &mut TcpStream, dir: &Path) -> std::io::Result<()> {
             "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()
         ),
-        None => write!(stream, "HTTP/1.0 404 Not Found\r\nContent-Length: 0\r\n\r\n"),
+        None => write!(
+            stream,
+            "HTTP/1.0 404 Not Found\r\nContent-Length: 0\r\n\r\n"
+        ),
     }
 }
 

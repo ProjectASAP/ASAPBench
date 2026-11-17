@@ -14,7 +14,7 @@ use aqpbm_core::metrics::{CpuTimeSampler, ThreadCpuTime};
 
 use serde::{Deserialize, Serialize};
 
-use crate::cgroup::{CgroupCpu, CgroupError, CgroupSource};
+use crate::cgroup::{CgroupCpu, CgroupError, CgroupSource, PROC_STAT};
 use crate::engine::{CpuAccounting, EngineError, StepCost, StepReport};
 use crate::fit::FitPoint;
 
@@ -110,6 +110,14 @@ pub struct ProcessesCpuClock {
 }
 
 impl ProcessesCpuClock {
+    /// Where the CPU is read: `cgroup <cpu.stat path>` or `schedstat`.
+    pub fn cpu_source(&self) -> String {
+        match &self.cgroup_cpu_stat {
+            Some(cpu_stat) => format!("cgroup {}", cpu_stat.display()),
+            None => "schedstat".into(),
+        }
+    }
+
     /// Picks the source and reads the pids once, so a missing or exited
     /// server fails here, before any job.
     pub fn new(pids: Vec<u32>, files: ProcessCpuFiles) -> Result<Self, ProtocolError> {
@@ -235,7 +243,12 @@ fn cgroup_v2_path(proc_root: &Path, pid: &str) -> Option<String> {
 
 /// The `cpu.stat` of the cgroup all of `pids` are in, when that group is
 /// their own: one group for every pid, not the root, not the harness's own
-/// group (`<proc_root>/self`), and its `cpu.stat` readable.
+/// group (`<proc_root>/self`), every process in its `cgroup.procs` one of
+/// `pids` or a descendant of one, and its `cpu.stat` readable. Otherwise the
+/// group's CPU would count a foreign process, so the clock reads `schedstat`.
+/// Example: a container with the server (pid 40) and its child (pid 41,
+/// parent 40) is the server's own; with an unrelated pid 99 (parent 1) it
+/// is not.
 fn own_cgroup_cpu_stat(files: &ProcessCpuFiles, pids: &[u32]) -> Option<PathBuf> {
     let group = cgroup_v2_path(&files.proc_root, &pids.first()?.to_string())?;
     let shared = pids
@@ -244,11 +257,43 @@ fn own_cgroup_cpu_stat(files: &ProcessCpuFiles, pids: &[u32]) -> Option<PathBuf>
     if !shared || group == "/" || cgroup_v2_path(&files.proc_root, "self") == Some(group.clone()) {
         return None;
     }
-    let cpu_stat = files
-        .cgroup_root
-        .join(group.trim_start_matches('/'))
-        .join("cpu.stat");
+    let group_dir = files.cgroup_root.join(group.trim_start_matches('/'));
+    let procs = std::fs::read_to_string(group_dir.join("cgroup.procs")).ok()?;
+    for member in procs.split_whitespace() {
+        let member: u32 = member.parse().ok()?;
+        if !descends_from(&files.proc_root, member, pids) {
+            return None;
+        }
+    }
+    let cpu_stat = group_dir.join("cpu.stat");
     cgroup_usage_ns(&cpu_stat).ok().map(|_| cpu_stat)
+}
+
+/// Whether `pid` is one of `ancestors` or a descendant of one, by its parent
+/// pids (field 4 of `<proc_root>/<pid>/stat`). An unreadable stat (a process
+/// that just exited) is not a descendant.
+fn descends_from(proc_root: &Path, pid: u32, ancestors: &[u32]) -> bool {
+    let mut current = pid;
+    // A pid chain is at most as long as the pid space; 4096 steps is far
+    // above any real process tree and stops a malformed (cyclic) fake.
+    for _ in 0..4096 {
+        if ancestors.contains(&current) {
+            return true;
+        }
+        let Ok(stat) = std::fs::read_to_string(proc_root.join(current.to_string()).join("stat"))
+        else {
+            return false;
+        };
+        let parent = stat
+            .rfind(')')
+            .and_then(|end| stat[end + 1..].split_whitespace().nth(1))
+            .and_then(|ppid| ppid.parse::<u32>().ok());
+        match parent {
+            Some(parent) if parent > 0 && parent != current => current = parent,
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// `usage_usec` of a cgroup v2 `cpu.stat`, in ns ([`CgroupCpu::parse`]).
@@ -370,6 +415,20 @@ impl EngineClock<'_> {
             EngineClock::CallingThread(clock) => *clock,
             EngineClock::Processes(clock) => clock,
             EngineClock::Cgroup(clock) => clock,
+        }
+    }
+
+    /// Where this clock reads CPU, recorded in every arm result:
+    /// `calling-thread`, `cgroup <cpu.stat path>`, `schedstat` or
+    /// `cgroup agent <url>`.
+    pub fn cpu_source(&self) -> String {
+        match self {
+            EngineClock::CallingThread(_) => "calling-thread".into(),
+            EngineClock::Processes(clock) => clock.cpu_source(),
+            EngineClock::Cgroup(clock) => match &clock.source {
+                CgroupSource::Local(dir) => format!("cgroup {}", dir.join("cpu.stat").display()),
+                CgroupSource::Agent { url } => format!("cgroup agent {url}"),
+            },
         }
     }
 
@@ -575,6 +634,141 @@ impl LoadProbe for OsLoadProbe {
     }
 }
 
+/// The cores of a cpu list such as `2,22` or `0-3,8` (cgroup
+/// `cpuset.cpus.effective`, `/proc/<pid>/status` `Cpus_allowed_list`).
+pub fn parse_cpu_list(text: &str) -> Result<Vec<usize>, ProtocolError> {
+    let parse_error = || ProtocolError::Parse {
+        what: "cpu list".into(),
+        message: format!("'{}' is not a list like 2,22 or 0-3,8", text.trim()),
+    };
+    let mut cores = Vec::new();
+    for part in text.trim().split(',').filter(|part| !part.is_empty()) {
+        let (first, last) = part.split_once('-').unwrap_or((part, part));
+        let first: usize = first.parse().map_err(|_| parse_error())?;
+        let last: usize = last.parse().map_err(|_| parse_error())?;
+        if last < first {
+            return Err(parse_error());
+        }
+        cores.extend(first..=last);
+    }
+    if cores.is_empty() {
+        return Err(parse_error());
+    }
+    Ok(cores)
+}
+
+/// The busiest of `cores` between two `/proc/stat` texts.
+pub fn cores_busy_fraction(
+    cores: &[usize],
+    before: &str,
+    after: &str,
+) -> Result<f64, ProtocolError> {
+    let mut busiest: f64 = 0.0;
+    for &core in cores {
+        busiest = busiest.max(core_busy_fraction(core, before, after)?);
+    }
+    Ok(busiest)
+}
+
+/// Where a [`ServerCoresProbe`] reads `/proc/stat` and the load average.
+#[derive(Debug, Clone)]
+enum ServerStat {
+    /// This host's proc root.
+    ProcRoot(PathBuf),
+    /// The server host's, through the cgroup agent.
+    Cgroup(CgroupSource),
+}
+
+/// The idle check of an external server: the busiest of the cores the server
+/// may run on (its container's cpuset), not the harness's core, over one
+/// sampling interval. The `core` the protocol passes is the harness's and is
+/// ignored. Example: a server pinned to cores 2 and 22 is busy when either is.
+#[derive(Debug, Clone)]
+pub struct ServerCoresProbe {
+    pub cores: Vec<usize>,
+    pub sample_interval: std::time::Duration,
+    stat: ServerStat,
+}
+
+impl ServerCoresProbe {
+    fn read_stat(&self) -> Result<String, ProtocolError> {
+        match &self.stat {
+            ServerStat::ProcRoot(root) => {
+                let path = root.join("stat");
+                std::fs::read_to_string(&path).map_err(|error| ProtocolError::Parse {
+                    what: path.display().to_string(),
+                    message: error.to_string(),
+                })
+            }
+            ServerStat::Cgroup(source) => Ok(source.read(PROC_STAT)?),
+        }
+    }
+}
+
+impl LoadProbe for ServerCoresProbe {
+    fn core_busy_fraction(&mut self, _harness_core: usize) -> Result<f64, ProtocolError> {
+        let before = self.read_stat()?;
+        std::thread::sleep(self.sample_interval);
+        cores_busy_fraction(&self.cores, &before, &self.read_stat()?)
+    }
+
+    /// The server host's load average on this host; `NaN` (recorded `None`)
+    /// through the agent, which does not serve it.
+    fn loadavg(&mut self) -> f64 {
+        match &self.stat {
+            ServerStat::ProcRoot(root) => std::fs::read_to_string(root.join("loadavg"))
+                .ok()
+                .and_then(|text| text.split_whitespace().next()?.parse().ok())
+                .unwrap_or(f64::NAN),
+            ServerStat::Cgroup(_) => f64::NAN,
+        }
+    }
+}
+
+/// The idle probe for an engine with `accounting`: the harness core
+/// ([`OsLoadProbe`]) for `CallingThread`; the server's cores for
+/// `Processes` (the first pid's `Cpus_allowed_list` under
+/// `files.proc_root`) and `Cgroup` (the group's `cpuset.cpus.effective`,
+/// `/proc/stat` through the source).
+pub fn load_probe_for(
+    accounting: &CpuAccounting,
+    files: &ProcessCpuFiles,
+) -> Result<Box<dyn LoadProbe>, ProtocolError> {
+    let sample_interval = OsLoadProbe::default().sample_interval;
+    Ok(match accounting {
+        CpuAccounting::CallingThread => Box::new(OsLoadProbe::default()),
+        CpuAccounting::Processes(pids) => {
+            let pid = pids.first().ok_or_else(|| ProtocolError::Parse {
+                what: "Processes accounting".into(),
+                message: "no pids".into(),
+            })?;
+            let path = files.proc_root.join(pid.to_string()).join("status");
+            let status =
+                std::fs::read_to_string(&path).map_err(|_| ProtocolError::MissingProcess {
+                    pid: *pid,
+                    path: path.display().to_string(),
+                })?;
+            let list = status
+                .lines()
+                .find_map(|line| line.strip_prefix("Cpus_allowed_list:"))
+                .ok_or_else(|| ProtocolError::Parse {
+                    what: path.display().to_string(),
+                    message: "no Cpus_allowed_list line".into(),
+                })?;
+            Box::new(ServerCoresProbe {
+                cores: parse_cpu_list(list)?,
+                sample_interval,
+                stat: ServerStat::ProcRoot(files.proc_root.clone()),
+            })
+        }
+        CpuAccounting::Cgroup(source) => Box::new(ServerCoresProbe {
+            cores: parse_cpu_list(&source.read("cpuset.cpus.effective")?)?,
+            sample_interval,
+            stat: ServerStat::Cgroup(source.clone()),
+        }),
+    })
+}
+
 /// The protocol of a run, recorded in `run.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -613,6 +807,8 @@ pub struct JobRecord {
     /// The sample with the median thread CPU (process CPU for a `Processes`
     /// engine).
     pub median: StepCost,
+    /// The index of `median` in `samples`: the measured run it came from.
+    pub median_run: usize,
 }
 
 impl JobRecord {
@@ -733,7 +929,8 @@ impl Protocol {
                 busy_fraction: after.busy_fraction,
             });
         }
-        let median = median_sample(&samples, clock);
+        let median_run = median_run(&samples, clock);
+        let median = samples[median_run].clone();
         Ok(JobRecord {
             core,
             busy_before: before.busy_fraction,
@@ -742,6 +939,7 @@ impl Protocol {
             marks,
             samples,
             median,
+            median_run,
         })
     }
 
@@ -757,10 +955,10 @@ impl Protocol {
 /// The sample in the middle of an odd number of samples, ordered by the CPU
 /// `clock` measures the engine by; ties keep run order, so the choice is
 /// deterministic.
-fn median_sample(samples: &[StepCost], clock: &EngineClock) -> StepCost {
-    let mut order: Vec<&StepCost> = samples.iter().collect();
-    order.sort_by_key(|sample| clock.engine_cpu_ns(sample));
-    order[order.len() / 2].clone()
+fn median_run(samples: &[StepCost], clock: &EngineClock) -> usize {
+    let mut order: Vec<usize> = (0..samples.len()).collect();
+    order.sort_by_key(|&run| clock.engine_cpu_ns(&samples[run]));
+    order[order.len() / 2]
 }
 
 /// Times `run(size)` at each size as one protocol job pinned to `core`
@@ -793,14 +991,9 @@ pub fn measure_sizes(
         })?;
         load = Some(job.load_after());
         let measured_units = &units_per_call[protocol.warmup_runs as usize..];
-        let median_run = job
-            .samples
-            .iter()
-            .position(|sample| *sample == job.median)
-            .expect("the median is one of the samples");
         points.push(FitPoint {
             setting: size.to_string(),
-            terms: vec![measured_units[median_run] as f64, 1.0],
+            terms: vec![measured_units[job.median_run] as f64, 1.0],
             measured: clock.engine_cpu_ns(&job.median) as f64,
         });
     }
