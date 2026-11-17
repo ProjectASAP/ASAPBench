@@ -19,13 +19,14 @@ On an 8-core laptop the build takes about 11 minutes; then --quick takes about 1
 about 1 hour 40 minutes, most of it in the 0.01 and tighter budgets of use cases 1 and 2. Peak memory
 stays under 4 GB, since the use cases run one at a time.
 
-Needs cargo, python3 and Grafana (brew install grafana, or GRAFANA_HOME set to an unpacked release).
-Grafana's state and the Infinity plugin live under target/grafana-home.
+Needs cargo, python3, cmake and a C++ compiler (ASAPPlanner builds the HiGHS solver from source), and
+Grafana (brew install grafana, or GRAFANA_HOME set to an unpacked release). Every one is checked before
+the build starts. Grafana's state and the Infinity plugin live under target/grafana-home.
 EOF
   exit 2
 }
 
-cases=$(python3 -c "import sys; sys.path.insert(0, 'scripts/use_cases'); import cases; print(','.join(cases.load()))")
+cases=
 quick=0
 grafana=1
 while [ $# -gt 0 ]; do
@@ -37,9 +38,27 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-command -v cargo >/dev/null || { echo "cargo not found; install Rust from https://rustup.rs" >&2; exit 1; }
-if [ $grafana = 1 ]; then
-  tools/grafana/run.sh --check
+missing=()
+command -v cargo >/dev/null || missing+=("cargo: install Rust from https://rustup.rs")
+command -v python3 >/dev/null || missing+=("python3: brew install python, or your package manager's python3")
+command -v cmake >/dev/null || missing+=("cmake: brew install cmake, or your package manager's cmake")
+if [ "$(uname)" = Darwin ]; then
+  xcode-select -p >/dev/null 2>&1 || missing+=("C++ compiler: xcode-select --install")
+else
+  command -v c++ >/dev/null || missing+=("C++ compiler: your package manager's g++ or clang")
+fi
+if [ $grafana = 1 ] && ! tools/grafana/run.sh --check; then
+  missing+=("Grafana: see the message above, or pass --no-grafana")
+fi
+if [ ${#missing[@]} -gt 0 ]; then
+  echo "missing before the build can start:" >&2
+  printf '  %s\n' "${missing[@]}" >&2
+  exit 1
+fi
+echo "found cargo, python3, cmake, a C++ compiler$([ $grafana = 1 ] && echo ' and Grafana')" >&2
+
+if [ -z "$cases" ]; then
+  cases=$(python3 -c "import sys; sys.path.insert(0, 'scripts/use_cases'); import cases; print(','.join(cases.load()))")
 fi
 
 cargo build --release -p aqpbm-planeval
