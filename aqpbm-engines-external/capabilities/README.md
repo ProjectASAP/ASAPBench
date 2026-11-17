@@ -1,6 +1,6 @@
 # Deployment capabilities of the external engines
 
-Each file is an ASAPPlanner deployment-capabilities file (the `DeploymentCapabilities` JSON of ASAPPlanner #1374, valid at its head `7834fed4d`). Pass it with `asap_planner --deployment-capabilities <file>` so that the planner plans only for what the engine can run:
+Each file is an ASAPPlanner deployment-capabilities file (the `DeploymentCapabilities` JSON of ASAPPlanner main at `bc725bda8`, which merged #1374). Pass it with `asap_planner --deployment-capabilities <file>` so that the planner plans only for what the engine can run:
 
 | File | What the planner may use |
 |---|---|
