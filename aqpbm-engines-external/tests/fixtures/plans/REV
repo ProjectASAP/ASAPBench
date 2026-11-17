@@ -1,0 +1,14 @@
+Written by ASAPPlanner's `installable_plan_of` (crates/planner/src/installable/mod.rs) at
+ProjectASAP/ASAPPlanner PR #1374 head ceb78acf420ee4b53b4578ea310193f74a45cdfd, from public
+synthetic workloads, with the production planning stages (Stages 1-2, then Stage 3 `select_plan`).
+`installable_plan_of` validates each plan and runs the executor compile check.
+
+  sot_1h_stored_sum      sum by (job) (sum_over_time(latency[1h])), every 60 s        default capabilities
+  rate_5m_stored         sum by (job) (rate(requests_total[5m])), every 60 s          default capabilities
+  rate_5m_query_time     same query                                                  capabilities/clickhouse.equivalent-only.json
+  max_5m_label_filter    max_over_time(latency{job="j3"}[5m]), every 300 s           capabilities/clickhouse.equivalent-only.json
+  count_distinct_5m      count(count by (instance) (count_over_time(latency[5m])))   capabilities/clickhouse.equivalent-only.json
+  joint_5m               five 5m queries over latency and requests_total             capabilities/clickhouse.equivalent-only.json
+
+Regenerate with `asap_planner --plan-file` once it exists; never edit these files by hand.
+Edge cases are made in test code by changing one field of a loaded fixture.
