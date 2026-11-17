@@ -10,5 +10,12 @@ synthetic workloads, with the production planning stages (Stages 1-2, then Stage
   count_distinct_5m      count(count by (instance) (count_over_time(latency[5m])))   capabilities/clickhouse.equivalent-only.json
   joint_5m               five 5m queries over latency and requests_total             capabilities/clickhouse.equivalent-only.json
 
+How each file was made: the workload was planned with
+`planning_stages::run_stages_until(.., RunUntil::Stage2)` (with
+`PlanningModels::builtin().with_deployment_capabilities(<file above>)`, or the
+defaults), then Stage 3 `select_plan`, then
+`installable_plan_of(plan, &workload.query_workload.entries())`, serialized
+with `serde_json::to_string_pretty`.
+
 Regenerate with `asap_planner --plan-file` once it exists; never edit these files by hand.
 Edge cases are made in test code by changing one field of a loaded fixture.

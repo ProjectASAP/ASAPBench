@@ -29,7 +29,10 @@ fn shape(node: usize, reason: &str) -> TranslationError {
 #[test]
 fn stored_sum_worked_example() {
     let deployment = translated("sot_1h_stored_sum");
-    assert_eq!(normalized(&deployment.script()), normalized(&golden("f1.sql")));
+    assert_eq!(
+        normalized(&deployment.script()),
+        normalized(&golden("f1.sql"))
+    );
     assert_eq!(deployment.tables.len(), 2);
     assert_eq!(deployment.materialized_views.len(), 1);
     assert_eq!(deployment.queries.len(), 1);
@@ -40,7 +43,10 @@ fn stored_sum_worked_example() {
 #[test]
 fn stored_rate_is_a_recorded_substitute() {
     let deployment = translated("rate_5m_stored");
-    assert_eq!(normalized(&deployment.script()), normalized(&golden("f2.sql")));
+    assert_eq!(
+        normalized(&deployment.script()),
+        normalized(&golden("f2.sql"))
+    );
     assert_eq!(
         deployment.substitutions,
         vec![Substitution {
@@ -51,34 +57,65 @@ fn stored_rate_is_a_recorded_substitute() {
                 .into(),
         }]
     );
+    assert!(deployment.sharing_lost.is_empty());
 }
 
 #[test]
 fn query_time_rate_is_equivalent() {
     let deployment = translated("rate_5m_query_time");
-    assert_eq!(normalized(&deployment.script()), normalized(&golden("f3.sql")));
+    assert_eq!(
+        normalized(&deployment.script()),
+        normalized(&golden("f3.sql"))
+    );
     assert_eq!(deployment.tables.len(), 1);
     assert!(deployment.materialized_views.is_empty());
+    assert_eq!(deployment.queries.len(), 1);
     assert!(deployment.substitutions.is_empty());
+    assert!(deployment.sharing_lost.is_empty());
 }
 
 #[test]
 fn label_equality_becomes_where() {
     let deployment = translated("max_5m_label_filter");
-    assert_eq!(normalized(&deployment.script()), normalized(&golden("f4.sql")));
+    assert_eq!(
+        normalized(&deployment.script()),
+        normalized(&golden("f4.sql"))
+    );
+    assert!(deployment.substitutions.is_empty());
+    assert!(deployment.sharing_lost.is_empty());
+
+    // A label value with a quote and a backslash is escaped.
+    let mut value = fixture_value("max_5m_label_filter");
+    payload_body(&mut value, 0)["predicates"][0]["Compare"]["right"] =
+        json!({"Literal": {"Utf8": "j'3\\"}});
+    let deployment = translate(&PlanFile::from_value(value).unwrap()).unwrap();
+    assert!(
+        normalized(&deployment.queries[0]).contains(r"WHERE `job` = 'j\'3\\' AND"),
+        "{}",
+        deployment.queries[0]
+    );
 }
 
 #[test]
 fn empty_reduce_has_no_group_by_and_no_row_when_empty() {
     let deployment = translated("count_distinct_5m");
-    assert_eq!(normalized(&deployment.script()), normalized(&golden("f5.sql")));
+    assert_eq!(
+        normalized(&deployment.script()),
+        normalized(&golden("f5.sql"))
+    );
+    assert!(deployment.substitutions.is_empty());
+    assert!(deployment.sharing_lost.is_empty());
 }
 
 #[test]
 fn shared_query_time_node_is_reported() {
     let deployment = translated("joint_5m");
     assert_eq!(
-        deployment.tables.iter().map(|t| normalized(t)).collect::<Vec<_>>(),
+        deployment
+            .tables
+            .iter()
+            .map(|t| normalized(t))
+            .collect::<Vec<_>>(),
         vec![
             normalized(
                 "CREATE TABLE src_latency (ts DateTime64(3, 'UTC'), value Float64, `job` String, \
@@ -111,7 +148,10 @@ fn shared_query_time_node_is_reported() {
         normalized(&deployment.queries[1]),
         over_node_1("quantileExactInclusive(0.5)(value)")
     );
-    assert_eq!(normalized(&deployment.queries[3]), over_node_1("max(value)"));
+    assert_eq!(
+        normalized(&deployment.queries[3]),
+        over_node_1("max(value)")
+    );
     assert_eq!(
         normalized(&deployment.queries[2]),
         normalized(
@@ -123,6 +163,13 @@ fn shared_query_time_node_is_reported() {
              GROUP BY `job`, `$promql_series_identity`) \
              GROUP BY `job`"
         )
+    );
+    // Root 13: the query-time rate, the same SQL as F3's query.
+    let f3_query = golden("f3.sql");
+    let f3_query = &f3_query[f3_query.find("SELECT").unwrap()..];
+    assert_eq!(
+        normalized(&format!("{};", deployment.queries[4])),
+        normalized(f3_query)
     );
     assert_eq!(
         deployment.sharing_lost,
@@ -160,17 +207,17 @@ fn answer_changing_fields_are_refused_at_their_node() {
 
     // M8: Aggregate filters.
     let mut value = fixture_value("joint_5m");
-    payload_body(&mut value, 2)["filters"] = json!([{"Literal": true}]);
+    payload_body(&mut value, 2)["filters"] = json!([{"Literal": {"Boolean": true}}]);
     assert_eq!(refusal(value), shape(2, "filter"));
 
     // M9: Aggregate having.
     let mut value = fixture_value("joint_5m");
-    payload_body(&mut value, 2)["having"] = json!({"Literal": true});
+    payload_body(&mut value, 2)["having"] = json!({"Literal": {"Boolean": true}});
     assert_eq!(refusal(value), shape(2, "having"));
 
     // M10: a chain filter.
     let mut value = fixture_value("sot_1h_stored_sum");
-    payload_body(&mut value, 1)["filter"] = json!({"Literal": true});
+    payload_body(&mut value, 1)["filter"] = json!({"Literal": {"Boolean": true}});
     assert_eq!(refusal(value), shape(1, "filter"));
 
     // M11: a summary input that is not the sample value.
@@ -201,6 +248,7 @@ fn irate_state_is_refused() {
 #[ignore = "needs ClickHouse 26.8.34.13 (AQPBM_CLICKHOUSE_LOCAL)"]
 fn goldens_run_on_clickhouse() {
     let command = std::env::var("AQPBM_CLICKHOUSE_LOCAL").expect("AQPBM_CLICKHOUSE_LOCAL");
+    assert_eq!(version(&command), "26.8.34.13");
     // F1: series a/1 = 1.0, a/2 = 0.5, b/1 = 2.0 every second for 1 h; at t = 1 h:
     // a = 3600 · 1.0 + 3600 · 0.5 = 5400, b = 3600 · 2.0 = 7200.
     let latency_three = "INSERT INTO src_latency SELECT \
@@ -212,26 +260,41 @@ fn goldens_run_on_clickhouse() {
         run(&command, "f1.sql", latency_three, 3_600_000),
         "a\t5400\nb\t7200"
     );
-    // F2/F3: one counter, v(s) = s for s <= 450, then s - 450 (a reset at 451 s).
-    // At t = 600 s the window (300 s, 600 s] holds s = 301..600: 300 samples,
-    // first 301 at 301 s, last 150 at 600 s, one drop after 450.
-    // PromQL increase = 150 - 301 + 450 = 299; sampled = 299 s; average gap 1 s;
-    // to start 1 s (< 1.1, kept; zero point 299 · 301 / 299 = 301 s is later);
-    // to end 0 s. rate = 299 · (299 + 1 + 0) / 299 / 300 = 1.
-    // Stored windows: deltaSumTimestamp adds 0 at the drop, increase = 149 + 149 = 298,
-    // rate = 298 · 300 / 299 / 300 = 298 / 299 (lower by the first value after the reset, 1).
-    let counter = "INSERT INTO src_requests_total SELECT \
-        fromUnixTimestamp64Milli(toInt64(number + 1) * 1000), \
-        if(number + 1 <= 450, number + 1, number + 1 - 450), 'x', 'requests_total{job=\"x\"}' \
-        FROM numbers(600)";
-    assert_eq!(run(&command, "f3.sql", counter, 600_000), "x\t1");
-    let stored: Vec<String> = run(&command, "f2.sql", counter, 600_000)
-        .split('\t')
-        .map(str::to_string)
-        .collect();
-    assert_eq!(stored[0], "x");
-    let rate: f64 = stored[1].parse().unwrap();
-    assert!((rate - 298.0 / 299.0).abs() <= 1e-9 * (298.0f64 / 299.0));
+    // F2/F3: three counters, each in its own job; at t = 600 s the window is
+    // (300 s, 600 s]; Prometheus extrapolatedRate (v3.15.1) by hand:
+    // x: v(s) = s for s <= 450, then s - 450 (a reset at 451 s). Samples 301..600
+    //    s: n = 300, first 301, last 150, one drop after 450: increase
+    //    150 - 301 + 450 = 299; sampled 299 s; average gap 1 s; start gap 1 s
+    //    (< 1.1, kept; zero point 299 · 301 / 299 = 301 s is later); end gap 0.
+    //    rate = 299 · (299 + 1 + 0) / 299 / 300 = 1.
+    // y: v(s) = s from 310 s: start gap 10 s >= 1.1, so half a gap, 0.5 s;
+    //    increase 290, sampled 290: rate = 290 · (290 + 0.5) / 290 / 300 = 290.5 / 300.
+    // z: v(s) = 2 (s - 301) + 0.5: increase 598, sampled 299; the zero point
+    //    299 · 0.5 / 598 = 0.25 s is before the 1 s start gap, so 0.25:
+    //    rate = 598 · (299 + 0.25) / 299 / 300 = 598.5 / 300.
+    // Stored windows: deltaSumTimestamp adds 0 at x's drop, so x's increase is
+    // 149 + 149 = 298 and its rate 298 · 300 / 299 / 300 = 298 / 299 (lower by
+    // the first value after the reset, 1); y and z have no reset and agree.
+    let counters = "INSERT INTO src_requests_total SELECT \
+        fromUnixTimestamp64Milli(toInt64(s) * 1000), v, j, concat('requests_total{job=\"', j, '\"}') \
+        FROM (SELECT number + 1 AS s, 'x' AS j, if(s <= 450, s, s - 450) AS v FROM numbers(600) \
+              UNION ALL SELECT number + 310, 'y', number + 310 FROM numbers(291) \
+              UNION ALL SELECT number + 301, 'z', 2 * number + 0.5 FROM numbers(300)) \
+        ORDER BY 1";
+    let expected_query_time = [("x", 1.0), ("y", 290.5 / 300.0), ("z", 598.5 / 300.0)];
+    assert_rates(
+        &run(&command, "f3.sql", counters, 600_000),
+        &expected_query_time,
+    );
+    let expected_stored = [
+        ("x", 298.0 / 299.0),
+        ("y", 290.5 / 300.0),
+        ("z", 598.5 / 300.0),
+    ];
+    assert_rates(
+        &run(&command, "f2.sql", counters, 600_000),
+        &expected_stored,
+    );
     // F4: j3 = s, j4 = 10 s; max over (300 s, 600 s] of j3 only = 600.
     let latency_two = "INSERT INTO src_latency SELECT \
         fromUnixTimestamp64Milli(toInt64(number + 1) * 1000), (number + 1) * m, j, id \
@@ -250,6 +313,44 @@ fn goldens_run_on_clickhouse() {
     assert_eq!(run(&command, "f5.sql", instances, 10_000_000), "");
 }
 
+/// `job<TAB>rate` rows equal `expected` to 1e-9 (relative).
+fn assert_rates(rows: &str, expected: &[(&str, f64)]) {
+    let got: Vec<(String, f64)> = rows
+        .lines()
+        .map(|row| {
+            let (job, rate) = row.split_once('\t').expect("job<TAB>rate");
+            (job.to_string(), rate.parse().expect("a number"))
+        })
+        .collect();
+    assert_eq!(got.len(), expected.len(), "{rows}");
+    for ((job, rate), (want_job, want)) in got.iter().zip(expected) {
+        assert_eq!(job, want_job);
+        assert!(
+            (rate - want).abs() <= 1e-9 * want.abs(),
+            "{job}: {rate} vs {want}"
+        );
+    }
+}
+
+fn version(command: &str) -> String {
+    use std::io::Write;
+    let mut child = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("clickhouse local");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"SELECT version() FORMAT TSV;\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
 /// Runs a golden's CREATE statements, then `insert`, then its query at `t`;
 /// returns the TSV rows, sorted, joined by newlines.
 fn run(command: &str, golden_name: &str, insert: &str, t: i64) -> String {
@@ -259,7 +360,11 @@ fn run(command: &str, golden_name: &str, insert: &str, t: i64) -> String {
         .filter(|line| !line.trim_start().starts_with("--"))
         .collect::<Vec<_>>()
         .join("\n");
-    let statements: Vec<&str> = text.split(';').map(str::trim).filter(|s| !s.is_empty()).collect();
+    let statements: Vec<&str> = text
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
     let mut script = String::new();
     for statement in statements.iter().filter(|s| s.starts_with("CREATE")) {
         script.push_str(statement);
@@ -285,7 +390,10 @@ fn run(command: &str, golden_name: &str, insert: &str, t: i64) -> String {
         .write_all(script.as_bytes())
         .unwrap();
     let output = child.wait_with_output().unwrap();
-    assert!(output.status.success(), "clickhouse local failed on {golden_name}");
+    assert!(
+        output.status.success(),
+        "clickhouse local failed on {golden_name}"
+    );
     let mut rows: Vec<&str> = std::str::from_utf8(&output.stdout)
         .unwrap()
         .lines()

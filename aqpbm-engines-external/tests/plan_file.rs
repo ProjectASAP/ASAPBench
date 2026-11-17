@@ -129,8 +129,10 @@ fn predicates_decode_to_label_equals() {
 #[test]
 fn refuses_another_wire_version() {
     // M1
+    // The version is read first: the rest of the file is never parsed.
     let mut value = fixture_value("sot_1h_stored_sum");
     value["wire_version"] = json!(16);
+    value["dag"] = json!(null);
     assert_eq!(
         PlanFile::from_value(value),
         Err(TranslationError::UnsupportedWireVersion {
@@ -168,7 +170,7 @@ fn an_unknown_operator_still_decodes() {
 fn scalar_queries_are_refused() {
     // M5
     let mut value = fixture_value("sot_1h_stored_sum");
-    value["dag"]["scalar_roots"] = json!([[0, {"Literal": 1.0}]]);
+    value["dag"]["scalar_roots"] = json!([[0, {"Literal": {"Float64": 1.0}}]]);
     assert_eq!(
         PlanFile::from_value(value),
         Err(TranslationError::UnsupportedScalarQuery { query: 0 })
