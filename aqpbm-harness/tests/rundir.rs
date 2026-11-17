@@ -92,6 +92,11 @@ fn arm_result(workload: &str) -> ArmResult {
         footprint: Footprint::default(),
         measured_engine_cost_per_second: None,
         node_profiles: None,
+        ingested_samples: 0,
+        server_memory_before: None,
+        server_memory_after: None,
+        server_cpu_ns_whole_arm: None,
+        installs_held: 1,
     }
 }
 
@@ -350,4 +355,28 @@ fn a_data_record_is_filed_under_data_by_metric() {
         matches!(&error, RunDirError::BadName { name, .. } if name == "../m"),
         "{error:?}"
     );
+}
+
+/// `create_at` makes the given directory with the four subdirectories and
+/// refuses an existing one; `open` accepts it and refuses a directory
+/// missing `plans/`.
+#[test]
+fn create_at_and_open_a_run_directory_shared_by_lanes() {
+    let temp = TempDir::new("create-at");
+    let path = temp.0.join("goal").join("run-1");
+    let run = RunDir::create_at(&path).unwrap();
+    assert_eq!(run.path(), path.as_path());
+    for sub in ["workloads", "data", "plans", "results"] {
+        assert!(path.join(sub).is_dir(), "{sub}");
+    }
+    assert!(matches!(
+        RunDir::create_at(&path),
+        Err(RunDirError::RunDirExists(existing)) if existing == path
+    ));
+    assert_eq!(RunDir::open(&path).unwrap().path(), path.as_path());
+    std::fs::remove_dir(path.join("plans")).unwrap();
+    match RunDir::open(&path) {
+        Err(RunDirError::NotARunDir { missing, .. }) => assert_eq!(missing, "plans"),
+        other => panic!("expected NotARunDir, got {other:?}"),
+    }
 }
