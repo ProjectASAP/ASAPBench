@@ -7,16 +7,16 @@ use std::path::{Path, PathBuf};
 
 use aqpbm_datagen::{DataDistribution, SeriesLabelSpec, TimeSeriesDescription, UniformParameter};
 use aqpbm_harness::arm_run::{run_arm, ArmSchedule};
-use aqpbm_harness::cgroup::{agent_in_served_group, serve_agent, CgroupCpu, CgroupMemory, CgroupSource};
+use aqpbm_harness::cgroup::{
+    agent_in_served_group, serve_agent, CgroupCpu, CgroupMemory, CgroupSource,
+};
 use aqpbm_harness::data::DataRecord;
 use aqpbm_harness::engine::{
-    EngineUnderTest,
-    ArmSpec, CpuAccounting, QueryLanguage, QueryText, StepReport, WorkloadQuery, WorkloadSpec,
+    ArmSpec, CpuAccounting, EngineUnderTest, QueryLanguage, QueryText, StepReport, WorkloadQuery,
+    WorkloadSpec,
 };
 use aqpbm_harness::fake::{FakeEngine, FakeServer};
-use aqpbm_harness::protocol::{
-    LoadProbe, MeasurementClocks, OsCpuClock, Protocol, ProtocolError,
-};
+use aqpbm_harness::protocol::{LoadProbe, MeasurementClocks, OsCpuClock, Protocol, ProtocolError};
 
 struct TempDir(PathBuf);
 
@@ -58,7 +58,11 @@ fn group(dir: &Path, usage_usec: u64) {
     std::fs::write(dir.join("cpu.stat"), cpu_stat(usage_usec, 0)).unwrap();
     std::fs::write(dir.join("memory.current"), "1048576\n").unwrap();
     std::fs::write(dir.join("memory.peak"), "2097152\n").unwrap();
-    std::fs::write(dir.join("memory.stat"), "anon 524288\nfile 262144\nkernel 4096\n").unwrap();
+    std::fs::write(
+        dir.join("memory.stat"),
+        "anon 524288\nfile 262144\nkernel 4096\n",
+    )
+    .unwrap();
 }
 
 /// C1: `usage_usec` in ns; no `usage_usec` line names the field.
@@ -94,7 +98,8 @@ fn start_agent(dir: &Path) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let dir = dir.to_path_buf();
-    std::thread::spawn(move || serve_agent(listener, &dir));
+    let proc_stat = dir.join("host-proc-stat");
+    std::thread::spawn(move || serve_agent(listener, &dir, &proc_stat));
     url
 }
 
@@ -111,6 +116,9 @@ fn agent_serves_the_same_values_as_the_directory_and_nothing_else() {
     };
     assert_eq!(agent.cpu().unwrap(), local.cpu().unwrap());
     assert_eq!(agent.memory().unwrap(), local.memory().unwrap());
+    // `proc-stat` is the host's /proc/stat (here a file standing in for it).
+    std::fs::write(temp.0.join("host-proc-stat"), "cpu2 1 0 0 9 0 0 0 0\n").unwrap();
+    assert_eq!(agent.read("proc-stat").unwrap(), "cpu2 1 0 0 9 0 0 0 0\n");
     std::fs::write(temp.0.join("cpu.stat"), cpu_stat(9000, 0)).unwrap();
     assert_eq!(agent.cpu().unwrap().usage_ns, 9_000_000);
     // Without `memory.peak` the agent answers 404, read as an older kernel.
@@ -155,7 +163,9 @@ fn cgroup_clock_reads_usage_and_fails_early_on_a_missing_group() {
     assert_eq!(cpu.process_cpu_ns() - before, 2_500_000);
     assert_eq!(cpu.thread_cpu_ns(), 0);
     assert!(clocks
-        .clock_for(&CpuAccounting::Cgroup(CgroupSource::Local(temp.0.join("gone"))))
+        .clock_for(&CpuAccounting::Cgroup(CgroupSource::Local(
+            temp.0.join("gone")
+        )))
         .is_err());
 }
 
@@ -189,10 +199,13 @@ fn a_throttled_group_fails_the_job() {
 #[test]
 fn cgroup_cpu_is_quantized_to_whole_microseconds() {
     let temp = TempDir::new("quantized");
-    let server = FakeServer::start_in_cgroup(&temp.0.join("proc"), 4242, &temp.0.join("group")).unwrap();
+    let server =
+        FakeServer::start_in_cgroup(&temp.0.join("proc"), 4242, &temp.0.join("group")).unwrap();
     let clocks = MeasurementClocks::with_calling_thread(&OsCpuClock);
     let clock = clocks
-        .clock_for(&CpuAccounting::Cgroup(CgroupSource::Local(temp.0.join("group"))))
+        .clock_for(&CpuAccounting::Cgroup(CgroupSource::Local(
+            temp.0.join("group"),
+        )))
         .unwrap();
     let cpu = clock.as_clock();
     let mut steps = Vec::new();
@@ -250,7 +263,8 @@ fn two_series_workload() -> WorkloadSpec {
 #[test]
 fn an_arm_on_a_cgroup_server_records_cpu_memory_and_samples() {
     let temp = TempDir::new("arm");
-    let server = FakeServer::start_in_cgroup(&temp.0.join("proc"), 4243, &temp.0.join("group")).unwrap();
+    let server =
+        FakeServer::start_in_cgroup(&temp.0.join("proc"), 4243, &temp.0.join("group")).unwrap();
     let engine = FakeEngine {
         server: Some(server),
         ns_per_install: 500_000,
@@ -276,8 +290,22 @@ fn an_arm_on_a_cgroup_server_records_cpu_memory_and_samples() {
         raw_data_retained: true,
         engine_options: serde_json::Value::Null,
     };
-    let result = run_arm(&engine, &workload, &arm, &schedule, &protocol, 0, &mut IdleProbe, &clocks).unwrap();
+    let result = run_arm(
+        &engine,
+        &workload,
+        &arm,
+        &schedule,
+        &protocol,
+        0,
+        &mut IdleProbe,
+        &clocks,
+    )
+    .unwrap();
     assert_eq!(result.ingested_samples, 120);
+    assert_eq!(
+        result.cpu_source,
+        format!("cgroup {}", temp.0.join("group").join("cpu.stat").display())
+    );
     assert_eq!(result.installs_held, 3);
     assert_eq!(result.ingest.len(), 6);
     for job in &result.ingest {
@@ -301,4 +329,79 @@ fn an_arm_on_a_cgroup_server_records_cpu_memory_and_samples() {
         .map(|cost| cost.process_cpu_ns)
         .sum();
     assert_eq!(result.server_cpu_ns_whole_arm, Some(steps_ns + 3 * 500_000));
+}
+
+/// The server's cores come from its cpu list; the idle check takes the
+/// busiest of them.
+#[test]
+fn the_idle_check_watches_the_server_cores() {
+    use aqpbm_harness::protocol::{
+        cores_busy_fraction, load_probe_for, parse_cpu_list, ProcessCpuFiles,
+    };
+    assert_eq!(parse_cpu_list("2,22\n").unwrap(), vec![2, 22]);
+    assert_eq!(parse_cpu_list("0-3,8").unwrap(), vec![0, 1, 2, 3, 8]);
+    assert!(parse_cpu_list("3-1").is_err());
+    // core 2: 1 busy tick of 10; core 22: 5 of 10 → 0.5.
+    let before = "cpu2 0 0 0 0 0 0 0 0\ncpu22 0 0 0 0 0 0 0 0\n";
+    let after = "cpu2 1 0 0 9 0 0 0 0\ncpu22 5 0 0 5 0 0 0 0\n";
+    assert_eq!(cores_busy_fraction(&[2, 22], before, after).unwrap(), 0.5);
+
+    let temp = TempDir::new("probe");
+    let proc_root = temp.0.join("proc");
+    std::fs::create_dir_all(proc_root.join("40")).unwrap();
+    std::fs::write(
+        proc_root.join("40/status"),
+        "Name:\tserver\nCpus_allowed_list:\t2,22\n",
+    )
+    .unwrap();
+    let files = ProcessCpuFiles {
+        proc_root: proc_root.clone(),
+        cgroup_root: temp.0.join("cgroup"),
+    };
+    assert!(load_probe_for(&CpuAccounting::Processes(vec![40]), &files).is_ok());
+    let group_dir = temp.0.join("group");
+    std::fs::create_dir_all(&group_dir).unwrap();
+    std::fs::write(group_dir.join("cpuset.cpus.effective"), "4-5\n").unwrap();
+    assert!(load_probe_for(
+        &CpuAccounting::Cgroup(CgroupSource::Local(group_dir)),
+        &files
+    )
+    .is_ok());
+    assert!(load_probe_for(&CpuAccounting::Processes(vec![41]), &files).is_err());
+}
+
+/// A `Processes` engine's group is read only when every process in it is
+/// the server or its descendant; a foreign process makes the clock read
+/// `schedstat`.
+#[test]
+fn a_group_with_a_foreign_process_is_not_the_server_cpu() {
+    let temp = TempDir::new("foreign");
+    let server = FakeServer::start(&temp.0, 40).unwrap();
+    let group = server.cpu_files.cgroup_root.join("srv.scope");
+    std::fs::create_dir_all(&group).unwrap();
+    std::fs::write(group.join("cpu.stat"), cpu_stat(400_000, 0)).unwrap();
+    std::fs::write(temp.0.join("40/cgroup"), "0::/srv.scope\n").unwrap();
+    // The server's child, pid 41 (parent 40), in the same group.
+    std::fs::create_dir_all(temp.0.join("41")).unwrap();
+    std::fs::write(temp.0.join("41/stat"), "41 (child) S 40 1 1 0\n").unwrap();
+    std::fs::write(group.join("cgroup.procs"), "40\n41\n").unwrap();
+    let clocks = MeasurementClocks {
+        calling_thread: &OsCpuClock,
+        process_cpu_files: server.cpu_files.clone(),
+    };
+    let own = clocks
+        .clock_for(&CpuAccounting::Processes(vec![40]))
+        .unwrap();
+    assert_eq!(
+        own.cpu_source(),
+        format!("cgroup {}", group.join("cpu.stat").display())
+    );
+    // An unrelated pid 99 (parent 1) joins the group.
+    std::fs::create_dir_all(temp.0.join("99")).unwrap();
+    std::fs::write(temp.0.join("99/stat"), "99 (other) S 1 1 1 0\n").unwrap();
+    std::fs::write(group.join("cgroup.procs"), "40\n41\n99\n").unwrap();
+    let shared = clocks
+        .clock_for(&CpuAccounting::Processes(vec![40]))
+        .unwrap();
+    assert_eq!(shared.cpu_source(), "schedstat");
 }

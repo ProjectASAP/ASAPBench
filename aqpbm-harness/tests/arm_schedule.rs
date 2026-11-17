@@ -49,7 +49,11 @@ fn workload(queries: Vec<WorkloadQuery>, start_ms: i64, duration_ms: u64) -> Wor
 /// multiples of 10 s from 31,000 ms (start + longest window) to 121,000 ms.
 #[test]
 fn evaluations_are_the_interval_multiples_after_the_longest_window() {
-    let spec = workload(vec![query("a", 30_000, 10_000), query("b", 20_000, 10_000)], 1_000, 120_000);
+    let spec = workload(
+        vec![query("a", 30_000, 10_000), query("b", 20_000, 10_000)],
+        1_000,
+        120_000,
+    );
     let schedule = ArmSchedule::for_workload(&spec).unwrap();
     assert_eq!(schedule.refresh_ms, 10_000);
     assert_eq!(
@@ -59,17 +63,28 @@ fn evaluations_are_the_interval_multiples_after_the_longest_window() {
     // 125 s of data: the last multiple inside the data is still 120,000.
     let longer = workload(vec![query("a", 30_000, 10_000)], 1_000, 125_000);
     assert_eq!(
-        ArmSchedule::for_workload(&longer).unwrap().evaluate_at_ms.last(),
+        ArmSchedule::for_workload(&longer)
+            .unwrap()
+            .evaluate_at_ms
+            .last(),
         Some(&120_000)
     );
 }
 
 #[test]
 fn workloads_no_schedule_fits_are_refused() {
-    let mixed = workload(vec![query("a", 30_000, 10_000), query("b", 30_000, 15_000)], 0, 120_000);
+    let mixed = workload(
+        vec![query("a", 30_000, 10_000), query("b", 30_000, 15_000)],
+        0,
+        120_000,
+    );
     assert!(matches!(
         ArmSchedule::for_workload(&mixed),
-        Err(ScheduleError::MixedEvaluationIntervals { first_ms: 10_000, other_ms: 15_000, .. })
+        Err(ScheduleError::MixedEvaluationIntervals {
+            first_ms: 10_000,
+            other_ms: 15_000,
+            ..
+        })
     ));
     let empty = workload(Vec::new(), 0, 120_000);
     assert!(matches!(
