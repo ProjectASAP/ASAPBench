@@ -6,12 +6,12 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use aqpbm_harness::engine::{EngineError, StepReport};
+use aqpbm_harness::engine::{CpuAccounting, EngineError, StepReport};
 use aqpbm_harness::fake::FakeClock;
 use aqpbm_harness::protocol::{
     compare, core_busy_fraction, median, noise_band, pin_current_thread, process_cpu_ns_from_stat,
-    processes_cpu_ns, Comparison, CpuClock, JobMark, LoadProbe, OsCpuClock, Protocol,
-    ProtocolError,
+    processes_cpu_ns, Comparison, CpuClock, JobMark, LoadProbe, MeasurementClocks, OsCpuClock,
+    ProcFs, ProcessesCpuClock, Protocol, ProtocolError,
 };
 use aqpbm_harness::rundir::RunDir;
 use chrono::{TimeZone, Utc};
@@ -376,4 +376,155 @@ fn calling_thread_accounting_ignores_other_threads() {
     let process_ns = clock.process_cpu_ns() - process_before;
     assert!(thread_ns < 5_000_000, "thread CPU {thread_ns} ns");
     assert!(process_ns > 30_000_000, "process CPU {process_ns} ns");
+}
+
+/// Writes a fake process under `root`: `<pid>/stat` in state `state` with
+/// `utime` = `cpu_ns` at 1e9 ticks per second, and one
+/// `<pid>/task/<tid>/schedstat` per entry of `thread_cpu_ns` (tid = pid,
+/// pid + 1, ...), whose first field is that thread's CPU in ns.
+fn write_fake_process(root: &std::path::Path, pid: u32, state: char, thread_cpu_ns: &[u64]) {
+    let dir = root.join(pid.to_string());
+    std::fs::create_dir_all(&dir).unwrap();
+    let cpu_ns: u64 = thread_cpu_ns.iter().sum();
+    std::fs::write(
+        dir.join("stat"),
+        format!("{pid} (srv) {state} 1 {pid} {pid} 0 -1 0 0 0 0 0 {cpu_ns} 0 0 0 20 0 1 0\n"),
+    )
+    .unwrap();
+    for (index, ns) in thread_cpu_ns.iter().enumerate() {
+        let task = dir.join("task").join((pid + index as u32).to_string());
+        std::fs::create_dir_all(&task).unwrap();
+        std::fs::write(task.join("schedstat"), format!("{ns} 0 0\n")).unwrap();
+    }
+}
+
+/// A `Processes` engine (pid 4343 under a fake `/proc`) whose measured runs
+/// cost 90, 30, 70, 50 and 20 ns of server CPU (no warm-up): the samples
+/// carry no thread CPU, and the median is the middle process CPU, 50, not
+/// the third run (70), which a median over the (absent) thread CPU picks.
+#[test]
+fn a_processes_engine_median_is_the_middle_process_cpu() {
+    let root = TempDir::new("process-median");
+    write_fake_process(&root.0, 4343, 'S', &[0]);
+    let engine_clock = MeasurementClocks {
+        calling_thread: &OsCpuClock,
+        proc_fs: ProcFs {
+            root: root.0.clone(),
+            ticks_per_second: 1_000_000_000,
+        },
+    }
+    .clock_for(&CpuAccounting::Processes(vec![4343]))
+    .unwrap();
+    let costs = [90_u64, 30, 70, 50, 20];
+    let mut call = 0;
+    let mut server_cpu_ns = 0;
+    let protocol = Protocol {
+        warmup_runs: 0,
+        measured_runs: 5,
+        ..Protocol::default()
+    };
+    let record = protocol
+        .run_job(
+            0,
+            &mut FakeProbe::new(&[0.0], 0.0),
+            engine_clock.as_clock(),
+            &mut || {
+                server_cpu_ns += costs[call];
+                call += 1;
+                write_fake_process(&root.0, 4343, 'S', &[server_cpu_ns]);
+                Ok(StepReport::default())
+            },
+        )
+        .unwrap();
+    let samples: Vec<(Option<u64>, u64)> = record
+        .samples
+        .iter()
+        .map(|sample| (sample.thread_cpu_ns, sample.process_cpu_ns))
+        .collect();
+    assert_eq!(
+        samples,
+        vec![(None, 90), (None, 30), (None, 70), (None, 50), (None, 20)]
+    );
+    assert_eq!(record.median.process_cpu_ns, 50);
+}
+
+/// A server pid in state `Z` (a zombie: exited, not yet reaped) has a stat
+/// file but runs no more: reading it is an error naming the pid, as for a
+/// missing one, both when the clock is built and on a later reading.
+#[test]
+fn a_zombie_server_pid_is_an_exited_process() {
+    let root = TempDir::new("zombie");
+    write_fake_process(&root.0, 4444, 'Z', &[1_000]);
+    let error = processes_cpu_ns(&root.0, &[4444], 1_000_000_000).unwrap_err();
+    assert!(error.to_string().contains("4444"), "{error}");
+    assert!(error.to_string().contains("exited"), "{error}");
+
+    write_fake_process(&root.0, 4445, 'S', &[1_000]);
+    let proc_fs = ProcFs {
+        root: root.0.clone(),
+        ticks_per_second: 1_000_000_000,
+    };
+    let clock = ProcessesCpuClock::new(vec![4445], proc_fs).unwrap();
+    write_fake_process(&root.0, 4445, 'Z', &[2_000]);
+    assert_eq!(clock.process_cpu_ns(), 1_000, "the last good reading");
+    let error = clock
+        .take_read_error()
+        .expect("a zombie is a failed reading");
+    assert!(error.to_string().contains("4445"), "{error}");
+}
+
+/// A server's CPU at ns resolution: two threads whose `schedstat` read
+/// 2,000 and 3,000 ns sum to 5,000 ns. Field 14 of `stat` (`utime`, in
+/// 10 ms ticks on a real `/proc`) would read 0 for both.
+#[test]
+fn server_cpu_is_the_sum_of_its_threads_schedstat() {
+    let root = TempDir::new("schedstat");
+    write_fake_process(&root.0, 4646, 'S', &[2_000, 3_000]);
+    // `utime` 0, as 5 µs is far below one 10 ms tick.
+    std::fs::write(
+        root.0.join("4646/stat"),
+        "4646 (srv) S 1 4646 4646 0 -1 0 0 0 0 0 0 0 0 0 20 0 2 0\n",
+    )
+    .unwrap();
+    let proc_fs = ProcFs {
+        root: root.0.clone(),
+        ticks_per_second: 100,
+    };
+    let clock = ProcessesCpuClock::new(vec![4646], proc_fs).unwrap();
+    assert_eq!(clock.process_cpu_ns(), 5_000);
+    assert_eq!(clock.take_read_error(), None);
+}
+
+/// A load probe that counts its samples.
+struct CountingProbe(u32);
+
+impl LoadProbe for CountingProbe {
+    fn core_busy_fraction(&mut self, _core: usize) -> Result<f64, ProtocolError> {
+        self.0 += 1;
+        Ok(0.0)
+    }
+    fn loadavg(&mut self) -> f64 {
+        0.0
+    }
+}
+
+/// A core that does not exist (100000) is refused as `CoreNotAllowed`
+/// before the idle check samples it: the probe is never read, and the job
+/// never runs.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_nonexistent_core_is_refused_before_the_idle_sample() {
+    let clock = FakeClock::default();
+    let mut probe = CountingProbe(0);
+    let calls = Rc::new(Cell::new(0));
+    let mut job = counting_job(&clock, 10, &calls);
+    let error = Protocol::default()
+        .run_job(100_000, &mut probe, &clock, &mut job)
+        .unwrap_err();
+    assert!(
+        matches!(error, ProtocolError::CoreNotAllowed { core: 100_000, .. }),
+        "{error:?}"
+    );
+    assert_eq!(probe.0, 0, "the idle check sampled a nonexistent core");
+    assert_eq!(calls.get(), 0);
 }
