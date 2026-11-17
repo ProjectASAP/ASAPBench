@@ -27,7 +27,12 @@ pub fn fixture(name: &str) -> PlanFile {
 /// The payload body of node `id` (`payload.<side>.<operator>`), to change.
 pub fn payload_body(plan: &mut Value, id: usize) -> &mut Value {
     let payload = &mut plan["dag"]["nodes"][id]["payload"];
-    let side = payload.as_object_mut().unwrap().values_mut().next().unwrap();
+    let side = payload
+        .as_object_mut()
+        .unwrap()
+        .values_mut()
+        .next()
+        .unwrap();
     side.as_object_mut().unwrap().values_mut().next().unwrap()
 }
 
