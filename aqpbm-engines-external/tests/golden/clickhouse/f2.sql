@@ -5,9 +5,8 @@
 -- order (the step into a segment counts when it is an increase, as within a segment;
 -- overlapping segments are an error), then applies Prometheus extrapolatedRate
 -- (promql/functions.go, v3.15.1).
-CREATE TABLE src_requests_total (ts DateTime64(3, 'UTC'), value Float64, `job` LowCardinality(String), `$promql_series_identity` String,
-                                 INDEX ts_minmax ts TYPE minmax GRANULARITY 1)
-  ENGINE = MergeTree ORDER BY (`$promql_series_identity`, ts);
+CREATE TABLE src_requests_total (ts DateTime64(3, 'UTC'), value Float64, `job` LowCardinality(String), `$promql_series_identity` String)
+  ENGINE = Null;
 
 CREATE TABLE v1 (`job` LowCardinality(String), `$promql_series_identity` String, window_end_ms Int64,
                  s_sample_count AggregateFunction(count),

@@ -44,9 +44,9 @@ pub struct PlanNode {
     pub timing: Timing,
     /// How long its output is kept.
     pub lifetime: Lifetime,
-    /// How far back the node's input data must be kept (wire
-    /// `retention_ms`), e.g. 3,600,000 for the windows a 1 h range reads;
-    /// `None` when the planner sets none.
+    /// How far back from the newest evaluation time the node's own rows
+    /// are kept (wire `retention_ms`), e.g. 3,600,000 for the windows a
+    /// 1 h range reads; `None` for a node that keeps no rows.
     pub retention_ms: Option<u64>,
     /// The names of the node's output columns, in order.
     pub output_columns: Vec<String>,
@@ -60,6 +60,14 @@ pub struct PlanNode {
 }
 
 impl PlanNode {
+    /// Whether this is a Scan whose raw rows its readers read back (the
+    /// planner's raw-data scan): one run at query time, or one kept across
+    /// evaluations at ingestion time.
+    pub fn is_raw_data_scan(&self) -> bool {
+        matches!(self.operator, PlanOperator::Scan { .. })
+            && (self.timing == Timing::QueryTime || self.lifetime == Lifetime::AcrossEvaluations)
+    }
+
     /// Whether output column `index` is a value column: neither a label
     /// nor a timestamp (e.g. `sum` in `[job, sum]`).
     pub fn is_value_column(&self, index: usize) -> bool {

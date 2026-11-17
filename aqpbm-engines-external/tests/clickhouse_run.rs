@@ -7,7 +7,7 @@ mod common;
 
 use aqpbm_engines_external::clickhouse::{translate, ClickHouseDeployment, INSERT_SETTINGS};
 use aqpbm_engines_external::plan_file::PlanFile;
-use common::{fixture, fixture_value_public, payload_body, public_fixture, run_clickhouse};
+use common::{fixture, fixture_value_public, lcm, payload_body, public_fixture, run_clickhouse};
 use serde_json::json;
 
 /// The deployment's tables and views, then `setup`, then query `query`.
@@ -426,12 +426,4 @@ fn public_translations_run() {
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");
-}
-
-fn lcm(a: u64, b: u64) -> u64 {
-    let (mut x, mut y) = (a, b);
-    while y != 0 {
-        (x, y) = (y, x % y);
-    }
-    a / x * b
 }

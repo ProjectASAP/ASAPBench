@@ -130,7 +130,7 @@ pub fn translate(plan: &PlanFile) -> Result<ClickHouseDeployment, TranslationErr
     let mut query_time_steps_ms = Vec::new();
     for &root in &plan.roots {
         let relation = translator.relation(root)?;
-        if relation.state.is_some() {
+        if relation.unfinalized_kind.is_some() {
             return Err(unsupported(root, "a summary state as a query result"));
         }
         queries.push(relation.sql);
@@ -358,13 +358,22 @@ fn over_values(function: &str) -> String {
 }
 
 /// One `CREATE TABLE` per metric, in order of first Scan, over the union of
-/// its Scans' label columns: in name order, the series identity last. The
+/// its Scans' label columns: in name order, the series identity last.
+///
+/// A metric some raw-data Scan reads keeps its rows in a MergeTree. The
 /// sorting key puts the labels any Scan filters on first, then the series
 /// identity, then `ts`, so a label filter and a per-series read both use the
 /// primary key; a `minmax` index on `ts` skips the granules outside a time
-/// range.
+/// range. A metric only stored chains read keeps no rows (`ENGINE = Null`):
+/// its materialized views still see every insert.
 fn source_tables(plan: &PlanFile) -> Vec<String> {
-    let mut metrics: Vec<(&str, Vec<&str>, Vec<&str>)> = Vec::new();
+    struct SourceColumns<'a> {
+        metric: &'a str,
+        labels: Vec<&'a str>,
+        filtered_labels: Vec<&'a str>,
+        keeps_rows: bool,
+    }
+    let mut sources: Vec<SourceColumns> = Vec::new();
     for node in &plan.nodes {
         let PlanOperator::Scan {
             source: Source::TimeSeries { metric },
@@ -373,48 +382,62 @@ fn source_tables(plan: &PlanFile) -> Vec<String> {
         else {
             continue;
         };
-        let at = match metrics.iter().position(|(m, ..)| m == metric) {
+        let at = match sources.iter().position(|s| s.metric == metric) {
             Some(at) => at,
             None => {
-                metrics.push((metric, Vec::new(), Vec::new()));
-                metrics.len() - 1
+                sources.push(SourceColumns {
+                    metric,
+                    labels: Vec::new(),
+                    filtered_labels: Vec::new(),
+                    keeps_rows: false,
+                });
+                sources.len() - 1
             }
         };
-        let (_, labels, filtered) = &mut metrics[at];
+        let source = &mut sources[at];
+        source.keeps_rows |= node.is_raw_data_scan();
         for label in &node.label_columns {
-            if !labels.contains(&label.as_str()) {
-                labels.push(label);
+            if !source.labels.contains(&label.as_str()) {
+                source.labels.push(label);
             }
         }
         for predicate in predicates {
             if let Predicate::LabelEquals { column, .. } = predicate {
                 let name = node.output_columns[*column].as_str();
-                if !filtered.contains(&name) && name != SERIES_IDENTITY {
-                    filtered.push(name);
+                if !source.filtered_labels.contains(&name) && name != SERIES_IDENTITY {
+                    source.filtered_labels.push(name);
                 }
             }
         }
     }
-    metrics
+    sources
         .into_iter()
-        .map(|(metric, mut labels, mut filtered)| {
-            labels.sort_by_key(|l| (*l == SERIES_IDENTITY, *l));
-            filtered.sort_unstable();
-            let columns: String = labels
+        .map(|mut source| {
+            source.labels.sort_by_key(|l| (*l == SERIES_IDENTITY, *l));
+            source.filtered_labels.sort_unstable();
+            let columns: String = source
+                .labels
                 .iter()
                 .map(|label| format!(", {} {}", quoted(label), label_type(label)))
                 .collect();
-            let sorting_key: Vec<String> = filtered
+            let table = source_table(source.metric);
+            if !source.keeps_rows {
+                return format!(
+                    "CREATE TABLE {table} (ts DateTime64(3, 'UTC'), value Float64{columns}) \
+                     ENGINE = Null"
+                );
+            }
+            let sorting_key: Vec<String> = source
+                .filtered_labels
                 .iter()
                 .chain(&[SERIES_IDENTITY])
                 .map(|label| quoted(label))
                 .chain(["ts".to_string()])
                 .collect();
             format!(
-                "CREATE TABLE {} (ts DateTime64(3, 'UTC'), value Float64{columns}, \
+                "CREATE TABLE {table} (ts DateTime64(3, 'UTC'), value Float64{columns}, \
                  INDEX ts_minmax ts TYPE minmax GRANULARITY 1) \
                  ENGINE = MergeTree ORDER BY ({})",
-                source_table(metric),
                 sorting_key.join(", ")
             )
         })
@@ -425,8 +448,9 @@ fn source_tables(plan: &PlanFile) -> Vec<String> {
 /// `PhysicalASAPDAG::raw_data_retention` defines it: the longest
 /// `retention_ms` of its raw-data Scans (run at query time, or kept across
 /// evaluations at ingestion time). A metric some such Scan reads unbounded
-/// (no `retention_ms`) keeps every row and has no entry; so has a metric
-/// read only by ingestion-time chains.
+/// (no `retention_ms`, or a reader outside a time range or window chain)
+/// keeps every row and has no entry; so has a metric read only by
+/// ingestion-time chains.
 fn source_retention(plan: &PlanFile) -> Vec<TableRetention> {
     let mut lookback: Vec<(String, Option<u64>)> = Vec::new();
     for node in &plan.nodes {
@@ -437,13 +461,21 @@ fn source_retention(plan: &PlanFile) -> Vec<TableRetention> {
         else {
             continue;
         };
-        if !is_raw_data_scan(node) {
+        if !node.is_raw_data_scan() {
             continue;
         }
+        // A reader outside a time range or a window chain reads every row.
+        let read_back_bounded = plan.readers_of(node.id).iter().all(|&reader| {
+            matches!(
+                plan.nodes[reader].operator,
+                PlanOperator::TimeRange { .. } | PlanOperator::SummaryTumblingWindowChain { .. }
+            )
+        });
+        let retention_ms = node.retention_ms.filter(|_| read_back_bounded);
         let table = source_table(metric);
         match lookback.iter_mut().find(|(t, _)| *t == table) {
-            Some((_, kept)) => *kept = kept.zip(node.retention_ms).map(|(a, b)| a.max(b)),
-            None => lookback.push((table, node.retention_ms)),
+            Some((_, kept)) => *kept = kept.zip(retention_ms).map(|(a, b)| a.max(b)),
+            None => lookback.push((table, retention_ms)),
         }
     }
     lookback
@@ -458,11 +490,8 @@ fn source_retention(plan: &PlanFile) -> Vec<TableRetention> {
         .collect()
 }
 
-/// Whether `scan` keeps raw rows for its readers (the planner's raw-data
-/// scan): one run at query time, or kept across evaluations at ingestion
-/// time.
-fn is_raw_data_scan(scan: &PlanNode) -> bool {
-    scan.timing == Timing::QueryTime || scan.lifetime == Lifetime::AcrossEvaluations
+fn labels_include_identity(labels: &[String]) -> bool {
+    labels.iter().any(|label| label == SERIES_IDENTITY)
 }
 
 fn label_type(label: &str) -> &'static str {
@@ -497,7 +526,9 @@ struct Relation {
     step_ms: u64,
     /// `Some(kind)` when `value` is a query-time `SummaryAgg` state not yet
     /// finalized: a partial `kind` value a `SummaryMerge` may regroup.
-    state: Option<ExactKind>,
+    unfinalized_kind: Option<ExactKind>,
+    /// The source tables the relation reads, sorted, e.g. `["src_latency"]`.
+    source_tables: Vec<String>,
 }
 
 /// Raw samples of a metric in `(t − range, t]`, filtered by labels.
@@ -632,7 +663,7 @@ impl Translator<'_> {
                     return Err(unsupported(id, "regrouping merge of stored windows"));
                 }
                 let input = self.relation(child)?;
-                let Some(kind) = input.state else {
+                let Some(kind) = input.unfinalized_kind else {
                     return Err(unsupported(id, "merge of this operator"));
                 };
                 match group_by {
@@ -661,7 +692,7 @@ impl Translator<'_> {
     /// The relation of `id`, which must not be an unfinalized state.
     fn value_relation(&mut self, reader: NodeId, id: NodeId) -> Result<Relation, TranslationError> {
         let relation = self.relation(id)?;
-        if relation.state.is_some() {
+        if relation.unfinalized_kind.is_some() {
             return Err(unsupported(reader, "a summary state as an input"));
         }
         Ok(relation)
@@ -688,7 +719,7 @@ impl Translator<'_> {
         // Raw samples are the source table's rows, whether the plan scans
         // them at query time or keeps them at ingestion time across
         // evaluations (both are the planner's raw-data scans).
-        if !is_raw_data_scan(scan_node) {
+        if !scan_node.is_raw_data_scan() {
             return Err(unsupported(range, "time range over an ingestion-time scan"));
         }
         let mut conditions = self.label_conditions(scan);
@@ -797,7 +828,7 @@ impl Translator<'_> {
             }
         }
         let mut relation = self.relation(child)?;
-        if relation.state.take().is_none() {
+        if relation.unfinalized_kind.take().is_none() {
             return Err(unsupported(id, "finalize over this operator"));
         }
         Ok(relation)
@@ -827,7 +858,8 @@ impl Translator<'_> {
                     sql: grouped_select(&labels, &over_values(function), &from),
                     labels,
                     step_ms: 1,
-                    state: Some(kind),
+                    unfinalized_kind: Some(kind),
+                    source_tables: vec![raw.table],
                 });
             }
             if *reduction != Reduction::PerEntity {
@@ -852,7 +884,8 @@ impl Translator<'_> {
                 sql: extrapolated(&group, &inner, range_ms, kind),
                 labels: raw.labels,
                 step_ms: 1,
-                state: Some(kind),
+                unfinalized_kind: Some(kind),
+                source_tables: vec![raw.table],
             });
         }
         let Some(function) = kind.function() else {
@@ -868,7 +901,8 @@ impl Translator<'_> {
             ),
             labels,
             step_ms: input.step_ms,
-            state: Some(kind),
+            unfinalized_kind: Some(kind),
+            source_tables: input.source_tables,
         })
     }
 
@@ -894,7 +928,8 @@ impl Translator<'_> {
             ),
             labels,
             step_ms: input.step_ms,
-            state: Some(kind),
+            unfinalized_kind: Some(kind),
+            source_tables: input.source_tables,
         })
     }
 
@@ -910,7 +945,8 @@ impl Translator<'_> {
             ),
             labels: raw.labels,
             step_ms: 1,
-            state: None,
+            unfinalized_kind: None,
+            source_tables: vec![raw.table],
         })
     }
 
@@ -982,12 +1018,14 @@ impl Translator<'_> {
             }
         };
         let labels = stored.labels.clone();
+        let table_source = stored.source_table.clone();
         self.chains.insert(chain, stored);
         Ok(Relation {
             sql,
             labels,
             step_ms: width,
-            state: None,
+            unfinalized_kind: None,
+            source_tables: vec![table_source],
         })
     }
 
@@ -1053,12 +1091,13 @@ impl Translator<'_> {
                 return Err(unsupported(id, "measure over a label column"));
             }
         }
-        let (from, input_labels, step_ms, raw) = if self.is_range(child) {
+        let (from, input_labels, step_ms, source_tables, raw) = if self.is_range(child) {
             let raw = self.raw_samples(child)?;
             (
                 format!("{} WHERE {}", raw.table, raw.where_sql),
                 raw.labels,
                 1,
+                vec![raw.table],
                 true,
             )
         } else {
@@ -1067,6 +1106,7 @@ impl Translator<'_> {
                 format!("( {})", input.sql),
                 input.labels,
                 input.step_ms,
+                input.source_tables,
                 false,
             )
         };
@@ -1075,7 +1115,7 @@ impl Translator<'_> {
             if raw {
                 return Err(unsupported(id, "top_k over raw samples"));
             }
-            let k = argument_count(id, measure, "k")?;
+            let k = whole_number_argument(id, measure, "k")?;
             let order: Vec<String> = ["value DESC".to_string()]
                 .into_iter()
                 .chain(input_labels.iter().map(|l| quoted(l)))
@@ -1098,7 +1138,8 @@ impl Translator<'_> {
                 ),
                 labels: input_labels,
                 step_ms,
-                state: None,
+                unfinalized_kind: None,
+                source_tables,
             });
         }
         let value = aggregate_value(id, measure)?;
@@ -1106,7 +1147,8 @@ impl Translator<'_> {
             sql: grouped_select(&group, &value, &from),
             labels: group,
             step_ms,
-            state: None,
+            unfinalized_kind: None,
+            source_tables,
         })
     }
 
@@ -1153,7 +1195,10 @@ impl Translator<'_> {
                 select.push(format!("{} AS {}", quoted(source), quoted(output)));
                 labels.push(output.clone());
             } else {
-                if value.is_some() || input.labels.contains(source) {
+                let is_value = column
+                    .as_u64()
+                    .is_some_and(|c| child_node.is_value_column(c as usize));
+                if value.is_some() || !is_value {
                     return Err(unsupported(id, "projected value"));
                 }
                 let sql = if cast { "toFloat64(value)" } else { "value" };
@@ -1161,12 +1206,17 @@ impl Translator<'_> {
             }
         }
         let value = value.ok_or_else(|| unsupported(id, "projection without a value"))?;
+        // Dropping a label would leave several rows per label set.
+        if labels.len() != input.labels.len() {
+            return Err(unsupported(id, "projection that drops a label"));
+        }
         select.push(value);
         Ok(Relation {
             sql: format!("SELECT {} FROM ( {})", select.join(", "), input.sql),
             labels,
             step_ms: input.step_ms,
-            state: None,
+            unfinalized_kind: None,
+            source_tables: input.source_tables,
         })
     }
 
@@ -1189,6 +1239,18 @@ impl Translator<'_> {
         if left_set != right_set {
             return Err(unsupported(id, "binary operation on different label sets"));
         }
+        // The series identity names the metric, so series of two metrics
+        // never match on it, where PromQL matches them without `__name__`.
+        if labels_include_identity(&left.labels) && left.source_tables != right.source_tables {
+            return Err(unsupported(
+                id,
+                "binary operation across metrics per series",
+            ));
+        }
+        let mut source_tables = left.source_tables.clone();
+        source_tables.extend(right.source_tables.iter().cloned());
+        source_tables.sort();
+        source_tables.dedup();
         let labels = left.labels;
         let side = |sql: &str, name: &str, side: &str| {
             let select: Vec<String> = labels
@@ -1232,7 +1294,8 @@ impl Translator<'_> {
             ),
             labels,
             step_ms: lcm(left.step_ms, right.step_ms),
-            state: None,
+            unfinalized_kind: None,
+            source_tables,
         })
     }
 }
@@ -1250,7 +1313,11 @@ fn grouped_select(labels: &[String], value: &str, from: &str) -> String {
 }
 
 /// A whole-number argument of a measure, e.g. `k` of `top_k`.
-fn argument_count(id: NodeId, measure: &Measure, name: &str) -> Result<u64, TranslationError> {
+fn whole_number_argument(
+    id: NodeId,
+    measure: &Measure,
+    name: &str,
+) -> Result<u64, TranslationError> {
     if measure.arguments.keys().any(|key| key != name) {
         return Err(unsupported(id, format!("measure {}", measure.kind)));
     }
