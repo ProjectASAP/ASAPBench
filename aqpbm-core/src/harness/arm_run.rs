@@ -4,7 +4,7 @@
 
 use crate::harness::data::{workload_chunks, DataError};
 use crate::harness::engine::{
-    Answers, ArmSpec, EngineError, EngineUnderTest, InstalledArm, MeasuredUsage, WorkloadSpec,
+    Answers, ArmSpec, CpuAccounting, EngineError, EngineUnderTest, InstalledArm, MeasuredUsage, WorkloadSpec,
 };
 use crate::harness::protocol::{
     CoreLoad, EngineClock, JobRecord, LoadProbe, MeasurementClocks, Protocol, ProtocolError,
@@ -18,6 +18,98 @@ pub struct ArmSchedule {
     pub refresh_ms: u64,
     /// Evaluate at these times, ascending; each after the chunk that ends there.
     pub evaluate_at_ms: Vec<i64>,
+}
+
+impl ArmSchedule {
+    /// The schedule every lane uses for `workload`: refresh every evaluation
+    /// interval, and evaluate at every multiple of the interval
+    /// (`t mod interval = 0`) from the data start plus the longest window
+    /// through the data end.
+    /// Example: windows 30 s and 20 s, every 10 s, data from 1,000 ms for
+    /// 120 s: refresh 10 s, evaluations at 40,000, 50,000, ..., 120,000 ms.
+    pub fn for_workload(workload: &WorkloadSpec) -> Result<ArmSchedule, ScheduleError> {
+        let first = workload.queries.first().ok_or(ScheduleError::NoQueries {
+            workload: workload.name.clone(),
+        })?;
+        let interval_ms = first.evaluation_interval_ms;
+        if interval_ms == 0 {
+            return Err(ScheduleError::ZeroInterval {
+                query: first.id.clone(),
+            });
+        }
+        if let Some(other) = workload
+            .queries
+            .iter()
+            .find(|query| query.evaluation_interval_ms != interval_ms)
+        {
+            return Err(ScheduleError::MixedEvaluationIntervals {
+                workload: workload.name.clone(),
+                first_ms: interval_ms,
+                other_ms: other.evaluation_interval_ms,
+                other_query: other.id.clone(),
+            });
+        }
+        let longest_window_ms = workload.queries.iter().map(|q| q.window_ms).max().unwrap_or(0);
+        let start_ms = workload
+            .data
+            .iter()
+            .map(|record| record.description.start_ms)
+            .min()
+            .ok_or(ScheduleError::NoData {
+                workload: workload.name.clone(),
+            })?;
+        let end_ms = workload
+            .data
+            .iter()
+            .map(|record| record.description.start_ms + record.description.duration_ms as i64)
+            .max()
+            .unwrap_or(start_ms);
+        let interval = interval_ms as i64;
+        let earliest_ms = start_ms + longest_window_ms as i64;
+        let first_ms = earliest_ms.div_euclid(interval) * interval
+            + if earliest_ms.rem_euclid(interval) == 0 { 0 } else { interval };
+        let evaluate_at_ms: Vec<i64> = (0..)
+            .map(|k| first_ms + k * interval)
+            .take_while(|&at_ms| at_ms <= end_ms)
+            .collect();
+        if evaluate_at_ms.is_empty() {
+            return Err(ScheduleError::NoEvaluationTime {
+                workload: workload.name.clone(),
+                longest_window_ms,
+                data_ms: (end_ms - start_ms) as u64,
+            });
+        }
+        Ok(ArmSchedule {
+            refresh_ms: interval_ms,
+            evaluate_at_ms,
+        })
+    }
+}
+
+/// A workload no schedule fits.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ScheduleError {
+    #[error("workload {workload} has no queries")]
+    NoQueries { workload: String },
+    #[error("workload {workload} has no data")]
+    NoData { workload: String },
+    #[error("query {query} has an evaluation interval of 0 ms")]
+    ZeroInterval { query: String },
+    /// Every query of a workload is evaluated at every evaluation time, so
+    /// one interval per workload; split the workload instead.
+    #[error("workload {workload}: query {other_query} runs every {other_ms} ms but the first query every {first_ms} ms; one interval per workload")]
+    MixedEvaluationIntervals {
+        workload: String,
+        first_ms: u64,
+        other_ms: u64,
+        other_query: String,
+    },
+    #[error("workload {workload}: the longest window ({longest_window_ms} ms) leaves no evaluation time inside {data_ms} ms of data")]
+    NoEvaluationTime {
+        workload: String,
+        longest_window_ms: u64,
+        data_ms: u64,
+    },
 }
 
 /// Runs `arm` of `workload` on `engine` pinned to `core`. Each measured run
@@ -76,11 +168,20 @@ pub fn run_arm(
     }
     let clock = clocks.clock_for(&engine.cpu_accounting())?;
     let runs = (protocol.warmup_runs + protocol.measured_runs) as usize;
+    let server_cgroup = match engine.cpu_accounting() {
+        CpuAccounting::Cgroup(source) => Some(source),
+        _ => None,
+    };
+    let server_before = server_cgroup
+        .as_ref()
+        .map(|source| Ok::<_, ProtocolError>((source.cpu()?.usage_ns, source.memory()?)))
+        .transpose()?;
     let mut installs: Vec<Box<dyn InstalledArm>> = (0..runs)
         .map(|_| engine.install(workload, arm))
         .collect::<Result<_, _>>()?;
 
     let mut ingest = Vec::new();
+    let mut ingested_samples: u64 = 0;
     let mut evaluate = Vec::new();
     let mut answers = Vec::new();
     // The after-sample of the last job, the before-sample of the next.
@@ -108,6 +209,7 @@ pub fn run_arm(
     };
     for chunk in workload_chunks(&workload.data, schedule.refresh_ms)? {
         let chunk = chunk?;
+        ingested_samples += chunk.samples.len() as u64;
         let mut call = 0;
         let job = protocol.run_next_job(core, probe, load, &clock, &mut || {
             let report = installs[call].ingest(&chunk);
@@ -126,6 +228,10 @@ pub fn run_arm(
 
     let last = installs.last_mut().expect("at least one measured run");
     let footprint = last.footprint()?;
+    let server_after = server_cgroup
+        .as_ref()
+        .map(|source| Ok::<_, ProtocolError>((source.cpu()?.usage_ns, source.memory()?)))
+        .transpose()?;
     let data_seconds = data_ms as f64 / 1_000.0;
     let usage = MeasuredUsage {
         ingest_cpu_ns_per_second: median_cpu_ns(&ingest, &clock) / data_seconds,
@@ -144,6 +250,13 @@ pub fn run_arm(
         evaluate,
         answers,
         footprint,
+        ingested_samples,
+        server_memory_before: server_before.map(|(_, memory)| memory),
+        server_memory_after: server_after.map(|(_, memory)| memory),
+        server_cpu_ns_whole_arm: server_before
+            .zip(server_after)
+            .map(|((before_ns, _), (after_ns, _))| after_ns.saturating_sub(before_ns)),
+        installs_held: runs as u32,
     })
 }
 

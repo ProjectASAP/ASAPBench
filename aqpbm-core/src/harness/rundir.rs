@@ -51,11 +51,50 @@ impl RunDir {
             }
             Err(source) => return Err(io(&path, source)),
         }
-        for sub in ["workloads", "data", "plans", "results"] {
+        for sub in RUN_SUBDIRS {
             let sub = path.join(sub);
             std::fs::create_dir(&sub).map_err(|source| io(&sub, source))?;
         }
         Ok(RunDir { path })
+    }
+
+    /// Creates the run directory at `path` and its subdirectories, for a
+    /// run whose lanes run as separate processes over one directory
+    /// (`bench-external --run-dir`). Refuses an existing `path`.
+    pub fn create_at(path: &Path) -> Result<Self, RunDirError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| io(parent, source))?;
+        }
+        match std::fs::create_dir(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(RunDirError::RunDirExists(path.to_path_buf()));
+            }
+            Err(source) => return Err(io(path, source)),
+        }
+        for sub in RUN_SUBDIRS {
+            let sub = path.join(sub);
+            std::fs::create_dir(&sub).map_err(|source| io(&sub, source))?;
+        }
+        Ok(RunDir {
+            path: path.to_path_buf(),
+        })
+    }
+
+    /// Opens a run directory another process created: every subdirectory
+    /// must exist.
+    pub fn open(path: &Path) -> Result<Self, RunDirError> {
+        for sub in RUN_SUBDIRS {
+            if !path.join(sub).is_dir() {
+                return Err(RunDirError::NotARunDir {
+                    path: path.to_path_buf(),
+                    missing: sub.into(),
+                });
+            }
+        }
+        Ok(RunDir {
+            path: path.to_path_buf(),
+        })
     }
 
     /// The directory.
@@ -147,6 +186,9 @@ impl RunDir {
     }
 }
 
+/// The subdirectories of every run directory.
+const RUN_SUBDIRS: [&str; 4] = ["workloads", "data", "plans", "results"];
+
 fn loadavg_text(loadavg: Option<f64>) -> String {
     loadavg.map_or_else(|| "unknown".to_string(), |value| value.to_string())
 }
@@ -186,7 +228,7 @@ fn io(path: &Path, source: std::io::Error) -> RunDirError {
 
 /// Writes `value` as pretty JSON with a final newline to a new file; an
 /// existing file is refused (`create_new`), so a result is never overwritten.
-fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), RunDirError> {
+pub(crate) fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), RunDirError> {
     let mut text = serde_json::to_string_pretty(value).map_err(|source| RunDirError::Json {
         path: path.to_path_buf(),
         source,
@@ -218,6 +260,9 @@ pub enum RunDirError {
         "{what} '{name}' contains '__', which separates workload and arm in result file names"
     )]
     AmbiguousName { what: String, name: String },
+    /// A directory without one of the run subdirectories.
+    #[error("{path} is not a run directory: it has no {missing}/")]
+    NotARunDir { path: PathBuf, missing: String },
     #[error("{path}: {source}")]
     Io {
         path: PathBuf,
