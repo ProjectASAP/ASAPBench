@@ -258,15 +258,31 @@ fn own_cgroup_cpu_stat(files: &ProcessCpuFiles, pids: &[u32]) -> Option<PathBuf>
         return None;
     }
     let group_dir = files.cgroup_root.join(group.trim_start_matches('/'));
-    let procs = std::fs::read_to_string(group_dir.join("cgroup.procs")).ok()?;
-    for member in procs.split_whitespace() {
-        let member: u32 = member.parse().ok()?;
-        if !descends_from(&files.proc_root, member, pids) {
-            return None;
-        }
+    if !group_holds_only(&group_dir, &files.proc_root, pids)? {
+        return None;
     }
     let cpu_stat = group_dir.join("cpu.stat");
     cgroup_usage_ns(&cpu_stat).ok().map(|_| cpu_stat)
+}
+
+/// Whether every process in `group_dir` and its child groups (whose CPU
+/// the group's `cpu.stat` also counts) is one of `pids` or a descendant;
+/// `None` when a `cgroup.procs` cannot be read.
+fn group_holds_only(group_dir: &Path, proc_root: &Path, pids: &[u32]) -> Option<bool> {
+    let procs = std::fs::read_to_string(group_dir.join("cgroup.procs")).ok()?;
+    for member in procs.split_whitespace() {
+        let member: u32 = member.parse().ok()?;
+        if !descends_from(proc_root, member, pids) {
+            return Some(false);
+        }
+    }
+    for entry in std::fs::read_dir(group_dir).ok()? {
+        let child = entry.ok()?.path();
+        if child.is_dir() && !group_holds_only(&child, proc_root, pids)? {
+            return Some(false);
+        }
+    }
+    Some(true)
 }
 
 /// Whether `pid` is one of `ancestors` or a descendant of one, by its parent
@@ -657,70 +673,120 @@ pub fn parse_cpu_list(text: &str) -> Result<Vec<usize>, ProtocolError> {
     Ok(cores)
 }
 
-/// The busiest of `cores` between two `/proc/stat` texts.
-pub fn cores_busy_fraction(
+/// The busy fraction of `cores` between two `/proc/stat` texts that is not
+/// the server's own work: busy ticks over the cores, minus the server's CPU
+/// over the same interval (`server_cpu_ns`), over all ticks of the cores.
+/// A server pinned to these cores runs only on them, so its own merges and
+/// flushes never count as foreign load.
+/// Example: cores 2 and 22 over 10 ticks each (`tick_ns` 10 ms, 200 ms in
+/// all), 6 busy ticks (60 ms) of which the server used 40 ms: 20 ms of
+/// 200 ms, 0.1.
+pub fn foreign_busy_fraction(
     cores: &[usize],
     before: &str,
     after: &str,
+    server_cpu_ns: u64,
+    tick_ns: u64,
 ) -> Result<f64, ProtocolError> {
-    let mut busiest: f64 = 0.0;
+    let (mut busy_ticks, mut total_ticks) = (0_u64, 0_u64);
     for &core in cores {
-        busiest = busiest.max(core_busy_fraction(core, before, after)?);
+        let before = core_ticks(core, before)?;
+        let after = core_ticks(core, after)?;
+        let delta = |field: usize| after[field].saturating_sub(before[field]);
+        let total: u64 = (0..8).map(delta).sum();
+        total_ticks += total;
+        busy_ticks += total - (delta(3) + delta(4));
     }
-    Ok(busiest)
+    if total_ticks == 0 {
+        return Err(ProtocolError::IdleUnmeasurable {
+            core: cores.first().copied().unwrap_or(0),
+        });
+    }
+    let foreign_ns = (busy_ticks * tick_ns).saturating_sub(server_cpu_ns);
+    Ok(foreign_ns as f64 / (total_ticks * tick_ns) as f64)
 }
 
-/// Where a [`ServerCoresProbe`] reads `/proc/stat` and the load average.
+/// The length of one `/proc/stat` tick, in ns (`USER_HZ`, 100 per second on
+/// Linux).
+fn proc_stat_tick_ns() -> u64 {
+    #[cfg(unix)]
+    {
+        // SAFETY: `sysconf` reads a constant and takes no pointers.
+        let per_second = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        if per_second > 0 {
+            return 1_000_000_000 / per_second as u64;
+        }
+    }
+    10_000_000
+}
+
+/// Where a [`ServerCoresProbe`] reads `/proc/stat`, the load average and
+/// the server's own CPU.
 #[derive(Debug, Clone)]
-enum ServerStat {
-    /// This host's proc root.
-    ProcRoot(PathBuf),
-    /// The server host's, through the cgroup agent.
+enum ServerHost {
+    /// This host: its proc root, and the server's pids (their threads'
+    /// `schedstat`).
+    Local { proc_root: PathBuf, pids: Vec<u32> },
+    /// The server host, through the cgroup agent: `proc-stat` and the
+    /// group's `cpu.stat`.
     Cgroup(CgroupSource),
 }
 
-/// The idle check of an external server: the busiest of the cores the server
-/// may run on (its container's cpuset), not the harness's core, over one
-/// sampling interval. The `core` the protocol passes is the harness's and is
-/// ignored. Example: a server pinned to cores 2 and 22 is busy when either is.
+/// The idle check of an external server: over one sampling interval, the
+/// busy fraction of the cores the server may run on (its container's
+/// cpuset) that is not the server's own work ([`foreign_busy_fraction`]),
+/// not the harness's core. The `core` the protocol passes is the harness's
+/// and is ignored; a `CoreBusy` error names it.
 #[derive(Debug, Clone)]
 pub struct ServerCoresProbe {
     pub cores: Vec<usize>,
     pub sample_interval: std::time::Duration,
-    stat: ServerStat,
+    host: ServerHost,
 }
 
 impl ServerCoresProbe {
-    fn read_stat(&self) -> Result<String, ProtocolError> {
-        match &self.stat {
-            ServerStat::ProcRoot(root) => {
-                let path = root.join("stat");
-                std::fs::read_to_string(&path).map_err(|error| ProtocolError::Parse {
-                    what: path.display().to_string(),
-                    message: error.to_string(),
-                })
+    /// `/proc/stat` and the server's CPU in ns, read together.
+    fn read(&self) -> Result<(String, u64), ProtocolError> {
+        match &self.host {
+            ServerHost::Local { proc_root, pids } => {
+                let path = proc_root.join("stat");
+                let stat =
+                    std::fs::read_to_string(&path).map_err(|error| ProtocolError::Parse {
+                        what: path.display().to_string(),
+                        message: error.to_string(),
+                    })?;
+                Ok((stat, processes_cpu_ns(proc_root, pids)?))
             }
-            ServerStat::Cgroup(source) => Ok(source.read(PROC_STAT)?),
+            ServerHost::Cgroup(source) => Ok((source.read(PROC_STAT)?, source.cpu()?.usage_ns)),
         }
     }
 }
 
 impl LoadProbe for ServerCoresProbe {
     fn core_busy_fraction(&mut self, _harness_core: usize) -> Result<f64, ProtocolError> {
-        let before = self.read_stat()?;
+        let (before, server_before_ns) = self.read()?;
         std::thread::sleep(self.sample_interval);
-        cores_busy_fraction(&self.cores, &before, &self.read_stat()?)
+        let (after, server_after_ns) = self.read()?;
+        foreign_busy_fraction(
+            &self.cores,
+            &before,
+            &after,
+            server_after_ns.saturating_sub(server_before_ns),
+            proc_stat_tick_ns(),
+        )
     }
 
     /// The server host's load average on this host; `NaN` (recorded `None`)
     /// through the agent, which does not serve it.
     fn loadavg(&mut self) -> f64 {
-        match &self.stat {
-            ServerStat::ProcRoot(root) => std::fs::read_to_string(root.join("loadavg"))
-                .ok()
-                .and_then(|text| text.split_whitespace().next()?.parse().ok())
-                .unwrap_or(f64::NAN),
-            ServerStat::Cgroup(_) => f64::NAN,
+        match &self.host {
+            ServerHost::Local { proc_root, .. } => {
+                std::fs::read_to_string(proc_root.join("loadavg"))
+                    .ok()
+                    .and_then(|text| text.split_whitespace().next()?.parse().ok())
+                    .unwrap_or(f64::NAN)
+            }
+            ServerHost::Cgroup(_) => f64::NAN,
         }
     }
 }
@@ -758,13 +824,16 @@ pub fn load_probe_for(
             Box::new(ServerCoresProbe {
                 cores: parse_cpu_list(list)?,
                 sample_interval,
-                stat: ServerStat::ProcRoot(files.proc_root.clone()),
+                host: ServerHost::Local {
+                    proc_root: files.proc_root.clone(),
+                    pids: pids.clone(),
+                },
             })
         }
         CpuAccounting::Cgroup(source) => Box::new(ServerCoresProbe {
             cores: parse_cpu_list(&source.read("cpuset.cpus.effective")?)?,
             sample_interval,
-            stat: ServerStat::Cgroup(source.clone()),
+            host: ServerHost::Cgroup(source.clone()),
         }),
     })
 }

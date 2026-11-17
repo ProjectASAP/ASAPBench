@@ -437,6 +437,7 @@ fn report_fixture(temp: &TempDir) -> RunDir {
         server_job(2_500_000, Some(3_000_000)),
     ];
     b.server_cpu_ns_whole_arm = Some(9_000_000);
+    b.cpu_source = "cgroup agent http://192.0.2.1:9101".into();
     let memory = CgroupMemory {
         current_bytes: 3 * 1_048_576,
         anon_bytes: 0,
@@ -504,14 +505,14 @@ fn the_summary_has_absolute_numbers_and_errors_against_the_truth() {
     let csv = report.summary_csv();
     let lines: Vec<&str> = csv.lines().collect();
     assert_eq!(lines[0], SUMMARY_CSV_HEADER);
-    assert_eq!(SUMMARY_CSV_HEADER.split(',').count(), 20);
-    let empty_after_status = ",".repeat(16);
+    assert_eq!(SUMMARY_CSV_HEADER.split(',').count(), 21);
+    let empty_after_status = ",".repeat(17);
     let expected = [
-        "w1,a,v1,ok,thread,250,0.001,,,,,1,0,0,0,2,0,0,,".to_string(),
+        "w1,a,v1,ok,thread,250,0.001,,,,,,1,0,0,0,2,0,0,,".to_string(),
         "w2,a,v1,no plan: ExcludedByDeployment".to_string() + &empty_after_status,
-        "w1,b,v1,ok,cgroup,2000,2,2,9,3,5,6,120,0.1,0.05,2,0,1,quantileDD for Kll at node 3;x,\"node 4 for nodes 6, 7\"".to_string(),
+        "w1,b,v1,ok,cgroup,2000,2,2,9,3,3,5,6,120,0.1,0.05,2,0,1,quantileDD for Kll at node 3;x,\"node 4 for nodes 6, 7\"".to_string(),
         "w1,b,v2,no plan: ExcludedByDeployment".to_string() + &empty_after_status,
-        "w2,b,v1,ok,thread,250,0.001,,,,,1,0,,,,,,,".to_string(),
+        "w2,b,v1,ok,thread,250,0.001,,,,,,1,0,,,,,,,".to_string(),
         "w1,c,v1,not run: refused: filter@node 3".to_string() + &empty_after_status,
     ];
     assert_eq!(
@@ -562,6 +563,13 @@ fn relative_errors_follow_the_stated_rules() {
     assert_eq!(relative_error(f64::NAN, f64::NAN), 0.0);
     assert_eq!(relative_error(f64::NAN, 1.0), f64::INFINITY);
     assert_eq!(relative_error(1.0, f64::NAN), f64::INFINITY);
+    assert_eq!(relative_error(1.0, f64::INFINITY), f64::INFINITY);
+    assert_eq!(relative_error(f64::INFINITY, 1.0), f64::INFINITY);
+    assert_eq!(
+        relative_error(f64::NEG_INFINITY, f64::INFINITY),
+        f64::INFINITY
+    );
+    assert_eq!(relative_error(f64::INFINITY, f64::INFINITY), 0.0);
 }
 
 /// Review items 5 and 7: lanes that read different data, or answered at

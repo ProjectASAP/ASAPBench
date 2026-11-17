@@ -37,25 +37,11 @@ impl RunDir {
                 c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'
             })?;
         }
-        let parent = root.join("runs").join(machine_key);
-        std::fs::create_dir_all(&parent).map_err(|source| io(&parent, source))?;
-        let path = parent.join(format!(
+        let path = root.join("runs").join(machine_key).join(format!(
             "{}-{subcommand}-{label}",
             utc.format("%Y%m%dT%H%M%SZ")
         ));
-        // `create_dir` fails on an existing directory, so two runs never share one.
-        match std::fs::create_dir(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                return Err(RunDirError::RunDirExists(path));
-            }
-            Err(source) => return Err(io(&path, source)),
-        }
-        for sub in RUN_SUBDIRS {
-            let sub = path.join(sub);
-            std::fs::create_dir(&sub).map_err(|source| io(&sub, source))?;
-        }
-        Ok(RunDir { path })
+        RunDir::create_at(&path)
     }
 
     /// Creates the run directory at `path` and its subdirectories, for a

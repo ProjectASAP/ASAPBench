@@ -326,13 +326,17 @@ pub struct ReportRow {
     /// A `cgroup` server's CPU over the whole arm, steps and the work between
     /// them, over every install, in ms.
     pub server_cpu_ms_whole_arm: Option<f64>,
+    /// A `cgroup` server's `memory.current` before the installs.
+    pub server_memory_before_mib: Option<f64>,
     /// A `cgroup` server's `memory.current` after the run, every install held.
     pub server_memory_after_mib: Option<f64>,
     /// A `cgroup` server's `memory.peak` over the container's whole life.
     pub server_lifetime_peak_mib: Option<f64>,
     pub installs_held: Option<u32>,
     /// View plus raw bytes the last install holds.
-    pub stored_bytes: Option<u64>,
+    pub stored_bytes_last_install: Option<u64>,
+    /// The truth has no answers for this workload (its cell did not run).
+    pub no_truth: bool,
     pub accuracy: Option<PointErrors>,
     pub substitutions: Vec<String>,
     pub sharing_lost: Vec<String>,
@@ -369,8 +373,9 @@ pub struct Report {
     pub accuracy: Vec<QueryAccuracy>,
 }
 
-/// `|a - t| / |t|`; equal values (0 and 0, both infinite) 0; both NaN 0;
-/// one NaN, or `t = 0` with `a != 0`, infinite.
+/// `|a - t| / |t|`; equal values (0 and 0, the same infinity) 0; both NaN
+/// 0; one NaN, `t = 0` with `a != 0`, or an infinity on one side only (or
+/// opposite infinities), infinite.
 pub fn relative_error(answer: f64, truth: f64) -> f64 {
     if answer.is_nan() && truth.is_nan() {
         0.0
@@ -378,7 +383,7 @@ pub fn relative_error(answer: f64, truth: f64) -> f64 {
         f64::INFINITY
     } else if answer == truth {
         0.0
-    } else if truth == 0.0 {
+    } else if truth == 0.0 || truth.is_infinite() || answer.is_infinite() {
         f64::INFINITY
     } else {
         (answer - truth).abs() / truth.abs()
@@ -533,10 +538,12 @@ pub fn report(
             query_cpu_ms_per_eval: None,
             engine_counter_cpu_ms_per_eval: None,
             server_cpu_ms_whole_arm: None,
+            server_memory_before_mib: None,
             server_memory_after_mib: None,
             server_lifetime_peak_mib: None,
             installs_held: None,
-            stored_bytes: None,
+            stored_bytes_last_install: None,
+            no_truth: false,
             accuracy: None,
             substitutions: Vec::new(),
             sharing_lost: Vec::new(),
@@ -564,6 +571,8 @@ pub fn report(
                     });
                 }
                 row.accuracy = Some(point_errors(&all, missing, extra));
+            } else {
+                row.no_truth = true;
             }
         }
         rows.push(row);
@@ -580,15 +589,10 @@ const MIB: f64 = 1024.0 * 1024.0;
 fn fill_measurements(row: &mut ReportRow, result: &ArmResult) {
     let step_cpu_ns =
         |cost: &crate::harness::engine::StepCost| cost.thread_cpu_ns.unwrap_or(cost.process_cpu_ns);
-    let first = result.ingest.first().or(result.evaluate.first());
-    row.cpu_accounting = first.map(|job| {
-        if job.median.thread_cpu_ns.is_some() {
-            "thread"
-        } else if result.server_memory_before.is_some() {
-            "cgroup"
-        } else {
-            "processes"
-        }
+    row.cpu_accounting = Some(match result.cpu_source.as_str() {
+        "calling-thread" => "thread",
+        "schedstat" => "processes",
+        _ => "cgroup",
     });
     let ingest_ns: u64 = result
         .ingest
@@ -613,6 +617,9 @@ fn fill_measurements(row: &mut ReportRow, result: &ArmResult) {
             .map(|ns| ns as f64 / 1e6 / evaluations as f64);
     }
     row.server_cpu_ms_whole_arm = result.server_cpu_ns_whole_arm.map(|ns| ns as f64 / 1e6);
+    row.server_memory_before_mib = result
+        .server_memory_before
+        .map(|memory| memory.current_bytes as f64 / MIB);
     row.server_memory_after_mib = result
         .server_memory_after
         .map(|memory| memory.current_bytes as f64 / MIB);
@@ -621,13 +628,14 @@ fn fill_measurements(row: &mut ReportRow, result: &ArmResult) {
         .and_then(|memory| memory.lifetime_peak_bytes)
         .map(|bytes| bytes as f64 / MIB);
     row.installs_held = Some(result.installs_held);
-    row.stored_bytes = Some(result.footprint.view_bytes + result.footprint.raw_retained_bytes);
+    row.stored_bytes_last_install =
+        Some(result.footprint.view_bytes + result.footprint.raw_retained_bytes);
     row.substitutions = result.plan.substitutions.clone();
     row.sharing_lost = result.plan.sharing_lost.clone();
 }
 
 /// The `summary.csv` header.
-pub const SUMMARY_CSV_HEADER: &str = "workload,lane,variant,status,cpu_accounting,ingest_cpu_ns_per_sample,query_cpu_ms_per_eval,engine_counter_cpu_ms_per_eval,server_cpu_ms_whole_arm,server_memory_after_mib,server_lifetime_peak_mib,installs_held,stored_bytes,max_rel_error,median_rel_error,points,missing_points,extra_points,substitutions,sharing_lost";
+pub const SUMMARY_CSV_HEADER: &str = "workload,lane,variant,status,cpu_accounting,ingest_cpu_ns_per_sample,query_cpu_ms_per_eval,engine_counter_cpu_ms_per_eval,server_cpu_ms_whole_arm,server_memory_before_mib,server_memory_after_mib,server_lifetime_peak_mib,installs_held,stored_bytes_last_install,max_rel_error,median_rel_error,points,missing_points,extra_points,substitutions,sharing_lost";
 
 /// The `accuracy.csv` header.
 pub const ACCURACY_CSV_HEADER: &str =
@@ -666,7 +674,7 @@ impl Report {
         let mut text = format!("{SUMMARY_CSV_HEADER}\n");
         for row in &self.rows {
             text.push_str(&format!(
-                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
                 csv_text(&row.workload),
                 csv_text(&row.lane),
                 csv_text(&row.variant),
@@ -676,10 +684,11 @@ impl Report {
                 field(row.query_cpu_ms_per_eval),
                 field(row.engine_counter_cpu_ms_per_eval),
                 field(row.server_cpu_ms_whole_arm),
+                field(row.server_memory_before_mib),
                 field(row.server_memory_after_mib),
                 field(row.server_lifetime_peak_mib),
                 field(row.installs_held),
-                field(row.stored_bytes),
+                field(row.stored_bytes_last_install),
                 error_fields(row.accuracy.as_ref()),
                 csv_text(&row.substitutions.join(";")),
                 csv_text(&row.sharing_lost.join(";")),
@@ -738,10 +747,14 @@ impl Report {
                             .map_or("-".into(), |v| format!("{v:.3}")),
                         row.ingest_cpu_ns_per_sample
                             .map_or("-".into(), |v| format!("{v:.1}")),
-                        row.accuracy
-                            .as_ref()
-                            .and_then(|e| e.max_rel_error)
-                            .map_or("-".into(), |v| format!("{v:.3}")),
+                        if row.no_truth {
+                            "- (no truth)".to_string()
+                        } else {
+                            row.accuracy
+                                .as_ref()
+                                .and_then(|e| e.max_rel_error)
+                                .map_or("-".into(), |v| format!("{v:.3}"))
+                        },
                         row.cpu_accounting.unwrap_or("-"),
                     ),
                     Some(row) => {
