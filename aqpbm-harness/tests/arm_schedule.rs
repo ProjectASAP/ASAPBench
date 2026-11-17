@@ -45,23 +45,23 @@ fn workload(queries: Vec<WorkloadQuery>, start_ms: i64, duration_ms: u64) -> Wor
     }
 }
 
-/// Windows 30 s and 20 s every 10 s over data from 1,000 ms for 120 s: the
-/// multiples of 10 s from 31,000 ms (start + longest window) to 121,000 ms.
+/// Windows 30 s and 20 s every 10 s over data from 0 ms for 120 s: the
+/// multiples of 10 s from 30,000 ms (start + longest window) to 120,000 ms.
 #[test]
 fn evaluations_are_the_interval_multiples_after_the_longest_window() {
     let spec = workload(
         vec![query("a", 30_000, 10_000), query("b", 20_000, 10_000)],
-        1_000,
+        0,
         120_000,
     );
     let schedule = ArmSchedule::for_workload(&spec).unwrap();
     assert_eq!(schedule.refresh_ms, 10_000);
     assert_eq!(
         schedule.evaluate_at_ms,
-        (4..=12).map(|k| k * 10_000).collect::<Vec<i64>>()
+        (3..=12).map(|k| k * 10_000).collect::<Vec<i64>>()
     );
     // 125 s of data: the last multiple inside the data is still 120,000.
-    let longer = workload(vec![query("a", 30_000, 10_000)], 1_000, 125_000);
+    let longer = workload(vec![query("a", 30_000, 10_000)], 0, 125_000);
     assert_eq!(
         ArmSchedule::for_workload(&longer)
             .unwrap()
@@ -90,6 +90,17 @@ fn workloads_no_schedule_fits_are_refused() {
     assert!(matches!(
         ArmSchedule::for_workload(&empty),
         Err(ScheduleError::NoQueries { .. })
+    ));
+    // Data from 1,000 ms: chunks end at 11,000, 21,000, ..., so an
+    // evaluation at 40,000 would run after a chunk holding later samples.
+    let unaligned = workload(vec![query("a", 30_000, 10_000)], 1_000, 120_000);
+    assert!(matches!(
+        ArmSchedule::for_workload(&unaligned),
+        Err(ScheduleError::UnalignedStart {
+            start_ms: 1_000,
+            interval_ms: 10_000,
+            ..
+        })
     ));
     let too_long = workload(vec![query("a", 200_000, 10_000)], 0, 120_000);
     assert!(matches!(

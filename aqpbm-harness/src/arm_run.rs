@@ -26,8 +26,10 @@ impl ArmSchedule {
     /// interval, and evaluate at every multiple of the interval
     /// (`t mod interval = 0`) from the data start plus the longest window
     /// through the data end.
-    /// Example: windows 30 s and 20 s, every 10 s, data from 1,000 ms for
-    /// 120 s: refresh 10 s, evaluations at 40,000, 50,000, ..., 120,000 ms.
+    /// The data start must be a multiple of the interval, so each evaluation
+    /// time is a chunk end.
+    /// Example: windows 30 s and 20 s, every 10 s, data from 0 ms for
+    /// 120 s: refresh 10 s, evaluations at 30,000, 40,000, ..., 120,000 ms.
     pub fn for_workload(workload: &WorkloadSpec) -> Result<ArmSchedule, ScheduleError> {
         let first = workload.queries.first().ok_or(ScheduleError::NoQueries {
             workload: workload.name.clone(),
@@ -71,6 +73,15 @@ impl ArmSchedule {
             .max()
             .unwrap_or(start_ms);
         let interval = interval_ms as i64;
+        // Chunks end at `start + k * refresh`; with an unaligned start an
+        // evaluation would run after a chunk holding later samples.
+        if start_ms.rem_euclid(interval) != 0 {
+            return Err(ScheduleError::UnalignedStart {
+                workload: workload.name.clone(),
+                start_ms,
+                interval_ms,
+            });
+        }
         let earliest_ms = start_ms + longest_window_ms as i64;
         let first_ms = earliest_ms.div_euclid(interval) * interval
             + if earliest_ms.rem_euclid(interval) == 0 {
@@ -113,6 +124,14 @@ pub enum ScheduleError {
         first_ms: u64,
         other_ms: u64,
         other_query: String,
+    },
+    /// The data must start on a multiple of the evaluation interval, so
+    /// every evaluation time is a chunk end.
+    #[error("workload {workload}: data starts at {start_ms} ms, not a multiple of the evaluation interval {interval_ms} ms")]
+    UnalignedStart {
+        workload: String,
+        start_ms: i64,
+        interval_ms: u64,
     },
     #[error("workload {workload}: the longest window ({longest_window_ms} ms) leaves no evaluation time inside {data_ms} ms of data")]
     NoEvaluationTime {

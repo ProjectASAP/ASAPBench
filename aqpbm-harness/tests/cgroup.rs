@@ -336,15 +336,30 @@ fn an_arm_on_a_cgroup_server_records_cpu_memory_and_samples() {
 #[test]
 fn the_idle_check_watches_the_server_cores() {
     use aqpbm_harness::protocol::{
-        cores_busy_fraction, load_probe_for, parse_cpu_list, ProcessCpuFiles,
+        foreign_busy_fraction, load_probe_for, parse_cpu_list, ProcessCpuFiles,
     };
     assert_eq!(parse_cpu_list("2,22\n").unwrap(), vec![2, 22]);
     assert_eq!(parse_cpu_list("0-3,8").unwrap(), vec![0, 1, 2, 3, 8]);
     assert!(parse_cpu_list("3-1").is_err());
-    // core 2: 1 busy tick of 10; core 22: 5 of 10 → 0.5.
+    // core 2: 1 busy tick of 10; core 22: 5 of 10.
     let before = "cpu2 0 0 0 0 0 0 0 0\ncpu22 0 0 0 0 0 0 0 0\n";
     let after = "cpu2 1 0 0 9 0 0 0 0\ncpu22 5 0 0 5 0 0 0 0\n";
-    assert_eq!(cores_busy_fraction(&[2, 22], before, after).unwrap(), 0.5);
+    // No server CPU: 6 busy ticks of 20.
+    assert_eq!(
+        foreign_busy_fraction(&[2, 22], before, after, 0, 10_000_000).unwrap(),
+        0.3
+    );
+    // The server's own work is not foreign load: 6 busy ticks (60 ms at
+    // 10 ms a tick) of 20, the server used 40 ms → 20 ms of 200 ms.
+    assert_eq!(
+        foreign_busy_fraction(&[2, 22], before, after, 40_000_000, 10_000_000).unwrap(),
+        0.1
+    );
+    // A server busier than the ticks show (tick rounding) is never negative.
+    assert_eq!(
+        foreign_busy_fraction(&[2, 22], before, after, 90_000_000, 10_000_000).unwrap(),
+        0.0
+    );
 
     let temp = TempDir::new("probe");
     let proc_root = temp.0.join("proc");
