@@ -118,13 +118,13 @@ fn shared_query_time_node_is_reported() {
             .collect::<Vec<_>>(),
         vec![
             normalized(
-                "CREATE TABLE src_latency (ts DateTime64(3, 'UTC'), value Float64, `job` String, \
-                 `$promql_series_identity` String) \
+                "CREATE TABLE src_latency (ts DateTime64(3, 'UTC'), value Float64, `job` LowCardinality(String), \
+                 `$promql_series_identity` LowCardinality(String)) \
                  ENGINE = MergeTree ORDER BY (ts, `$promql_series_identity`)"
             ),
             normalized(
                 "CREATE TABLE src_requests_total (ts DateTime64(3, 'UTC'), value Float64, \
-                 `job` String, `$promql_series_identity` String) \
+                 `job` LowCardinality(String), `$promql_series_identity` LowCardinality(String)) \
                  ENGINE = MergeTree ORDER BY (ts, `$promql_series_identity`)"
             ),
         ]
@@ -177,6 +177,52 @@ fn shared_query_time_node_is_reported() {
             node: 1,
             readers: vec![2, 3, 4]
         }]
+    );
+}
+
+#[test]
+fn stored_chain_keeps_its_scan_predicates() {
+    let mut value = fixture_value("sot_1h_stored_sum");
+    payload_body(&mut value, 0)["predicates"] = json!([{"Compare": {
+        "left": {"Column": 2}, "op": "Eq",
+        "right": {"Literal": {"Utf8": "a"}}, "semantics": "promql"}}]);
+    let deployment = translate(&PlanFile::from_value(value).unwrap()).unwrap();
+    assert!(
+        normalized(&deployment.materialized_views[0])
+            .contains("FROM src_latency WHERE `job` = 'a' GROUP BY"),
+        "{}",
+        deployment.materialized_views[0]
+    );
+}
+
+#[test]
+fn stored_reads_need_whole_windows_and_aligned_times() {
+    assert_eq!(
+        translated("sot_1h_stored_sum").query_time_steps_ms,
+        vec![60_000]
+    );
+    assert_eq!(
+        translated("rate_5m_query_time").query_time_steps_ms,
+        vec![1]
+    );
+    assert_eq!(translated("joint_5m").query_time_steps_ms, vec![1; 5]);
+    // A 90 s range over 60 s windows.
+    let mut value = fixture_value("sot_1h_stored_sum");
+    payload_body(&mut value, 2)["range"] = json!({"secs": 90, "nanos": 0});
+    assert_eq!(
+        refusal(value),
+        shape(2, "a range that is not a whole number of windows")
+    );
+}
+
+#[test]
+fn query_time_results_kept_across_evaluations_are_refused() {
+    // The ClickHouse files say `query_time_results_retained: false`.
+    let mut value = fixture_value("joint_5m");
+    value["dag"]["nodes"][1]["lifetime"] = json!({"AcrossEvaluations": "Memory"});
+    assert_eq!(
+        refusal(value),
+        shape(1, "query-time result kept across evaluations")
     );
 }
 
@@ -239,16 +285,16 @@ fn irate_state_is_refused() {
     assert_eq!(refusal(value), shape(1, "exact IRate"));
 }
 
-/// X10: the goldens run on ClickHouse 26.8.34.13 and give the hand-computed
+/// X10: the goldens run on ClickHouse 26.8.39.13 (the 26.8 LTS build for CPUs without AVX2) and give the hand-computed
 /// answers. Needs a `clickhouse local` of that release: set
 /// `AQPBM_CLICKHOUSE_LOCAL` to a shell command that runs it reading SQL on
 /// stdin (e.g. `clickhouse local`, or the same through `docker run -i` or
 /// `ssh`). The query parameter `t` is appended as `--param_t=<ms>`.
 #[test]
-#[ignore = "needs ClickHouse 26.8.34.13 (AQPBM_CLICKHOUSE_LOCAL)"]
+#[ignore = "needs ClickHouse 26.8.39.13 (AQPBM_CLICKHOUSE_LOCAL)"]
 fn goldens_run_on_clickhouse() {
     let command = std::env::var("AQPBM_CLICKHOUSE_LOCAL").expect("AQPBM_CLICKHOUSE_LOCAL");
-    assert_eq!(version(&command), "26.8.34.13");
+    assert_eq!(version(&command), "26.8.39.13");
     // F1: series a/1 = 1.0, a/2 = 0.5, b/1 = 2.0 every second for 1 h; at t = 1 h:
     // a = 3600 · 1.0 + 3600 · 0.5 = 5400, b = 3600 · 2.0 = 7200.
     let latency_three = "INSERT INTO src_latency SELECT \

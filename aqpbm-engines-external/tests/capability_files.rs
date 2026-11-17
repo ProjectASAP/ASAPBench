@@ -34,7 +34,8 @@ fn capability_files_match_the_design() {
     assert_eq!(
         file("clickhouse.equivalent-only.json"),
         json!({
-            "supported_summaries": [{"summary_type": "Hll", "readouts": ["Distinct"]}],
+            // No sketch until the translator builds sketch states.
+            "supported_summaries": [],
             "raw_data_retained": true,
             "query_time_results_retained": false,
             "counter_semantics": {"reset_handling": true, "extrapolation": true},
@@ -45,7 +46,7 @@ fn capability_files_match_the_design() {
     assert_eq!(
         file("clickhouse.with-substitutes.json"),
         json!({
-            "supported_summaries": sketches_all(),
+            "supported_summaries": [],
             "raw_data_retained": true,
             "query_time_results_retained": false,
             "counter_semantics": {"reset_handling": true, "extrapolation": true},

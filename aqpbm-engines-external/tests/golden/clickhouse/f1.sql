@@ -1,7 +1,7 @@
-CREATE TABLE src_latency (ts DateTime64(3, 'UTC'), value Float64, `job` String, `$promql_series_identity` String)
+CREATE TABLE src_latency (ts DateTime64(3, 'UTC'), value Float64, `job` LowCardinality(String), `$promql_series_identity` LowCardinality(String))
   ENGINE = MergeTree ORDER BY (ts, `$promql_series_identity`);
 
-CREATE TABLE v1 (`job` String, `$promql_series_identity` String, window_end_ms Int64,
+CREATE TABLE v1 (`job` LowCardinality(String), `$promql_series_identity` LowCardinality(String), window_end_ms Int64,
                  state AggregateFunction(sum, Float64))
   ENGINE = AggregatingMergeTree ORDER BY (window_end_ms, `job`, `$promql_series_identity`);
 

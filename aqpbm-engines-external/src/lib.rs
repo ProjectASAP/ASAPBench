@@ -22,8 +22,8 @@ pub enum TranslationError {
     #[error("plan file wire version {found:?}; this reader supports {supported}")]
     UnsupportedWireVersion { found: Option<u32>, supported: u32 },
     /// A standalone scalar query (no node), which no translator runs.
-    #[error("query {query} is a standalone scalar query")]
-    UnsupportedScalarQuery { query: usize },
+    #[error("query {query_index} is a standalone scalar query")]
+    UnsupportedScalarQuery { query_index: usize },
     /// A node the translator has no rule for.
     #[error("node {node}: no translation for {reason}")]
     UnsupportedShape { node: NodeId, reason: String },
