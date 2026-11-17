@@ -1,6 +1,6 @@
-# `aqpbm-harness` Design
+# `aqpbm-core` Harness Module Design
 
-`aqpbm-harness` measures an engine under test (an in-process planner and
+The `harness` module of `aqpbm-core` (`aqpbm_core::harness`) measures an engine under test (an in-process planner and
 executor, an external server such as ClickHouse, or a fake) under one
 measurement protocol. The engine never times itself: the harness feeds it
 data, asks it for answers and reads the clocks around every call.
@@ -12,12 +12,16 @@ refresh chunk into every install as one protocol job, and records per job the
 5 measured samples and their median. Ingesting 1,000 samples at 50 ns per
 sample plus 10 µs per call records 60,000 ns.
 
-The crate depends on no sketch library, no polars, no CLI crate and no
-planner (`tests/dependencies.rs` checks this).
+`aqpbm-core` with `default-features = false` depends on no sketch library,
+no polars, no CLI crate and no planner (`aqpbm-core/tests/dependencies.rs`
+checks this), so an engine adapter outside this workspace can depend on it.
+The harness reuses core's clocks (`metrics::ThreadCpuTime` for the calling
+thread, `metrics::CpuTimeSampler` for the process). Its run records are per
+engine arm; core's `benchmark_result` records stay per sketch.
 
 ## Components
 
-| Module | What it holds |
+| Module (`aqpbm_core::harness::…`) | What it holds |
 |---|---|
 | `engine` | The traits an engine implements (`EngineUnderTest`, `InstalledArm`, `Calibratable`) and the records it exchanges with the harness (`StepReport`, `Answers`, `Footprint`, ...). |
 | `protocol` | The clocks, pinning, the idle check, `Protocol::run_job`, `measure_sizes`, the median and the noise band. |

@@ -8,9 +8,9 @@
 
 #[cfg(target_os = "linux")]
 fn main() {
-    use aqpbm_harness::engine::StepReport;
-    use aqpbm_harness::fake::FakeClock;
-    use aqpbm_harness::protocol::{EngineClock, LoadProbe, Protocol, ProtocolError};
+    use aqpbm_core::harness::engine::StepReport;
+    use aqpbm_core::harness::fake::FakeClock;
+    use aqpbm_core::harness::protocol::{EngineClock, LoadProbe, Protocol, ProtocolError};
 
     struct IdleProbe;
     impl LoadProbe for IdleProbe {

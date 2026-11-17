@@ -2,13 +2,13 @@
 
 use std::path::{Path, PathBuf};
 
+use aqpbm_core::harness::data::DataRecord;
+use aqpbm_core::harness::engine::{EngineDescription, Footprint, PlanSummary, StepCost};
+use aqpbm_core::harness::machine::MachineDescription;
+use aqpbm_core::harness::protocol::{JobRecord, Protocol};
+use aqpbm_core::harness::records::{calibration_staleness, ArmResult, RunRecord};
+use aqpbm_core::harness::rundir::{RunDir, RunDirError};
 use aqpbm_datagen::{DataDistribution, SeriesLabelSpec, TimeSeriesDescription, UniformParameter};
-use aqpbm_harness::data::DataRecord;
-use aqpbm_harness::engine::{EngineDescription, Footprint, PlanSummary, StepCost};
-use aqpbm_harness::machine::MachineDescription;
-use aqpbm_harness::protocol::{JobRecord, Protocol};
-use aqpbm_harness::records::{calibration_staleness, ArmResult, RunRecord};
-use aqpbm_harness::rundir::{RunDir, RunDirError};
 use chrono::{DateTime, TimeZone, Utc};
 
 const E5_KEY: &str = "x86_64-intel-xeon-e5-2683-v3-56c-registered-ddr4";
@@ -20,7 +20,7 @@ struct TempDir(PathBuf);
 impl TempDir {
     fn new(test: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "aqpbm-harness-rundir-{}-{test}",
+            "aqpbm-core-harness-rundir-{}-{test}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&path);

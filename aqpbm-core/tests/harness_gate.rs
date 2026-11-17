@@ -1,7 +1,7 @@
 //! The gate: the selected arm against the exact arm, on the engine's own cost
 //! and the measured error.
 
-use aqpbm_harness::gate::{gate_verdict, GateFailure, GateRow, GateVerdict};
+use aqpbm_core::harness::gate::{gate_verdict, GateFailure, GateRow, GateVerdict};
 
 const SETTING: &str = "1s-10s-raw";
 

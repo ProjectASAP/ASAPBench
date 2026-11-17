@@ -1,7 +1,7 @@
 //! The machine key: architecture, CPU model, logical cores and memory type,
 //! never the hostname and never the memory size.
 
-use aqpbm_harness::machine::MachineDescription;
+use aqpbm_core::harness::machine::MachineDescription;
 
 const E5_MODEL: &str = "Intel(R) Xeon(R) CPU E5-2683 v3 @ 2.00GHz";
 const E5_MEMORY_KIB: u64 = 263_724_000;

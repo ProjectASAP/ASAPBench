@@ -13,9 +13,11 @@
 
 use std::collections::BTreeMap;
 
+use aqpbm_core::harness::data::{refresh_chunks, DataRecord, Sample};
+use aqpbm_core::harness::data_stats::{
+    data_statistics, DataStatistics, ObservedMagnitude, ObservedSign,
+};
 use aqpbm_datagen::{DataDistribution, SeriesLabelSpec, TimeSeriesDescription, UniformParameter};
-use aqpbm_harness::data::{refresh_chunks, DataRecord, Sample};
-use aqpbm_harness::data_stats::{data_statistics, DataStatistics, ObservedMagnitude, ObservedSign};
 
 /// One sample of metric `metric` with `labels`.
 fn sample(metric: &str, labels: &[(&str, &str)], ts_ms: i64, value: f64) -> Sample {

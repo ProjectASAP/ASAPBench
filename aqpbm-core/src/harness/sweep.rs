@@ -1,7 +1,7 @@
 //! Sweep arithmetic over measured arms: regret of the selected arm, and how
 //! often the engine's predicted ranking agrees with the measured one.
 
-use crate::protocol::{compare, Comparison};
+use crate::harness::protocol::{compare, Comparison};
 
 /// `measured(selected) / measured(best arm)`.
 pub fn regret(arms: &[(String, f64)], selected: &str) -> Result<f64, SweepError> {

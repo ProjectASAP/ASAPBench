@@ -1,8 +1,8 @@
 //! The conformance kit against the fake engine and its faults.
 
-use aqpbm_harness::conformance::{check, ConformanceCheck, ConformanceFailure};
-use aqpbm_harness::fake::{FakeEngine, FakeFault, FakeServer};
-use aqpbm_harness::protocol::{MeasurementClocks, ProcessCpuFiles};
+use aqpbm_core::harness::conformance::{check, ConformanceCheck, ConformanceFailure};
+use aqpbm_core::harness::fake::{FakeEngine, FakeFault, FakeServer};
+use aqpbm_core::harness::protocol::{MeasurementClocks, ProcessCpuFiles};
 
 /// Runs the kit on a fake with `faults`, reading the fake's own clock.
 fn check_fake(faults: &[FakeFault]) -> Result<Vec<ConformanceCheck>, Vec<ConformanceFailure>> {
@@ -166,7 +166,7 @@ fn every_conformance_failure_is_listed() {
 #[test]
 fn a_processes_engine_is_checked_on_its_server_pids() {
     let root = std::env::temp_dir().join(format!(
-        "aqpbm-harness-conformance-{}-server",
+        "aqpbm-core-harness-conformance-{}-server",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&root);

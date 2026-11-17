@@ -23,13 +23,13 @@ use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::data::{SampleChunk, SeriesLabels};
-use crate::engine::{
+use crate::harness::data::{SampleChunk, SeriesLabels};
+use crate::harness::engine::{
     Answers, ArmSpec, Calibratable, CostTarget, CpuAccounting, EngineDescription, EngineError,
     EngineUnderTest, Footprint, InstalledArm, NodeProfile, PlanSummary, QueryLanguage, StepReport,
     WorkloadSpec,
 };
-use crate::protocol::{CpuClock, ProcessCpuFiles};
+use crate::harness::protocol::{CpuClock, ProcessCpuFiles};
 
 /// The ticks of a [`FakeClock`], in ns.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

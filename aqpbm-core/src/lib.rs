@@ -5,6 +5,7 @@
 pub mod accuracy;
 pub mod benchmark_result;
 pub mod error;
+pub mod harness;
 pub mod measure;
 pub mod metrics;
 

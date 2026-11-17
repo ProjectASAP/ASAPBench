@@ -10,14 +10,16 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::collections::BTreeMap;
 
-use aqpbm_datagen::{DataDistribution, SeriesLabelSpec, TimeSeriesDescription, UniformParameter};
-use aqpbm_harness::arm_run::{run_arm, ArmSchedule};
-use aqpbm_harness::data::{DataRecord, SampleChunk, SeriesLabels};
-use aqpbm_harness::engine::{
+use aqpbm_core::harness::arm_run::{run_arm, ArmSchedule};
+use aqpbm_core::harness::data::{DataRecord, SampleChunk, SeriesLabels};
+use aqpbm_core::harness::engine::{
     Answers, ArmSpec, CpuAccounting, EngineDescription, EngineError, EngineUnderTest, Footprint,
     InstalledArm, PlanSummary, StepReport, WorkloadSpec,
 };
-use aqpbm_harness::protocol::{CpuClock, LoadProbe, MeasurementClocks, Protocol, ProtocolError};
+use aqpbm_core::harness::protocol::{
+    CpuClock, LoadProbe, MeasurementClocks, Protocol, ProtocolError,
+};
+use aqpbm_datagen::{DataDistribution, SeriesLabelSpec, TimeSeriesDescription, UniformParameter};
 
 /// The byte length of the one label value every answer carries. Nothing
 /// else in a run allocates this size, so a free of it is an answer's.

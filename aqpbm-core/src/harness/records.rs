@@ -3,12 +3,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::engine::{
+use crate::harness::engine::{
     Answers, EngineDescription, Footprint, NodeProfile, PlanSummary, PredictedCost,
 };
-use crate::fit::{ConstantsFit, FitPoint};
-use crate::machine::MachineDescription;
-use crate::protocol::{JobRecord, Protocol};
+use crate::harness::fit::{ConstantsFit, FitPoint};
+use crate::harness::machine::MachineDescription;
+use crate::harness::protocol::{JobRecord, Protocol};
 
 /// `run.json`: how the run was started and under which protocol.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -40,7 +40,7 @@ pub struct ArmResult {
     pub answers: Vec<(i64, Answers)>,
     pub footprint: Footprint,
     /// The usage the harness measured, priced at the engine's own prices
-    /// ([`crate::engine::InstalledArm::price`]); `None` for an engine without
+    /// ([`crate::harness::engine::InstalledArm::price`]); `None` for an engine without
     /// a cost model. Compare with the engine's own prediction,
     /// [`PredictedCost::engine_cost_per_second`].
     pub measured_engine_cost_per_second: Option<f64>,

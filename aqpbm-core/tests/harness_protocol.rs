@@ -6,14 +6,14 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use aqpbm_harness::engine::{CpuAccounting, EngineError, StepReport};
-use aqpbm_harness::fake::FakeClock;
-use aqpbm_harness::protocol::{
+use aqpbm_core::harness::engine::{CpuAccounting, EngineError, StepReport};
+use aqpbm_core::harness::fake::FakeClock;
+use aqpbm_core::harness::protocol::{
     compare, core_busy_fraction, median, noise_band, pin_current_thread, process_state_from_stat,
     processes_cpu_ns, Comparison, CpuClock, EngineClock, JobMark, LoadProbe, MeasurementClocks,
     OsCpuClock, ProcessCpuFiles, ProcessesCpuClock, Protocol, ProtocolError,
 };
-use aqpbm_harness::rundir::RunDir;
+use aqpbm_core::harness::rundir::RunDir;
 use chrono::{TimeZone, Utc};
 
 /// A load probe that returns `busy` fractions in order (the last one
@@ -50,7 +50,7 @@ struct TempDir(PathBuf);
 impl TempDir {
     fn new(test: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "aqpbm-harness-protocol-{}-{test}",
+            "aqpbm-core-harness-protocol-{}-{test}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&path);

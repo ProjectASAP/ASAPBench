@@ -11,6 +11,12 @@
 //! over the left-open window `(t - 10 s, t]`; [`conformance::check`] runs it
 //! twice under one seed and checks the answers match, the window boundary,
 //! the calibration units and that the work ran on the calling thread.
+//!
+//! Scope beside the rest of `aqpbm-core`: [`measure()`](fn@crate::measure)
+//! times one sketch's closures and [`crate::benchmark_result`] holds the
+//! per-sketch JSONL records; this module measures a whole engine and owns
+//! the per-arm run records ([`records`]). It reads the clocks of
+//! [`crate::metrics`] (`ThreadCpuTime`, `CpuTimeSampler`) rather than its own.
 
 pub mod accuracy;
 pub mod arm_run;

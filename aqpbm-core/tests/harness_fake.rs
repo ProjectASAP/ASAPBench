@@ -1,20 +1,20 @@
 //! The fake engine: step costs from the harness clock, a whole harness run,
 //! node profiles from the operator timing hook, and engine-reported CPU.
 
-use aqpbm_datagen::{DataDistribution, SeriesLabelSpec, TimeSeriesDescription, UniformParameter};
-use aqpbm_harness::arm_run::ArmRunError;
-use aqpbm_harness::arm_run::{run_arm, ArmSchedule};
-use aqpbm_harness::conformance::probe_workloads;
-use aqpbm_harness::data::{DataRecord, Sample, SampleChunk, SeriesLabels};
-use aqpbm_harness::engine::{
+use aqpbm_core::harness::arm_run::ArmRunError;
+use aqpbm_core::harness::arm_run::{run_arm, ArmSchedule};
+use aqpbm_core::harness::conformance::probe_workloads;
+use aqpbm_core::harness::data::{DataRecord, Sample, SampleChunk, SeriesLabels};
+use aqpbm_core::harness::engine::{
     ArmSpec, CpuAccounting, EngineUnderTest, QueryLanguage, QueryText, StepReport, WorkloadQuery,
     WorkloadSpec,
 };
-use aqpbm_harness::fake::{FakeEngine, FakeServer};
-use aqpbm_harness::protocol::{
+use aqpbm_core::harness::fake::{FakeEngine, FakeServer};
+use aqpbm_core::harness::protocol::{
     CpuClock, EngineClock, LoadProbe, MeasurementClocks, Protocol, ProtocolError,
 };
-use aqpbm_harness::records::ArmResult;
+use aqpbm_core::harness::records::ArmResult;
+use aqpbm_datagen::{DataDistribution, SeriesLabelSpec, TimeSeriesDescription, UniformParameter};
 
 /// A machine that is always idle.
 struct IdleProbe;
@@ -151,8 +151,10 @@ fn run_probe_on(
 
 /// A fresh directory under the system temp dir for a fake `/proc`.
 fn fake_proc_root(test: &str) -> std::path::PathBuf {
-    let root =
-        std::env::temp_dir().join(format!("aqpbm-harness-fake-{}-{test}", std::process::id()));
+    let root = std::env::temp_dir().join(format!(
+        "aqpbm-core-harness-fake-{}-{test}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&root);
     root
 }

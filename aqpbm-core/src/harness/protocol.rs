@@ -10,12 +10,12 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use aqpbm_core::metrics::{CpuTimeSampler, ThreadCpuTime};
+use crate::metrics::{CpuTimeSampler, ThreadCpuTime};
 
 use serde::{Deserialize, Serialize};
 
-use crate::engine::{CpuAccounting, EngineError, StepCost, StepReport};
-use crate::fit::FitPoint;
+use crate::harness::engine::{CpuAccounting, EngineError, StepCost, StepReport};
+use crate::harness::fit::FitPoint;
 
 /// The clocks the harness reads around a step.
 pub trait CpuClock {
@@ -35,7 +35,7 @@ pub trait CpuClock {
     }
 }
 
-/// The OS clocks: `aqpbm_core::metrics::time::ThreadCpuTime` for the thread,
+/// The OS clocks: [`ThreadCpuTime`] for the thread,
 /// `CpuTimeSampler` (`getrusage`) for the process, `Instant` for wall time.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct OsCpuClock;
@@ -709,7 +709,7 @@ fn median_sample(samples: &[StepCost], clock: &EngineClock) -> StepCost {
 /// the point takes the units of the median run. One point per size:
 /// setting = the size, terms = `[units, 1]`, measured = the median's engine
 /// CPU ([`EngineClock::engine_cpu_ns`]). Consecutive sizes share an idle
-/// sample, as the steps of [`crate::arm_run::run_arm`] do.
+/// sample, as the steps of [`crate::harness::arm_run::run_arm`] do.
 ///
 /// An engine's calibration plugs in as
 /// `|size| calibratable.prepare_cost_target(&target, size)?()`.

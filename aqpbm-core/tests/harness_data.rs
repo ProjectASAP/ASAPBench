@@ -3,12 +3,12 @@
 
 use std::collections::BTreeMap;
 
+use aqpbm_core::harness::data::{
+    read_samples_jsonl, refresh_chunks, DataError, DataRecord, Sample, SampleChunk,
+};
 use aqpbm_datagen::{
     DataDistribution, ParetoParameter, SeriesLabelSpec, TimeSeriesDescription, UniformParameter,
     ZipfParameter,
-};
-use aqpbm_harness::data::{
-    read_samples_jsonl, refresh_chunks, DataError, DataRecord, Sample, SampleChunk,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;

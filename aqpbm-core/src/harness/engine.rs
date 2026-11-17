@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-pub use crate::data::{DataRecord, SampleChunk, SeriesLabels};
+pub use crate::harness::data::{DataRecord, SampleChunk, SeriesLabels};
 
 /// An engine the harness can measure: the Planner's executor, a fake, or an
 /// external server such as ClickHouse.
@@ -53,7 +53,7 @@ pub enum CpuAccounting {
     CallingThread,
     /// External servers: the harness reads the CPU of these processes
     /// around each step (their own cgroup's `cpu.stat`, or their threads'
-    /// `schedstat`; see [`crate::protocol::ProcessesCpuClock`]).
+    /// `schedstat`; see [`crate::harness::protocol::ProcessesCpuClock`]).
     Processes(Vec<u32>),
 }
 
@@ -231,8 +231,8 @@ pub struct PlanSummary {
 }
 
 /// The engine's own predicted cost of an arm, recorded in each
-/// [`crate::records::ArmResult`] beside the measured cost so a sweep can
-/// rank arms by both ([`crate::sweep::ranking_agreement`]).
+/// [`crate::harness::records::ArmResult`] beside the measured cost so a sweep can
+/// rank arms by both ([`crate::harness::sweep::ranking_agreement`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PredictedCost {

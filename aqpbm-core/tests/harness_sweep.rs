@@ -1,6 +1,6 @@
 //! Sweep arithmetic: regret and ranking agreement.
 
-use aqpbm_harness::sweep::{ranking_agreement, regret, SelectedAndExactCosts, SweepError};
+use aqpbm_core::harness::sweep::{ranking_agreement, regret, SelectedAndExactCosts, SweepError};
 
 /// Arms exact 100, planned 120 and noraw 80 with `planned` selected: regret
 /// 120 / 80 = 1.5. An unknown selected arm `stored` is an error naming it.

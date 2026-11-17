@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "The benchmark framework: everything needed to measure a sketch, nothing that knows which sketches exist. Turns a row's build/insert/ask closures into timed bodies (ops), holds the clock (measure), scores against exact answers (accuracy), materialises datasets, and owns the JSONL report schema. Names no sketch algorithm — the wrapped implementations live in sketch-bench."
+description = "The benchmark framework: everything needed to measure a sketch, nothing that knows which sketches exist. Turns a row's build/insert/ask closures into timed bodies (ops), holds the clock (measure), scores against exact answers (accuracy), materialises datasets, and owns the JSONL report schema. Its `harness` module measures a whole engine under test (an in-process planner and executor, or an external server): the engine traits, the measurement protocol, the machine key, model fitting, accuracy curves, data statistics, run records, gate and sweep arithmetic, a fake-clock engine and the conformance kit every engine adapter runs. Names no sketch algorithm — the wrapped implementations live in sketch-bench — and with `default-features = false` depends on no sketch library, no polars, no CLI crate and no planner."
 
 [features]
 # Back the `LatencyRecorder` with a real hdrhistogram. Off → it
@@ -41,12 +41,20 @@ hdrhistogram = { workspace = true, optional = true }
 # order is reproducible.
 rand = { workspace = true }
 rand_xoshiro = { workspace = true }
-serde.workspace = true
+# `rc`: the harness's samples share their series labels through `Arc<SeriesLabels>`.
+serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
 schemars = { workspace = true, optional = true }
 chrono.workspace = true
+thiserror.workspace = true
 tikv-jemalloc-ctl = { workspace = true, optional = true }
 
 # `metrics::time` reads CPU time via `getrusage`.
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc.workspace = true
+
+# Runs on the process's main thread (no libtest harness), where a pinned
+# thread is also the thread whose affinity `getpid()` names.
+[[test]]
+name = "harness_pin_main_thread"
+harness = false

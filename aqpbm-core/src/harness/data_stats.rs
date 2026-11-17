@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::data::{Sample, SeriesLabels};
+use crate::harness::data::{Sample, SeriesLabels};
 
 /// The smallest and largest non-zero absolute value seen.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

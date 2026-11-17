@@ -5,12 +5,12 @@
 
 use aqpbm_datagen::{DataDistribution, SeriesLabelSpec, TimeSeriesDescription, UniformParameter};
 
-use crate::data::{workload_chunks, DataRecord};
-use crate::engine::{
+use crate::harness::data::{workload_chunks, DataRecord};
+use crate::harness::engine::{
     format_series, Answers, ArmSpec, CpuAccounting, EngineError, EngineUnderTest, InstalledArm,
     QueryLanguage, QueryText, WorkloadQuery, WorkloadSpec,
 };
-use crate::protocol::{CpuClock, MeasurementClocks};
+use crate::harness::protocol::{CpuClock, MeasurementClocks};
 
 /// One check of the kit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 
-use crate::data::DataRecord;
-use crate::protocol::{JobMark, JobRecord};
-use crate::records::{ArmResult, RunRecord};
+use crate::harness::data::DataRecord;
+use crate::harness::protocol::{JobMark, JobRecord};
+use crate::harness::records::{ArmResult, RunRecord};
 
 /// A created run directory.
 #[derive(Debug, Clone, PartialEq, Eq)]

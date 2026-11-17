@@ -2,14 +2,14 @@
 //! refresh chunk, evaluate at every time, and record the costs the harness
 //! measured.
 
-use crate::data::{workload_chunks, DataError};
-use crate::engine::{
+use crate::harness::data::{workload_chunks, DataError};
+use crate::harness::engine::{
     Answers, ArmSpec, EngineError, EngineUnderTest, InstalledArm, MeasuredUsage, WorkloadSpec,
 };
-use crate::protocol::{
+use crate::harness::protocol::{
     CoreLoad, EngineClock, JobRecord, LoadProbe, MeasurementClocks, Protocol, ProtocolError,
 };
-use crate::records::ArmResult;
+use crate::harness::records::ArmResult;
 
 /// When to ingest and when to evaluate.
 #[derive(Debug, Clone, PartialEq, Eq)]

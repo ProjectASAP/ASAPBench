@@ -9,6 +9,9 @@ Shared functionalities at this moment refers to the following:
 - functionalities to support above operations
   - for example, what kind of ground-truth can be compared to stays in `aqpbm-core`
   - for example, what kind of metrics can exist stays in `aqpbm-core`
+- measure a whole engine under test (an in-process planner and executor, or an
+  external server) under one measurement protocol: the `harness` module, see
+  [`aqpbm-core` harness module](./aqpbm-core-harness.md)
 
 When there are new demand, above functionalities will be extended.
 This design doc tracks necessary functionalities as is.

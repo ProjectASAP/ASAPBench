@@ -4,12 +4,12 @@
 
 use std::time::{Duration, Instant};
 
-use aqpbm_harness::fake::FakeClock;
-use aqpbm_harness::fit::{
+use aqpbm_core::harness::fake::FakeClock;
+use aqpbm_core::harness::fit::{
     fit_constants, leave_one_setting_out, ConstantsFit, FitError, FitFlag, FitPoint,
     LeaveOneSettingOut,
 };
-use aqpbm_harness::protocol::{
+use aqpbm_core::harness::protocol::{
     measure_sizes, EngineClock, LoadProbe, OsCpuClock, OsLoadProbe, Protocol, ProtocolError,
 };
 use rand::seq::SliceRandom;
