@@ -8,6 +8,7 @@ use clap::builder::TypedValueParser;
 use clap::{Parser, Subcommand};
 
 use crate::atomic_costs_cmd;
+use crate::bench_external_cmd;
 use crate::flatten_cmd;
 
 #[derive(Parser, Debug)]
@@ -37,6 +38,10 @@ pub enum Cmd {
     /// records that came from several invocations of the same cell rather
     /// than one.
     Flatten(flatten_cmd::FlattenArgs),
+    /// Run one lane of a comparison over a run directory, or report all lanes.
+    BenchExternal(bench_external_cmd::BenchExternalArgs),
+    /// Serve a server's cgroup v2 CPU and memory files over HTTP.
+    CgroupAgent(bench_external_cmd::CgroupAgentArgs),
 }
 
 /// One target of the sketch bundle: one variant, one library, one construction

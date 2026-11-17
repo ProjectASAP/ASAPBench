@@ -22,7 +22,7 @@ static GLOBAL: aqpbm_core::metrics::heap_track::TrackingAllocator<std::alloc::Sy
 
 use anyhow::Result;
 use aqpbm_cli::cli::{Cli, Cmd};
-use aqpbm_cli::{atomic_costs_cmd, flatten_cmd, sketchbench};
+use aqpbm_cli::{atomic_costs_cmd, bench_external_cmd, flatten_cmd, sketchbench};
 use clap::Parser;
 
 fn main() -> Result<()> {
@@ -31,5 +31,7 @@ fn main() -> Result<()> {
         Cmd::Sketchbench(args) => sketchbench::run_sketchbench(args),
         Cmd::AtomicCosts(args) => atomic_costs_cmd::run(args),
         Cmd::Flatten(args) => flatten_cmd::run(args),
+        Cmd::BenchExternal(args) => bench_external_cmd::run(args),
+        Cmd::CgroupAgent(args) => bench_external_cmd::run_cgroup_agent(args),
     }
 }

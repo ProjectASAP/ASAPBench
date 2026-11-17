@@ -21,8 +21,8 @@ libc.workspace = true
 rand.workspace = true
 rand_xoshiro.workspace = true
 
-# Runs on the process's main thread (no libtest harness), where a pinned
-# thread is also the thread whose affinity `getpid()` names.
+# Runs on the process's main thread (no libtest harness), so the thread the
+# test pins is the one whose affinity it then reads.
 [[test]]
 name = "pin_main_thread"
 harness = false
