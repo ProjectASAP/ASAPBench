@@ -532,3 +532,33 @@ fn no_scored_fold_has_no_rms_log_error() {
         loso
     );
 }
+
+/// Runs of equal CPU keep their own units: the point takes the units of the
+/// median run by its index, not of the first sample equal to the median.
+/// Three runs each charge 1,000 ns and process 10, 20 and 30 units; the
+/// middle run (index 1, 20 units) is the median.
+#[test]
+fn equal_cost_runs_take_the_median_runs_units() {
+    let clock = FakeClock::default();
+    let kernel_clock = clock.clone();
+    let protocol = Protocol {
+        warmup_runs: 0,
+        measured_runs: 3,
+        max_core_busy_fraction: 1.0,
+    };
+    let mut calls = 0;
+    let points = measure_sizes(
+        &protocol,
+        0,
+        &mut IdleProbe,
+        &EngineClock::CallingThread(&clock),
+        &[7],
+        &mut |_size| {
+            kernel_clock.charge_thread(1_000);
+            calls += 1;
+            Ok(calls * 10)
+        },
+    )
+    .unwrap();
+    assert_eq!(points[0].terms, vec![20.0, 1.0]);
+}
