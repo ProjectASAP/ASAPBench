@@ -1,7 +1,7 @@
-CREATE TABLE src_latency (ts DateTime64(3, 'UTC'), value Float64, `instance` String, `$promql_series_identity` String)
+CREATE TABLE src_latency (ts DateTime64(3, 'UTC'), value Float64, `instance` LowCardinality(String), `$promql_series_identity` LowCardinality(String))
   ENGINE = MergeTree ORDER BY (ts, `$promql_series_identity`);
 
-CREATE TABLE v1 (`instance` String, `$promql_series_identity` String, window_end_ms Int64,
+CREATE TABLE v1 (`instance` LowCardinality(String), `$promql_series_identity` LowCardinality(String), window_end_ms Int64,
                  state AggregateFunction(count))
   ENGINE = AggregatingMergeTree ORDER BY (window_end_ms, `instance`, `$promql_series_identity`);
 

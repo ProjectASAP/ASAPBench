@@ -1,10 +1,10 @@
 -- Stored windows of a counter (a substitute): deltaSumTimestamp adds 0 for the step
 -- across a counter reset. The query applies Prometheus extrapolatedRate
 -- (promql/functions.go, v3.15.1) to the merged window states.
-CREATE TABLE src_requests_total (ts DateTime64(3, 'UTC'), value Float64, `job` String, `$promql_series_identity` String)
+CREATE TABLE src_requests_total (ts DateTime64(3, 'UTC'), value Float64, `job` LowCardinality(String), `$promql_series_identity` LowCardinality(String))
   ENGINE = MergeTree ORDER BY (ts, `$promql_series_identity`);
 
-CREATE TABLE v1 (`job` String, `$promql_series_identity` String, window_end_ms Int64,
+CREATE TABLE v1 (`job` LowCardinality(String), `$promql_series_identity` LowCardinality(String), window_end_ms Int64,
                  s_count AggregateFunction(count),
                  s_first_ms AggregateFunction(min, Int64),
                  s_last_ms AggregateFunction(max, Int64),

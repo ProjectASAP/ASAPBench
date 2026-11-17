@@ -1,4 +1,4 @@
-CREATE TABLE src_latency (ts DateTime64(3, 'UTC'), value Float64, `job` String, `$promql_series_identity` String)
+CREATE TABLE src_latency (ts DateTime64(3, 'UTC'), value Float64, `job` LowCardinality(String), `$promql_series_identity` LowCardinality(String))
   ENGINE = MergeTree ORDER BY (ts, `$promql_series_identity`);
 
 SELECT `job`, `$promql_series_identity`, max(value) AS value

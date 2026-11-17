@@ -13,7 +13,6 @@ use serde_json::json;
 #[test]
 fn reads_a_wire_15_plan() {
     let plan = fixture("sot_1h_stored_sum");
-    assert_eq!(plan.wire_version, 15);
     assert_eq!(SUPPORTED_PLAN_WIRE_VERSION, 15);
     assert_eq!(plan.nodes.len(), 6);
     assert_eq!(plan.roots, vec![5]);
@@ -37,6 +36,8 @@ fn reads_a_wire_15_plan() {
         scan.output_columns,
         vec!["ts", "value", "job", "$promql_series_identity"]
     );
+    // Labels are the `{"Plain": "utf8"}` columns.
+    assert_eq!(scan.label_columns, vec!["job", "$promql_series_identity"]);
 
     let chain = &plan.nodes[1];
     assert_eq!(
@@ -54,8 +55,6 @@ fn reads_a_wire_15_plan() {
     assert_eq!(chain.timing, Timing::IngestionTime);
     // `{"AcrossEvaluations": "Memory"}` on the wire.
     assert_eq!(chain.lifetime, Lifetime::AcrossEvaluations);
-    assert_eq!(chain.retention_ms, Some(3_600_000));
-    assert_eq!(chain.parameters, None);
 
     let range = &plan.nodes[2];
     // 3600 s × 1000 + 0 ns / 10⁶.
@@ -87,7 +86,7 @@ fn reads_a_wire_15_plan() {
             child: 4,
             measures: vec![Measure {
                 kind: "sum".into(),
-                col: None,
+                column: None,
                 arguments: serde_json::Map::new(),
             }],
             reduction: Reduction::Reduce {
@@ -99,6 +98,7 @@ fn reads_a_wire_15_plan() {
         }
     );
     assert_eq!(plan.nodes[5].output_columns, vec!["job", "sum"]);
+    assert_eq!(plan.nodes[5].label_columns, vec!["job"]);
 }
 
 #[test]
@@ -173,8 +173,25 @@ fn scalar_queries_are_refused() {
     value["dag"]["scalar_roots"] = json!([[0, {"Literal": {"Float64": 1.0}}]]);
     assert_eq!(
         PlanFile::from_value(value),
-        Err(TranslationError::UnsupportedScalarQuery { query: 0 })
+        Err(TranslationError::UnsupportedScalarQuery { query_index: 0 })
     );
+}
+
+#[test]
+fn ids_outside_the_dag_are_refused() {
+    let malformed = |change: &dyn Fn(&mut serde_json::Value)| {
+        let mut value = fixture_value("sot_1h_stored_sum");
+        change(&mut value);
+        matches!(
+            PlanFile::from_value(value),
+            Err(TranslationError::MalformedPlan { .. })
+        )
+    };
+    assert!(malformed(&|v| payload_body(v, 5)["child"] = json!(9)));
+    assert!(malformed(&|v| v["dag"]["roots"] = json!([99])));
+    // A node may read only nodes that come before it (no cycle).
+    assert!(malformed(&|v| payload_body(v, 1)["child"] = json!(3)));
+    assert!(malformed(&|v| v["query_texts"] = json!([])));
 }
 
 #[test]

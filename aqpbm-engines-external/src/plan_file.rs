@@ -19,7 +19,6 @@ pub const SUPPORTED_PLAN_WIRE_VERSION: u32 = 15;
 /// A plan file: the planner's selected DAG and one query text per root.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlanFile {
-    pub wire_version: u32,
     /// In id order: `nodes[i].id == i`.
     pub nodes: Vec<PlanNode>,
     pub edges: Vec<PlanEdge>,
@@ -43,12 +42,11 @@ pub struct PlanNode {
     pub timing: Timing,
     /// How long its output is kept.
     pub lifetime: Lifetime,
-    /// How far back a kept output (a view, or raw data) is retained.
-    pub retention_ms: Option<u64>,
-    /// Sketch parameters (wire `parameters`, e.g. `{"Kll": {"k": 547}}`), kept as is.
-    pub parameters: Option<Value>,
     /// The names of the node's output columns, in order.
     pub output_columns: Vec<String>,
+    /// The output columns that are labels (wire dtype `{"Plain": "utf8"}`),
+    /// in order, including the series identity.
+    pub label_columns: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,7 +99,6 @@ pub enum PlanOperator {
     },
     SummaryEstimate {
         summary_input: NodeId,
-        query: Value,
     },
     Aggregate {
         child: NodeId,
@@ -119,8 +116,11 @@ pub enum PlanOperator {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Source {
-    TimeSeries { metric: String },
-    Table { table_ref: Value },
+    TimeSeries {
+        metric: String,
+    },
+    /// A SQL table; no translator reads one yet.
+    Table,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,11 +147,12 @@ pub enum Reduction {
 }
 
 /// One measure of an `Aggregate`: `kind` as ASAPPlanner's `AggIntent` JSON
-/// (`"sum"`, `"quantile"`, `"i_rate"`), `col`, and its other fields (e.g. `q`).
+/// (`"sum"`, `"quantile"`, `"i_rate"`), the input `column` (wire `col`),
+/// and its other fields (e.g. `q`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Measure {
     pub kind: String,
-    pub col: Option<usize>,
+    pub column: Option<usize>,
     pub arguments: Map<String, Value>,
 }
 
@@ -175,7 +176,7 @@ impl PlanFile {
         let found = value
             .get("wire_version")
             .and_then(Value::as_u64)
-            .map(|v| v as u32);
+            .and_then(|v| u32::try_from(v).ok());
         if found != Some(SUPPORTED_PLAN_WIRE_VERSION) {
             return Err(TranslationError::UnsupportedWireVersion {
                 found,
@@ -183,12 +184,13 @@ impl PlanFile {
             });
         }
         let dag = field(&value, "dag")?;
-        if let Some((query, _)) = array(dag, "scalar_roots")?
-            .first()
-            .and_then(|root| Some((root.get(0)?.as_u64()?, root)))
-        {
+        if let Some(root) = array(dag, "scalar_roots")?.first() {
+            let query_index = root
+                .get(0)
+                .and_then(Value::as_u64)
+                .ok_or_else(|| malformed("scalar root"))?;
             return Err(TranslationError::UnsupportedScalarQuery {
-                query: query as usize,
+                query_index: query_index as usize,
             });
         }
         let nodes = array(dag, "nodes")?
@@ -217,13 +219,53 @@ impl PlanFile {
                     .ok_or_else(|| malformed("query text"))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(PlanFile {
-            wire_version: SUPPORTED_PLAN_WIRE_VERSION,
+        if roots.len() != query_texts.len() {
+            return Err(malformed(format!(
+                "{} roots but {} query texts",
+                roots.len(),
+                query_texts.len()
+            )));
+        }
+        let plan = PlanFile {
             nodes,
             edges,
             roots,
             query_texts,
-        })
+        };
+        plan.check_ids()?;
+        Ok(plan)
+    }
+
+    /// Every id the file names is a node, and every node reads only nodes
+    /// with smaller ids (so the DAG has no cycle): translators can then
+    /// index nodes by id and recurse over children.
+    fn check_ids(&self) -> Result<(), TranslationError> {
+        let count = self.nodes.len();
+        let in_range = |id: NodeId, what: &str| {
+            if id < count {
+                Ok(())
+            } else {
+                Err(malformed(format!("{what} {id} is not a node")))
+            }
+        };
+        for &root in &self.roots {
+            in_range(root, "root")?;
+        }
+        for edge in &self.edges {
+            in_range(edge.producer, "edge producer")?;
+            in_range(edge.consumer, "edge consumer")?;
+        }
+        for node in &self.nodes {
+            for child in node.operator.inputs() {
+                if child >= node.id {
+                    return Err(malformed(format!(
+                        "node {} reads node {child}, which does not come before it",
+                        node.id
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The nodes that read `node`'s output, in edge order.
@@ -233,6 +275,22 @@ impl PlanFile {
             .filter(|edge| edge.producer == node)
             .map(|edge| edge.consumer)
             .collect()
+    }
+}
+
+impl PlanOperator {
+    /// The nodes this operator reads.
+    pub fn inputs(&self) -> Vec<NodeId> {
+        match self {
+            PlanOperator::Scan { .. } | PlanOperator::Other { .. } => Vec::new(),
+            PlanOperator::TimeRange { child, .. }
+            | PlanOperator::WindowChain { child, .. }
+            | PlanOperator::SummaryAgg { child, .. }
+            | PlanOperator::Finalize { child }
+            | PlanOperator::Aggregate { child, .. } => vec![*child],
+            PlanOperator::SummaryEstimate { summary_input } => vec![*summary_input],
+            PlanOperator::SummaryMerge { children, .. } => children.clone(),
+        }
     }
 }
 
@@ -252,18 +310,23 @@ fn node_of(position: usize, node: &Value) -> Result<PlanNode, TranslationError> 
         Value::Object(map) if map.contains_key("AcrossEvaluations") => Lifetime::AcrossEvaluations,
         other => return Err(malformed(format!("node {id}: lifetime {other}"))),
     };
-    let output_columns = match node.get("output_schema") {
-        Some(schema) => column_names(schema)?,
+    let columns = match node.get("output_schema") {
+        Some(schema) => columns_of(schema)?,
         None => Vec::new(),
     };
+    let output_columns = columns.iter().map(|(name, _)| name.clone()).collect();
+    let label_columns = columns
+        .into_iter()
+        .filter(|(_, is_label)| *is_label)
+        .map(|(name, _)| name)
+        .collect();
     Ok(PlanNode {
         id,
         operator: operator_of(field(node, "payload")?)?,
         timing,
         lifetime,
-        retention_ms: node.get("retention_ms").and_then(Value::as_u64),
-        parameters: node.get("parameters").filter(|p| !p.is_null()).cloned(),
         output_columns,
+        label_columns,
     })
 }
 
@@ -286,6 +349,9 @@ fn operator_of(payload: &Value) -> Result<PlanOperator, TranslationError> {
             let nanos = field(range, "nanos")?
                 .as_u64()
                 .ok_or_else(|| malformed("nanos"))?;
+            if nanos % 1_000_000 != 0 {
+                return Err(malformed("a range finer than a millisecond"));
+            }
             PlanOperator::TimeRange {
                 child: index(field(body, "child")?)?,
                 kind: match field(body, "kind")?.as_str() {
@@ -293,7 +359,10 @@ fn operator_of(payload: &Value) -> Result<PlanOperator, TranslationError> {
                     Some("instant") => RangeKind::Instant,
                     other => return Err(malformed(format!("range kind {other:?}"))),
                 },
-                range_ms: secs * 1000 + nanos / 1_000_000,
+                range_ms: secs
+                    .checked_mul(1000)
+                    .and_then(|ms| ms.checked_add(nanos / 1_000_000))
+                    .ok_or_else(|| malformed("range too long"))?,
             }
         }
         "SummaryTumblingWindowChain" => PlanOperator::WindowChain {
@@ -335,7 +404,6 @@ fn operator_of(payload: &Value) -> Result<PlanOperator, TranslationError> {
         },
         "SummaryEstimate" => PlanOperator::SummaryEstimate {
             summary_input: index(field(body, "summary_input")?)?,
-            query: body.get("query").cloned().unwrap_or(Value::Null),
         },
         "Aggregate" => PlanOperator::Aggregate {
             child: index(field(body, "child")?)?,
@@ -367,9 +435,7 @@ fn source_of(source: &Value) -> Result<Source, TranslationError> {
                 .ok_or_else(|| malformed("metric"))?
                 .to_string(),
         }),
-        "Table" => Ok(Source::Table {
-            table_ref: body.get("table_ref").cloned().unwrap_or(Value::Null),
-        }),
+        "Table" => Ok(Source::Table),
         other => Err(malformed(format!("source {other}"))),
     }
 }
@@ -437,25 +503,27 @@ fn measure_of(measure: &Value) -> Result<Measure, TranslationError> {
         .remove("kind")
         .and_then(|kind| kind.as_str().map(str::to_string))
         .ok_or_else(|| malformed("measure kind"))?;
-    let col = match arguments.remove("col") {
+    let column = match arguments.remove("col") {
         None | Some(Value::Null) => None,
         Some(col) => Some(index(&col)?),
     };
     Ok(Measure {
         kind,
-        col,
+        column,
         arguments,
     })
 }
 
-fn column_names(schema: &Value) -> Result<Vec<String>, TranslationError> {
+/// Each output column's name, and whether it is a label (`{"Plain": "utf8"}`).
+fn columns_of(schema: &Value) -> Result<Vec<(String, bool)>, TranslationError> {
     array(schema, "fields")?
         .iter()
         .map(|column| {
-            field(column, "name")?
+            let name = field(column, "name")?
                 .as_str()
-                .map(str::to_string)
-                .ok_or_else(|| malformed("column name"))
+                .ok_or_else(|| malformed("column name"))?;
+            let is_label = column.get("dtype") == Some(&serde_json::json!({"Plain": "utf8"}));
+            Ok((name.to_string(), is_label))
         })
         .collect()
 }
