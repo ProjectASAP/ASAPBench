@@ -1,9 +1,9 @@
 //! The schedule every lane uses for a workload.
 
-use aqpbm_datagen::{DataDistribution, SeriesLabelSpec, TimeSeriesDescription, UniformParameter};
 use aqpbm_core::harness::arm_run::{ArmSchedule, ScheduleError};
 use aqpbm_core::harness::data::DataRecord;
 use aqpbm_core::harness::engine::{QueryLanguage, QueryText, WorkloadQuery, WorkloadSpec};
+use aqpbm_datagen::{DataDistribution, SeriesLabelSpec, TimeSeriesDescription, UniformParameter};
 
 fn query(id: &str, window_ms: u64, evaluation_interval_ms: u64) -> WorkloadQuery {
     WorkloadQuery {

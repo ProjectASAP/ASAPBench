@@ -3,10 +3,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use aqpbm_datagen::{DataDistribution, SeriesLabelSpec, TimeSeriesDescription, UniformParameter};
 use aqpbm_core::harness::data::DataRecord;
 use aqpbm_core::harness::engine::{QueryLanguage, QueryText, WorkloadQuery, WorkloadSpec};
 use aqpbm_core::harness::rundir::RunDir;
+use aqpbm_datagen::{DataDistribution, SeriesLabelSpec, TimeSeriesDescription, UniformParameter};
 
 fn workload(name: &str) -> WorkloadSpec {
     WorkloadSpec {

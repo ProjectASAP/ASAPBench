@@ -3,7 +3,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use aqpbm_datagen::{DataDistribution, SeriesLabelSpec, TimeSeriesDescription, UniformParameter};
 use aqpbm_core::harness::bench_external::{
     read_variants, read_workloads, report, run_lane, write_report, CellOutcome, LaneCell,
     LaneSetup, SUMMARY_CSV_HEADER,
@@ -15,9 +14,12 @@ use aqpbm_core::harness::engine::{
     WorkloadSpec,
 };
 use aqpbm_core::harness::fake::FakeEngine;
-use aqpbm_core::harness::protocol::{JobRecord, LoadProbe, MeasurementClocks, Protocol, ProtocolError};
+use aqpbm_core::harness::protocol::{
+    JobRecord, LoadProbe, MeasurementClocks, Protocol, ProtocolError,
+};
 use aqpbm_core::harness::records::ArmResult;
 use aqpbm_core::harness::rundir::RunDir;
+use aqpbm_datagen::{DataDistribution, SeriesLabelSpec, TimeSeriesDescription, UniformParameter};
 
 struct TempDir(PathBuf);
 

@@ -28,7 +28,9 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use crate::harness::arm_run::{run_arm, ArmSchedule};
-use crate::harness::engine::{ArmSpec, CpuAccounting, EngineDescription, EngineUnderTest, WorkloadSpec};
+use crate::harness::engine::{
+    ArmSpec, CpuAccounting, EngineDescription, EngineUnderTest, WorkloadSpec,
+};
 use crate::harness::protocol::{LoadProbe, MeasurementClocks, Protocol};
 use crate::harness::records::ArmResult;
 use crate::harness::rundir::{check_result_name, write_json, RunDir, RunDirError};

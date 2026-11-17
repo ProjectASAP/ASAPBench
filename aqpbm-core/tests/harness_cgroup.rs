@@ -5,7 +5,6 @@
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 
-use aqpbm_datagen::{DataDistribution, SeriesLabelSpec, TimeSeriesDescription, UniformParameter};
 use aqpbm_core::harness::arm_run::{run_arm, ArmSchedule};
 use aqpbm_core::harness::cgroup::{
     agent_in_served_group, serve_agent, CgroupCpu, CgroupMemory, CgroupSource,
@@ -16,7 +15,10 @@ use aqpbm_core::harness::engine::{
     WorkloadSpec,
 };
 use aqpbm_core::harness::fake::{FakeEngine, FakeServer};
-use aqpbm_core::harness::protocol::{LoadProbe, MeasurementClocks, OsCpuClock, Protocol, ProtocolError};
+use aqpbm_core::harness::protocol::{
+    LoadProbe, MeasurementClocks, OsCpuClock, Protocol, ProtocolError,
+};
+use aqpbm_datagen::{DataDistribution, SeriesLabelSpec, TimeSeriesDescription, UniformParameter};
 
 struct TempDir(PathBuf);
 
