@@ -23,13 +23,13 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
+use crate::cgroup::CgroupSource;
 use crate::data::{SampleChunk, SeriesLabels};
 use crate::engine::{
     Answers, ArmSpec, Calibratable, CostTarget, CpuAccounting, EngineDescription, EngineError,
     EngineUnderTest, Footprint, InstalledArm, NodeProfile, PlanSummary, QueryLanguage, StepReport,
     WorkloadSpec,
 };
-use crate::cgroup::CgroupSource;
 use crate::protocol::{CpuClock, ProcessCpuFiles};
 
 /// The ticks of a [`FakeClock`], in ns.
@@ -427,7 +427,11 @@ impl FakePlanFile {
         let substitutions = json
             .get("substitutions")
             .and_then(|list| list.as_array())
-            .map(|list| list.iter().filter_map(|s| s.as_str().map(str::to_string)).collect())
+            .map(|list| {
+                list.iter()
+                    .filter_map(|s| s.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default();
         Ok(FakePlanFile {
             path: Some(path.to_string()),
