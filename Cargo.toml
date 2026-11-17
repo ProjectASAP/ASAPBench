@@ -68,6 +68,7 @@ aqpbm-core = { path = "aqpbm-core", default-features = false }
 sketch-bench = { path = "sketch-bench" }
 aqpbm-usecase = { path = "aqpbm-usecase" }
 aqpbm-harness = { path = "aqpbm-harness" }
+aqpbm-engines-external = { path = "aqpbm-engines-external" }
 # sketch-runtime = { path = "sketch-runtime" }  # parked;
 
 [profile.release]
