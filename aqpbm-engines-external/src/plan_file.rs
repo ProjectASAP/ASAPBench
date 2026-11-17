@@ -5,8 +5,10 @@
 //! types: sketch-bench does not depend on ASAPPlanner, and a field the
 //! translators do not read is ignored. Every field that can change an
 //! answer (predicates, filters, HAVING, the summary input, a regrouping
-//! merge, `without` grouping) is decoded, so a translator either has a rule
-//! for it or refuses the node.
+//! merge, `without` grouping, a binary operator's matching) is decoded, so
+//! a translator either has a rule for it or refuses the node. Operator and
+//! field names follow the planner's (`SummaryTumblingWindowChain`,
+//! `FinalizeExactAccumulator`).
 
 use serde_json::{Map, Value};
 
@@ -42,11 +44,29 @@ pub struct PlanNode {
     pub timing: Timing,
     /// How long its output is kept.
     pub lifetime: Lifetime,
+    /// How far back the node's input data must be kept (wire
+    /// `retention_ms`), e.g. 3,600,000 for the windows a 1 h range reads;
+    /// `None` when the planner sets none.
+    pub retention_ms: Option<u64>,
     /// The names of the node's output columns, in order.
     pub output_columns: Vec<String>,
     /// The output columns that are labels (wire dtype `{"Plain": "utf8"}`),
     /// in order, including the series identity.
     pub label_columns: Vec<String>,
+    /// The output columns that are timestamps (wire dtype `{"Plain":
+    /// "timestamp"}`), e.g. `ts`. A column that is neither a label nor a
+    /// timestamp is a value column, e.g. `value` or `sum`.
+    pub timestamp_columns: Vec<String>,
+}
+
+impl PlanNode {
+    /// Whether output column `index` is a value column: neither a label
+    /// nor a timestamp (e.g. `sum` in `[job, sum]`).
+    pub fn is_value_column(&self, index: usize) -> bool {
+        self.output_columns.get(index).is_some_and(|name| {
+            !self.label_columns.contains(name) && !self.timestamp_columns.contains(name)
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,8 +75,10 @@ pub enum Timing {
     QueryTime,
 }
 
+/// The planner's `Lifetime`, with its names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lifetime {
+    /// Not kept: discarded once its consumer has run (wire `"None"`).
     None,
     OneEvaluation,
     AcrossEvaluations,
@@ -73,8 +95,8 @@ pub enum PlanOperator {
         kind: RangeKind,
         range_ms: u64,
     },
-    /// `SummaryTumblingWindowChain`: per-window state built at `width_ms`.
-    WindowChain {
+    /// Per-window state built at tumbling windows of `width_ms`.
+    SummaryTumblingWindowChain {
         child: NodeId,
         family: SummaryFamily,
         width_ms: u64,
@@ -93,8 +115,8 @@ pub enum PlanOperator {
         children: Vec<NodeId>,
         group_by: Option<Vec<usize>>,
     },
-    /// `FinalizeExactAccumulator`.
-    Finalize {
+    /// The value of an exact state (`SummaryAgg` or merged windows).
+    FinalizeExactAccumulator {
         child: NodeId,
     },
     SummaryEstimate {
@@ -104,8 +126,26 @@ pub enum PlanOperator {
         child: NodeId,
         measures: Vec<Measure>,
         reduction: Reduction,
-        filters: Vec<Value>,
+        /// One optional filter per measure (wire `filters`, e.g. `[null]`);
+        /// empty when no measure has one.
+        measure_filters: Vec<Option<Value>>,
         having: Option<Value>,
+    },
+    /// The output columns, each an expression over the child's columns,
+    /// e.g. `{"Column": 0}` or `{"Cast": {"expr": {"Column": 2}, "to":
+    /// "float64", "try_cast": false}}`, in output order.
+    Project {
+        child: NodeId,
+        expressions: Vec<Value>,
+    },
+    /// `lhs <operator> rhs` per matching series; `operator` is the wire
+    /// `BinaryOperator`, e.g. `{"kind": {"Arithmetic": "Div"},
+    /// "vector_match": null, ...}`.
+    BinaryOp {
+        lhs: NodeId,
+        rhs: NodeId,
+        operator: Value,
+        return_bool: bool,
     },
     /// Any operator this decoder does not read, named `<side>.<operator>`,
     /// e.g. `"ASAP.FancyNewOp"`. Decoded so the plan loads; never translated.
@@ -130,8 +170,10 @@ pub enum RangeKind {
 }
 
 /// A Scan predicate. `{"Compare": {"left": {"Column": 2}, "op": "Eq",
-/// "right": {"Literal": {"Utf8": "j3"}}, ...}}` is `LabelEquals`; every
-/// other predicate is kept as is.
+/// "right": {"Literal": {"Utf8": "j3"}}, "semantics": "promql"}}` is
+/// `LabelEquals` (PromQL `job="j3"`, where `job=""` also matches a series
+/// without the label); every other predicate, including the same
+/// comparison with SQL semantics, is kept as is.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Predicate {
     LabelEquals { column: usize, value: String },
@@ -284,10 +326,12 @@ impl PlanOperator {
         match self {
             PlanOperator::Scan { .. } | PlanOperator::Other { .. } => Vec::new(),
             PlanOperator::TimeRange { child, .. }
-            | PlanOperator::WindowChain { child, .. }
+            | PlanOperator::SummaryTumblingWindowChain { child, .. }
             | PlanOperator::SummaryAgg { child, .. }
-            | PlanOperator::Finalize { child }
-            | PlanOperator::Aggregate { child, .. } => vec![*child],
+            | PlanOperator::FinalizeExactAccumulator { child }
+            | PlanOperator::Aggregate { child, .. }
+            | PlanOperator::Project { child, .. } => vec![*child],
+            PlanOperator::BinaryOp { lhs, rhs, .. } => vec![*lhs, *rhs],
             PlanOperator::SummaryEstimate { summary_input } => vec![*summary_input],
             PlanOperator::SummaryMerge { children, .. } => children.clone(),
         }
@@ -314,19 +358,26 @@ fn node_of(position: usize, node: &Value) -> Result<PlanNode, TranslationError> 
         Some(schema) => columns_of(schema)?,
         None => Vec::new(),
     };
-    let output_columns = columns.iter().map(|(name, _)| name.clone()).collect();
-    let label_columns = columns
-        .into_iter()
-        .filter(|(_, is_label)| *is_label)
-        .map(|(name, _)| name)
-        .collect();
+    let names_of = |kind: ColumnKind| {
+        columns
+            .iter()
+            .filter(|(_, k)| *k == kind)
+            .map(|(name, _)| name.clone())
+            .collect()
+    };
+    let retention_ms = match node.get("retention_ms") {
+        None | Some(Value::Null) => None,
+        Some(ms) => Some(ms.as_u64().ok_or_else(|| malformed("retention_ms"))?),
+    };
     Ok(PlanNode {
         id,
         operator: operator_of(field(node, "payload")?)?,
         timing,
         lifetime,
-        output_columns,
-        label_columns,
+        retention_ms,
+        output_columns: columns.iter().map(|(name, _)| name.clone()).collect(),
+        label_columns: names_of(ColumnKind::Label),
+        timestamp_columns: names_of(ColumnKind::Timestamp),
     })
 }
 
@@ -365,7 +416,7 @@ fn operator_of(payload: &Value) -> Result<PlanOperator, TranslationError> {
                     .ok_or_else(|| malformed("range too long"))?,
             }
         }
-        "SummaryTumblingWindowChain" => PlanOperator::WindowChain {
+        "SummaryTumblingWindowChain" => PlanOperator::SummaryTumblingWindowChain {
             child: index(field(body, "child")?)?,
             family: family_of(field(body, "summary_type")?)?,
             width_ms: field(body, "tumbling_window_width_ms")?
@@ -399,7 +450,7 @@ fn operator_of(payload: &Value) -> Result<PlanOperator, TranslationError> {
                 ),
             },
         },
-        "FinalizeExactAccumulator" => PlanOperator::Finalize {
+        "FinalizeExactAccumulator" => PlanOperator::FinalizeExactAccumulator {
             child: index(field(body, "child")?)?,
         },
         "SummaryEstimate" => PlanOperator::SummaryEstimate {
@@ -412,12 +463,32 @@ fn operator_of(payload: &Value) -> Result<PlanOperator, TranslationError> {
                 .map(measure_of)
                 .collect::<Result<Vec<_>, _>>()?,
             reduction: reduction_of(field(body, "reduction")?)?,
-            filters: body
-                .get("filters")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default(),
+            // `filters` may be absent on the wire (serde default: none).
+            measure_filters: match optional(body, "filters") {
+                None => Vec::new(),
+                Some(filters) => filters
+                    .as_array()
+                    .ok_or_else(|| malformed("`filters` is not a list"))?
+                    .iter()
+                    .map(|filter| (!filter.is_null()).then(|| filter.clone()))
+                    .collect(),
+            },
             having: optional(body, "having"),
+        },
+        "Project" => PlanOperator::Project {
+            child: index(field(body, "child")?)?,
+            expressions: array(body, "cols")?
+                .iter()
+                .map(|column| field(column, "expr").cloned())
+                .collect::<Result<Vec<_>, _>>()?,
+        },
+        "BinaryOp" => PlanOperator::BinaryOp {
+            lhs: index(field(body, "lhs")?)?,
+            rhs: index(field(body, "rhs")?)?,
+            operator: field(body, "operator")?.clone(),
+            return_bool: field(body, "return_bool")?
+                .as_bool()
+                .ok_or_else(|| malformed("return_bool"))?,
         },
         _ => PlanOperator::Other {
             kind: format!("{side}.{name}"),
@@ -443,7 +514,7 @@ fn source_of(source: &Value) -> Result<Source, TranslationError> {
 fn predicate_of(predicate: &Value) -> Predicate {
     let label_equals = || {
         let compare = predicate.get("Compare")?;
-        if compare.get("op")?.as_str()? != "Eq" {
+        if compare.get("op")?.as_str()? != "Eq" || compare.get("semantics")?.as_str()? != "promql" {
             return None;
         }
         let column = compare.get("left")?.get("Column")?.as_u64()? as usize;
@@ -514,16 +585,30 @@ fn measure_of(measure: &Value) -> Result<Measure, TranslationError> {
     })
 }
 
-/// Each output column's name, and whether it is a label (`{"Plain": "utf8"}`).
-fn columns_of(schema: &Value) -> Result<Vec<(String, bool)>, TranslationError> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColumnKind {
+    /// `{"Plain": "utf8"}`.
+    Label,
+    /// `{"Plain": "timestamp"}`.
+    Timestamp,
+    /// Anything else: a value, or a state.
+    Other,
+}
+
+/// Each output column's name and kind.
+fn columns_of(schema: &Value) -> Result<Vec<(String, ColumnKind)>, TranslationError> {
     array(schema, "fields")?
         .iter()
         .map(|column| {
             let name = field(column, "name")?
                 .as_str()
                 .ok_or_else(|| malformed("column name"))?;
-            let is_label = column.get("dtype") == Some(&serde_json::json!({"Plain": "utf8"}));
-            Ok((name.to_string(), is_label))
+            let kind = match column.get("dtype").and_then(|d| d.get("Plain")?.as_str()) {
+                Some("utf8") => ColumnKind::Label,
+                Some("timestamp") => ColumnKind::Timestamp,
+                _ => ColumnKind::Other,
+            };
+            Ok((name.to_string(), kind))
         })
         .collect()
 }

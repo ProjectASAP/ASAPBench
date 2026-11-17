@@ -96,8 +96,8 @@ fn stored_rate_is_right_under_parallel_reads() {
     let rows = "SELECT fromUnixTimestamp64Milli(toInt64(s * 1000)) AS ts, \
                 toFloat64(s * (1 + k % 7)) AS value, concat('j', toString(k % 10)) AS job, \
                 concat('requests_total{k=\"', toString(k), '\"}') AS id, s * 1000 AS s_ms \
-                FROM (SELECT number + 1 AS s FROM numbers(600)) \
-                CROSS JOIN (SELECT number AS k FROM numbers(2000))";
+                FROM (SELECT number + 1 AS s FROM numbers(600)) AS samples \
+                CROSS JOIN (SELECT number AS k FROM numbers(2000)) AS counters";
     let inserts = ten_second_inserts(rows);
     let expected: Vec<(String, f64)> = (0..10)
         .map(|job| {
@@ -217,7 +217,8 @@ fn overlapping_stored_segments_are_an_error() {
             ),
         )
     };
-    let setup = vec!["SYSTEM STOP MERGES".into(), rows(1, 300), rows(250, 600)];
+    // The second insert goes back to 400 s, inside the window it reads.
+    let setup = vec!["SYSTEM STOP MERGES".into(), rows(1, 450), rows(400, 600)];
     let error = run_clickhouse(&script(&deployment, &setup, 0), 600_000).unwrap_err();
     assert!(error.contains("overlap in time"), "{error}");
 }
@@ -246,7 +247,7 @@ fn unaligned_evaluation_time_is_an_error() {
 }
 
 /// T3 and L5: the TTL statements are accepted, and a NULL value is refused
-/// under `INSERT_SETTINGS` in both a `VALUES` and a `JSONEachRow` insert.
+/// under `INSERT_SETTINGS` in both a `VALUES` and an `INSERT … SELECT`.
 #[test]
 #[ignore = "needs ClickHouse 26.8.39.13 (AQPBM_CLICKHOUSE_LOCAL)"]
 fn ttl_statements_apply_and_null_values_are_refused() {
@@ -265,8 +266,7 @@ fn ttl_statements_apply_and_null_values_are_refused() {
         ),
         format!(
             "INSERT INTO src_latency (ts, value, job, `$promql_series_identity`) \
-             SETTINGS {INSERT_SETTINGS} FORMAT JSONEachRow \
-             {{\"ts\": 1000, \"value\": null, \"job\": \"j3\", \"$promql_series_identity\": \"a\"}}"
+             SETTINGS {INSERT_SETTINGS} SELECT toDateTime64(1, 3), CAST(NULL, 'Nullable(Float64)'), 'j3', 'a'"
         ),
     ] {
         let script = script(&deployment, &[insert_null], 0);

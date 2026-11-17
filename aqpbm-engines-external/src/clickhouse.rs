@@ -8,24 +8,33 @@
 //! carries it; then each root is translated from these node patterns, and any
 //! other pattern is refused:
 //!
-//! * a stored chain of exact Sum/Count/Min/Max/Rate/Increase, per series,
-//!   over an ingestion-time Scan, read by `TimeRange` + `SummaryMerge` +
+//! * a stored chain of exact Sum/Count/Min/Max (per series or grouped) or
+//!   Rate/Increase (per series) over an ingestion-time Scan, read by
+//!   `TimeRange` + `SummaryMerge` + `FinalizeExactAccumulator`;
+//! * a query-time `SummaryAgg` of the same kinds over `TimeRange` + `Scan`
+//!   (Sum/Count/Min/Max also over another pattern, per series or grouped),
+//!   optionally regrouped by a `SummaryMerge`, then
 //!   `FinalizeExactAccumulator`;
-//! * a query-time `SummaryAgg` of the same kinds, per series, over
-//!   `TimeRange` + `Scan`, then `FinalizeExactAccumulator`;
-//! * `Aggregate` (`sum`, `count`, `min`, `max`, `avg`, `quantile`) over a
-//!   query-time `TimeRange` + `Scan` or over another pattern.
+//! * an instant `TimeRange` over a query-time `Scan`: each series' latest
+//!   sample in the lookback;
+//! * `Aggregate` (`sum`, `count`, `min`, `max`, `avg`, `quantile`, `top_k`)
+//!   over a query-time `TimeRange` + `Scan` or over another pattern;
+//! * `Project` of columns and casts, and arithmetic `BinaryOp` between two
+//!   patterns with the same labels.
 //!
 //! Windows are right-closed, `(t − range, t]`, like the planner's. A query
-//! that reads stored windows is right only at a `t` that is a window end:
+//! that reads stored windows is right only at a `t` that is a window end, so
+//! it fails (`throwIf`) at any other `t`;
 //! [`ClickHouseDeployment::query_time_steps_ms`] gives the step `t` must be a
 //! multiple of. Rate and increase follow Prometheus `extrapolatedRate`
 //! (`promql/functions.go`, v3.15.1).
 //!
 //! A stored counter chain keeps `deltaSumTimestamp` states, which add 0 for
-//! the step across a counter reset (a [`Substitution`]). They also need each
-//! series' rows inserted in time order, so that the states of one window do
-//! not overlap in time: insert time-ordered chunks, one after another.
+//! the step across a counter reset (a [`Substitution`]). Each stored row is
+//! read as one time-ordered segment of one series and the segments are
+//! joined in time order, so the answer does not depend on how ClickHouse
+//! merges states. Each segment must be in time order: insert each series'
+//! rows in time order, in time-ordered chunks, one after another.
 
 use std::collections::BTreeMap;
 
@@ -37,8 +46,16 @@ use crate::plan_file::{
 };
 use crate::{NodeId, SharingLost, Substitution, TranslationError};
 
-/// The plan's series identity column, a label column like any other.
+/// The plan's series identity column, a label column like any other. It has
+/// one value per series, so it is a plain `String`: `LowCardinality` pays
+/// off only below about ten thousand distinct values.
 const SERIES_IDENTITY: &str = "$promql_series_identity";
+
+/// The settings every `INSERT` into a source table uses: a NULL value is an
+/// error instead of being stored as 0 (PromQL samples are never NULL), in
+/// a `VALUES` insert and in an `INSERT … SELECT`. A JSON input format reads
+/// a `null` Float64 as NaN even so, so the ingest does not use one.
+pub const INSERT_SETTINGS: &str = "input_format_null_as_default = 0, insert_null_as_default = 0";
 
 /// What a plan becomes on ClickHouse.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,10 +67,24 @@ pub struct ClickHouseDeployment {
     /// One `SELECT` per query root, in root order, with the parameter `{t:Int64}`.
     pub queries: Vec<String>,
     /// Per query, the step its evaluation time `t` must be a multiple of: the
-    /// window width of the stored chains it reads (1 when it reads none).
+    /// window widths of the stored chains it reads (1 when it reads none).
     pub query_time_steps_ms: Vec<u64>,
+    /// How long each table's rows must be kept, from the plan's
+    /// `retention_ms`. Not applied by [`Self::script`]; see
+    /// [`Self::ttl_statements`].
+    pub table_retention: Vec<TableRetention>,
     pub substitutions: Vec<Substitution>,
     pub sharing_lost: Vec<SharingLost>,
+}
+
+/// A table's retention: rows whose time is older than `retention_ms` before
+/// the newest evaluation are no longer read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableRetention {
+    pub table: String,
+    /// The SQL of a row's time as a `DateTime`, e.g. `toDateTime(ts)`.
+    pub row_time_sql: String,
+    pub retention_ms: u64,
 }
 
 impl ClickHouseDeployment {
@@ -66,6 +97,24 @@ impl ClickHouseDeployment {
             .map(|statement| format!("{statement};\n\n"))
             .collect()
     }
+
+    /// One `ALTER TABLE … MODIFY TTL` per retained table, rounded up to whole
+    /// seconds. A TTL deletes rows older than `now()` minus the retention, so
+    /// apply these only when the data's timestamps are wall-clock time:
+    /// under replayed data they would delete the replayed rows at once.
+    pub fn ttl_statements(&self) -> Vec<String> {
+        self.table_retention
+            .iter()
+            .map(|retention| {
+                format!(
+                    "ALTER TABLE {} MODIFY TTL {} + toIntervalSecond({})",
+                    retention.table,
+                    retention.row_time_sql,
+                    retention.retention_ms.div_ceil(1000)
+                )
+            })
+            .collect()
+    }
 }
 
 /// Translates `plan`; the first node with no rule is refused.
@@ -76,21 +125,31 @@ pub fn translate(plan: &PlanFile) -> Result<ClickHouseDeployment, TranslationErr
     let mut translator = Translator {
         plan,
         chains: BTreeMap::new(),
-        query_time_step_ms: 1,
     };
     let mut queries = Vec::new();
     let mut query_time_steps_ms = Vec::new();
     for &root in &plan.roots {
-        translator.query_time_step_ms = 1;
-        queries.push(translator.root_query(root)?);
-        query_time_steps_ms.push(translator.query_time_step_ms);
+        let relation = translator.relation(root)?;
+        if relation.state.is_some() {
+            return Err(unsupported(root, "a summary state as a query result"));
+        }
+        queries.push(relation.sql);
+        query_time_steps_ms.push(relation.step_ms);
     }
     let mut tables = source_tables(plan);
+    let mut table_retention = source_retention(plan);
     let mut materialized_views = Vec::new();
     let mut substitutions = Vec::new();
     for chain in translator.chains.values() {
         tables.push(chain.table());
         materialized_views.push(chain.view());
+        if let Some(retention_ms) = chain.retention_ms {
+            table_retention.push(TableRetention {
+                table: chain.table_name(),
+                row_time_sql: "toDateTime(intDiv(window_end_ms, 1000))".into(),
+                retention_ms,
+            });
+        }
         if chain.kind.is_counter() {
             substitutions.push(Substitution {
                 node: chain.node,
@@ -106,6 +165,7 @@ pub fn translate(plan: &PlanFile) -> Result<ClickHouseDeployment, TranslationErr
         materialized_views,
         queries,
         query_time_steps_ms,
+        table_retention,
         substitutions,
         sharing_lost: sharing_lost(plan),
     })
@@ -134,12 +194,21 @@ fn refuse_unsupported_fields(node: &PlanNode) -> Result<(), TranslationError> {
             if *source == Source::Table {
                 return refuse("table source");
             }
-            if predicates.iter().any(|p| matches!(p, Predicate::Other(_))) {
-                return refuse("predicate");
+            for predicate in predicates {
+                let Predicate::LabelEquals { column, .. } = predicate else {
+                    return refuse("predicate");
+                };
+                let on_label = node
+                    .output_columns
+                    .get(*column)
+                    .is_some_and(|name| node.label_columns.contains(name));
+                if !on_label {
+                    return refuse("predicate on a non-label column");
+                }
             }
             Ok(())
         }
-        PlanOperator::WindowChain {
+        PlanOperator::SummaryTumblingWindowChain {
             family,
             reduction,
             input,
@@ -166,17 +235,13 @@ fn refuse_unsupported_fields(node: &PlanNode) -> Result<(), TranslationError> {
                 SummaryFamily::Sketch(algorithm) => refuse(&format!("sketch {algorithm}")),
             }
         }
-        PlanOperator::SummaryMerge { group_by, .. } => match group_by {
-            Some(_) => refuse("regrouping merge"),
-            None => Ok(()),
-        },
         PlanOperator::Aggregate {
-            filters,
+            measure_filters,
             having,
             reduction,
             ..
         } => {
-            if !filters.is_empty() {
+            if measure_filters.iter().any(Option::is_some) {
                 return refuse("filter");
             }
             if having.is_some() {
@@ -184,12 +249,45 @@ fn refuse_unsupported_fields(node: &PlanNode) -> Result<(), TranslationError> {
             }
             refuse_without(reduction)
         }
-        PlanOperator::TimeRange { kind, .. } => match kind {
-            RangeKind::Range => Ok(()),
-            RangeKind::Instant => refuse("instant selector"),
-        },
-        PlanOperator::Finalize { .. } => Ok(()),
+        PlanOperator::BinaryOp {
+            operator,
+            return_bool,
+            ..
+        } => {
+            if *return_bool {
+                return refuse("bool comparison");
+            }
+            if !operator
+                .get("vector_match")
+                .is_none_or(serde_json::Value::is_null)
+            {
+                return refuse("vector matching");
+            }
+            if operator.get("checked_relative_division") == Some(&Value::Bool(true)) {
+                return refuse("checked relative division");
+            }
+            match arithmetic_operator(operator) {
+                Some(_) => Ok(()),
+                None => refuse(&format!("binary operator {}", operator["kind"])),
+            }
+        }
         PlanOperator::SummaryEstimate { .. } => refuse("summary estimate"),
+        PlanOperator::TimeRange { .. }
+        | PlanOperator::SummaryMerge { .. }
+        | PlanOperator::FinalizeExactAccumulator { .. }
+        | PlanOperator::Project { .. } => Ok(()),
+    }
+}
+
+/// The SQL operator of an arithmetic `BinaryOperator` this translator
+/// supports: `{"kind": {"Arithmetic": "Div"}, ...}` is `/`.
+fn arithmetic_operator(operator: &Value) -> Option<&'static str> {
+    match operator.get("kind")?.get("Arithmetic")?.as_str()? {
+        "Add" => Some("+"),
+        "Sub" => Some("-"),
+        "Mul" => Some("*"),
+        "Div" => Some("/"),
+        _ => None,
     }
 }
 
@@ -217,6 +315,15 @@ impl ExactKind {
         })
     }
 
+    /// The kind of an exact `family` the first pass accepted.
+    fn of_checked(family: &SummaryFamily) -> ExactKind {
+        match family {
+            SummaryFamily::Exact(kind) => ExactKind::of(kind),
+            SummaryFamily::Sketch(_) => None,
+        }
+        .expect("the first pass refuses every other family")
+    }
+
     fn is_counter(self) -> bool {
         matches!(self, ExactKind::Rate | ExactKind::Increase)
     }
@@ -231,9 +338,18 @@ impl ExactKind {
             ExactKind::Rate | ExactKind::Increase => None,
         }
     }
+
+    /// The function that merges partial values of a plain kind: a count of
+    /// counts is their sum.
+    fn merge_function(self) -> Option<&'static str> {
+        match self {
+            ExactKind::Count => Some("sum"),
+            kind => kind.function(),
+        }
+    }
 }
 
-/// `f(value)`, or `count()`: `f`'s call over the samples' values.
+/// `f(value)`, or `count()`: `f`'s call over the input's values.
 fn over_values(function: &str) -> String {
     match function {
         "count" => "count()".into(),
@@ -242,9 +358,77 @@ fn over_values(function: &str) -> String {
 }
 
 /// One `CREATE TABLE` per metric, in order of first Scan, over the union of
-/// its Scans' label columns: in name order, the series identity last.
+/// its Scans' label columns: in name order, the series identity last. The
+/// sorting key puts the labels any Scan filters on first, then the series
+/// identity, then `ts`, so a label filter and a per-series read both use the
+/// primary key; a `minmax` index on `ts` skips the granules outside a time
+/// range.
 fn source_tables(plan: &PlanFile) -> Vec<String> {
-    let mut metrics: Vec<(&str, Vec<&str>)> = Vec::new();
+    let mut metrics: Vec<(&str, Vec<&str>, Vec<&str>)> = Vec::new();
+    for node in &plan.nodes {
+        let PlanOperator::Scan {
+            source: Source::TimeSeries { metric },
+            predicates,
+        } = &node.operator
+        else {
+            continue;
+        };
+        let at = match metrics.iter().position(|(m, ..)| m == metric) {
+            Some(at) => at,
+            None => {
+                metrics.push((metric, Vec::new(), Vec::new()));
+                metrics.len() - 1
+            }
+        };
+        let (_, labels, filtered) = &mut metrics[at];
+        for label in &node.label_columns {
+            if !labels.contains(&label.as_str()) {
+                labels.push(label);
+            }
+        }
+        for predicate in predicates {
+            if let Predicate::LabelEquals { column, .. } = predicate {
+                let name = node.output_columns[*column].as_str();
+                if !filtered.contains(&name) && name != SERIES_IDENTITY {
+                    filtered.push(name);
+                }
+            }
+        }
+    }
+    metrics
+        .into_iter()
+        .map(|(metric, mut labels, mut filtered)| {
+            labels.sort_by_key(|l| (*l == SERIES_IDENTITY, *l));
+            filtered.sort_unstable();
+            let columns: String = labels
+                .iter()
+                .map(|label| format!(", {} {}", quoted(label), label_type(label)))
+                .collect();
+            let sorting_key: Vec<String> = filtered
+                .iter()
+                .chain(&[SERIES_IDENTITY])
+                .map(|label| quoted(label))
+                .chain(["ts".to_string()])
+                .collect();
+            format!(
+                "CREATE TABLE {} (ts DateTime64(3, 'UTC'), value Float64{columns}, \
+                 INDEX ts_minmax ts TYPE minmax GRANULARITY 1) \
+                 ENGINE = MergeTree ORDER BY ({})",
+                source_table(metric),
+                sorting_key.join(", ")
+            )
+        })
+        .collect()
+}
+
+/// Per metric, how long its raw rows are read back, as the planner's
+/// `PhysicalASAPDAG::raw_data_retention` defines it: the longest
+/// `retention_ms` of its raw-data Scans (run at query time, or kept across
+/// evaluations at ingestion time). A metric some such Scan reads unbounded
+/// (no `retention_ms`) keeps every row and has no entry; so has a metric
+/// read only by ingestion-time chains.
+fn source_retention(plan: &PlanFile) -> Vec<TableRetention> {
+    let mut lookback: Vec<(String, Option<u64>)> = Vec::new();
     for node in &plan.nodes {
         let PlanOperator::Scan {
             source: Source::TimeSeries { metric },
@@ -253,35 +437,40 @@ fn source_tables(plan: &PlanFile) -> Vec<String> {
         else {
             continue;
         };
-        let at = match metrics.iter().position(|(m, _)| m == metric) {
-            Some(at) => at,
-            None => {
-                metrics.push((metric, Vec::new()));
-                metrics.len() - 1
-            }
-        };
-        for label in &node.label_columns {
-            if !metrics[at].1.contains(&label.as_str()) {
-                metrics[at].1.push(label);
-            }
+        if !is_raw_data_scan(node) {
+            continue;
+        }
+        let table = source_table(metric);
+        match lookback.iter_mut().find(|(t, _)| *t == table) {
+            Some((_, kept)) => *kept = kept.zip(node.retention_ms).map(|(a, b)| a.max(b)),
+            None => lookback.push((table, node.retention_ms)),
         }
     }
-    metrics
+    lookback
         .into_iter()
-        .map(|(metric, mut labels)| {
-            labels.sort_by_key(|l| (*l == SERIES_IDENTITY, *l));
-            let columns: String = labels
-                .iter()
-                .map(|label| format!(", {} LowCardinality(String)", quoted(label)))
-                .collect();
-            format!(
-                "CREATE TABLE {} (ts DateTime64(3, 'UTC'), value Float64{columns}) \
-                 ENGINE = MergeTree ORDER BY (ts, {})",
-                source_table(metric),
-                quoted(SERIES_IDENTITY)
-            )
+        .filter_map(|(table, retention_ms)| {
+            Some(TableRetention {
+                table,
+                row_time_sql: "toDateTime(ts)".into(),
+                retention_ms: retention_ms?,
+            })
         })
         .collect()
+}
+
+/// Whether `scan` keeps raw rows for its readers (the planner's raw-data
+/// scan): one run at query time, or kept across evaluations at ingestion
+/// time.
+fn is_raw_data_scan(scan: &PlanNode) -> bool {
+    scan.timing == Timing::QueryTime || scan.lifetime == Lifetime::AcrossEvaluations
+}
+
+fn label_type(label: &str) -> &'static str {
+    if label == SERIES_IDENTITY {
+        "String"
+    } else {
+        "LowCardinality(String)"
+    }
 }
 
 /// Query-time nodes two or more readers share.
@@ -303,6 +492,12 @@ fn sharing_lost(plan: &PlanFile) -> Vec<SharingLost> {
 struct Relation {
     sql: String,
     labels: Vec<String>,
+    /// The step the evaluation time must be a multiple of (1 when the
+    /// relation reads no stored windows).
+    step_ms: u64,
+    /// `Some(kind)` when `value` is a query-time `SummaryAgg` state not yet
+    /// finalized: a partial `kind` value a `SummaryMerge` may regroup.
+    state: Option<ExactKind>,
 }
 
 /// Raw samples of a metric in `(t − range, t]`, filtered by labels.
@@ -316,46 +511,62 @@ struct RawSamples {
 struct StoredChain {
     node: NodeId,
     kind: ExactKind,
+    /// The chain's label columns: every label for a per-series chain, the
+    /// group columns for a grouped one.
     labels: Vec<String>,
     width_ms: u64,
     source_table: String,
     /// The chain's Scan predicates, as SQL conditions (empty when none).
     where_sql: String,
+    retention_ms: Option<u64>,
 }
 
+/// The state columns of a stored counter chain: each stored row is one
+/// time-ordered segment of one series' samples.
+const COUNTER_STATE_COLUMNS: &str = "s_sample_count AggregateFunction(count), \
+     s_first_ms AggregateFunction(min, Int64), \
+     s_last_ms AggregateFunction(max, Int64), \
+     s_first_value AggregateFunction(argMin, Float64, Int64), \
+     s_last_value AggregateFunction(argMax, Float64, Int64), \
+     s_positive_delta_sum AggregateFunction(deltaSumTimestamp, Float64, Int64)";
+
 impl StoredChain {
+    fn table_name(&self) -> String {
+        format!("v{}", self.node)
+    }
+
     fn table(&self) -> String {
         let label_columns: String = self
             .labels
             .iter()
-            .map(|label| format!("{} LowCardinality(String), ", quoted(label)))
+            .map(|label| format!("{} {}, ", quoted(label), label_type(label)))
             .collect();
         let states = match self.kind.function() {
-            None => "s_count AggregateFunction(count), s_first_ms AggregateFunction(min, Int64), \
-                     s_last_ms AggregateFunction(max, Int64), \
-                     s_first_value AggregateFunction(argMin, Float64, Int64), \
-                     s_increase AggregateFunction(deltaSumTimestamp, Float64, Int64)"
-                .to_string(),
+            None => COUNTER_STATE_COLUMNS.to_string(),
             Some("count") => "state AggregateFunction(count)".to_string(),
             Some(function) => format!("state AggregateFunction({function}, Float64)"),
         };
+        let sorting_key: Vec<String> = ["window_end_ms".to_string()]
+            .into_iter()
+            .chain(self.labels.iter().map(|l| quoted(l)))
+            .collect();
         format!(
-            "CREATE TABLE v{} ({label_columns}window_end_ms Int64, {states}) \
-             ENGINE = AggregatingMergeTree ORDER BY (window_end_ms, {})",
-            self.node,
-            column_list(&self.labels)
+            "CREATE TABLE {} ({label_columns}window_end_ms Int64, {states}) \
+             ENGINE = AggregatingMergeTree ORDER BY ({})",
+            self.table_name(),
+            sorting_key.join(", ")
         )
     }
 
     fn view(&self) -> String {
         let ts_ms = "toUnixTimestamp64Milli(ts)";
         let width = self.width_ms;
-        let group = column_list(&self.labels);
         let states = match self.kind.function() {
             None => format!(
-                "countState() AS s_count, minState({ts_ms}) AS s_first_ms, \
+                "countState() AS s_sample_count, minState({ts_ms}) AS s_first_ms, \
                  maxState({ts_ms}) AS s_last_ms, argMinState(value, {ts_ms}) AS s_first_value, \
-                 deltaSumTimestampState(value, {ts_ms}) AS s_increase"
+                 argMaxState(value, {ts_ms}) AS s_last_value, \
+                 deltaSumTimestampState(value, {ts_ms}) AS s_positive_delta_sum"
             ),
             Some("count") => "countState() AS state".to_string(),
             Some(function) => format!("{function}State(value) AS state"),
@@ -365,12 +576,26 @@ impl StoredChain {
         } else {
             format!(" WHERE {}", self.where_sql)
         };
+        let window_end = format!("(intDiv({ts_ms} - 1, {width}) + 1) * {width} AS window_end_ms");
+        let group: Vec<String> = self
+            .labels
+            .iter()
+            .map(|l| quoted(l))
+            .chain(["window_end_ms".to_string()])
+            .collect();
+        let select: Vec<String> = self
+            .labels
+            .iter()
+            .map(|l| quoted(l))
+            .chain([window_end, states])
+            .collect();
         format!(
-            "CREATE MATERIALIZED VIEW v{node}_mv TO v{node} AS SELECT {group}, \
-             (intDiv({ts_ms} - 1, {width}) + 1) * {width} AS window_end_ms, {states} \
-             FROM {table}{filter} GROUP BY {group}, window_end_ms",
-            node = self.node,
-            table = self.source_table,
+            "CREATE MATERIALIZED VIEW {table}_mv TO {table} AS SELECT {} \
+             FROM {source}{filter} GROUP BY {}",
+            select.join(", "),
+            group.join(", "),
+            table = self.table_name(),
+            source = self.source_table,
         )
     }
 }
@@ -379,8 +604,6 @@ struct Translator<'a> {
     plan: &'a PlanFile,
     /// The stored chains the queries read, by node.
     chains: BTreeMap<NodeId, StoredChain>,
-    /// The step the current query's `t` must be a multiple of.
-    query_time_step_ms: u64,
 }
 
 impl Translator<'_> {
@@ -388,25 +611,63 @@ impl Translator<'_> {
         &self.plan.nodes[id]
     }
 
-    fn root_query(&mut self, root: NodeId) -> Result<String, TranslationError> {
-        Ok(self.relation(root)?.sql)
-    }
-
+    /// The relation node `id` computes.
     fn relation(&mut self, id: NodeId) -> Result<Relation, TranslationError> {
         let plan = self.plan;
         match &plan.nodes[id].operator {
-            PlanOperator::Finalize { child } => self.finalized(id, *child),
+            PlanOperator::FinalizeExactAccumulator { child } => self.finalized(id, *child),
+            PlanOperator::SummaryAgg {
+                child,
+                family,
+                reduction,
+                ..
+            } => self.summary_agg(id, *child, ExactKind::of_checked(family), reduction),
+            PlanOperator::SummaryMerge { children, group_by } => {
+                let [child] = children[..] else {
+                    return Err(unsupported(id, "merge of several inputs"));
+                };
+                if group_by.is_some()
+                    && matches!(self.node(child).operator, PlanOperator::TimeRange { .. })
+                {
+                    return Err(unsupported(id, "regrouping merge of stored windows"));
+                }
+                let input = self.relation(child)?;
+                let Some(kind) = input.state else {
+                    return Err(unsupported(id, "merge of this operator"));
+                };
+                match group_by {
+                    None => Ok(input),
+                    Some(columns) => self.regrouped(id, child, input, kind, columns),
+                }
+            }
             PlanOperator::Aggregate {
                 child,
                 measures,
                 reduction,
                 ..
             } => self.aggregate(id, *child, measures, reduction),
-            _ => Err(unsupported(id, "this operator as a query result")),
+            PlanOperator::TimeRange {
+                kind: RangeKind::Instant,
+                ..
+            } => self.latest_samples(id),
+            PlanOperator::Project { child, expressions } => self.projected(id, *child, expressions),
+            PlanOperator::BinaryOp {
+                lhs, rhs, operator, ..
+            } => self.binary(id, *lhs, *rhs, operator),
+            _ => Err(unsupported(id, "this operator as a query input")),
         }
     }
 
-    /// `range`, a `TimeRange` over a query-time time-series Scan.
+    /// The relation of `id`, which must not be an unfinalized state.
+    fn value_relation(&mut self, reader: NodeId, id: NodeId) -> Result<Relation, TranslationError> {
+        let relation = self.relation(id)?;
+        if relation.state.is_some() {
+            return Err(unsupported(reader, "a summary state as an input"));
+        }
+        Ok(relation)
+    }
+
+    /// `range`, a range `TimeRange` over a query-time time-series Scan.
     fn raw_samples(&self, range: NodeId) -> Result<RawSamples, TranslationError> {
         let PlanOperator::TimeRange {
             child: scan,
@@ -424,10 +685,13 @@ impl Translator<'_> {
         else {
             return Err(unsupported(range, "time range over this operator"));
         };
-        if scan_node.timing != Timing::QueryTime {
+        // Raw samples are the source table's rows, whether the plan scans
+        // them at query time or keeps them at ingestion time across
+        // evaluations (both are the planner's raw-data scans).
+        if !is_raw_data_scan(scan_node) {
             return Err(unsupported(range, "time range over an ingestion-time scan"));
         }
-        let mut conditions = self.label_conditions(scan)?;
+        let mut conditions = self.label_conditions(scan);
         conditions.push(format!(
             "ts > fromUnixTimestamp64Milli({{t:Int64}} - {range_ms}) \
              AND ts <= fromUnixTimestamp64Milli({{t:Int64}})"
@@ -439,98 +703,219 @@ impl Translator<'_> {
         })
     }
 
+    /// Whether `id` is a range `TimeRange` (its input is raw samples).
+    fn is_range(&self, id: NodeId) -> bool {
+        matches!(
+            self.node(id).operator,
+            PlanOperator::TimeRange {
+                kind: RangeKind::Range,
+                ..
+            }
+        )
+    }
+
     /// The label-equality predicates of Scan `scan`, as SQL conditions.
-    fn label_conditions(&self, scan: NodeId) -> Result<Vec<String>, TranslationError> {
+    fn label_conditions(&self, scan: NodeId) -> Vec<String> {
         let scan_node = self.node(scan);
         let PlanOperator::Scan { predicates, .. } = &scan_node.operator else {
-            return Ok(Vec::new());
+            return Vec::new();
         };
         predicates
             .iter()
-            .map(|predicate| match predicate {
-                Predicate::LabelEquals { column, value } => {
-                    let name = scan_node
-                        .output_columns
-                        .get(*column)
-                        .filter(|name| scan_node.label_columns.contains(name))
-                        .ok_or_else(|| unsupported(scan, "predicate on a non-label column"))?;
-                    Ok(format!("{} = {}", quoted(name), string_literal(value)))
-                }
-                Predicate::Other(_) => Err(unsupported(scan, "predicate")),
+            .map(|predicate| {
+                let Predicate::LabelEquals { column, value } = predicate else {
+                    unreachable!("the first pass refuses every other predicate");
+                };
+                format!(
+                    "{} = {}",
+                    quoted(&scan_node.output_columns[*column]),
+                    string_literal(value)
+                )
             })
             .collect()
     }
 
-    /// `FinalizeExactAccumulator` over a stored chain's merged windows or over
-    /// a query-time `SummaryAgg`.
-    fn finalized(&mut self, id: NodeId, child: NodeId) -> Result<Relation, TranslationError> {
-        let plan = self.plan;
-        match &plan.nodes[child].operator {
-            PlanOperator::SummaryMerge { children, .. } => {
-                let [range] = children[..] else {
-                    return Err(unsupported(child, "merge of several inputs"));
-                };
-                let PlanOperator::TimeRange {
-                    child: chain,
-                    range_ms,
-                    ..
-                } = self.node(range).operator
-                else {
-                    return Err(unsupported(child, "merge of this operator"));
-                };
-                self.stored_read(range, chain, range_ms)
+    /// The names of `columns` of node `of`'s output, each one of `labels`.
+    fn group_labels(
+        &self,
+        reader: NodeId,
+        of: NodeId,
+        columns: &[usize],
+        labels: &[String],
+    ) -> Result<Vec<String>, TranslationError> {
+        let names = &self.node(of).output_columns;
+        columns
+            .iter()
+            .map(|&column| {
+                names
+                    .get(column)
+                    .filter(|name| labels.contains(name))
+                    .cloned()
+                    .ok_or_else(|| unsupported(reader, "group column"))
+            })
+            .collect()
+    }
+
+    /// The labels a reduction keeps of input node `of`.
+    fn reduced_labels(
+        &self,
+        reader: NodeId,
+        of: NodeId,
+        reduction: &Reduction,
+        input_labels: &[String],
+    ) -> Result<Vec<String>, TranslationError> {
+        match reduction {
+            Reduction::PerEntity => Ok(input_labels.to_vec()),
+            Reduction::Reduce { columns, .. } => {
+                self.group_labels(reader, of, columns, input_labels)
             }
-            PlanOperator::SummaryAgg {
-                child: range,
-                family: SummaryFamily::Exact(kind),
-                reduction,
-                ..
-            } => {
-                if *reduction != Reduction::PerEntity {
-                    return Err(unsupported(child, "grouped summary"));
-                }
-                let kind = ExactKind::of(kind).ok_or_else(|| unsupported(child, "exact kind"))?;
-                let PlanOperator::TimeRange { range_ms, .. } = self.node(*range).operator else {
-                    return Err(unsupported(child, "summary over this operator"));
-                };
-                let raw = self.raw_samples(*range)?;
-                let group = column_list(&raw.labels);
-                let sql = match kind.function() {
-                    Some(function) => format!(
-                        "SELECT {group}, {} AS value FROM {} WHERE {} GROUP BY {group}",
-                        over_values(function),
-                        raw.table,
-                        raw.where_sql
-                    ),
-                    None => {
-                        let inner = format!(
-                            "SELECT {group}, \
-                             arraySort(groupArray((toUnixTimestamp64Milli(ts), value))) AS points, \
-                             arrayMap(p -> p.2, points) AS vals, \
-                             length(points) AS n, \
-                             points[1].1 AS first_ms, \
-                             points[n].1 AS last_ms, \
-                             vals[1] AS v_first, \
-                             vals[n] - vals[1] + arraySum(arrayMap((cur, prev) -> \
-                             if(cur < prev, prev, 0), arrayPopFront(vals), arrayPopBack(vals))) \
-                             AS increase \
-                             FROM {} WHERE {} GROUP BY {group} HAVING n >= 2",
-                            raw.table, raw.where_sql
-                        );
-                        extrapolated(&group, &inner, range_ms, kind)
-                    }
-                };
-                Ok(Relation {
-                    sql,
-                    labels: raw.labels,
-                })
-            }
-            _ => Err(unsupported(id, "finalize over this operator")),
         }
     }
 
+    /// `FinalizeExactAccumulator` over a stored chain's merged windows or over
+    /// a query-time state.
+    fn finalized(&mut self, id: NodeId, child: NodeId) -> Result<Relation, TranslationError> {
+        if let PlanOperator::SummaryMerge {
+            children,
+            group_by: None,
+        } = &self.node(child).operator
+        {
+            if let [range] = children[..] {
+                if let PlanOperator::TimeRange {
+                    child: chain,
+                    range_ms,
+                    kind: RangeKind::Range,
+                } = self.node(range).operator
+                {
+                    if matches!(
+                        self.node(chain).operator,
+                        PlanOperator::SummaryTumblingWindowChain { .. }
+                    ) {
+                        return self.stored_read(range, chain, range_ms);
+                    }
+                }
+            }
+        }
+        let mut relation = self.relation(child)?;
+        if relation.state.take().is_none() {
+            return Err(unsupported(id, "finalize over this operator"));
+        }
+        Ok(relation)
+    }
+
+    /// A query-time `SummaryAgg` of `kind` over `child`: raw samples when
+    /// `child` is a range `TimeRange`, otherwise another relation's values.
+    fn summary_agg(
+        &mut self,
+        id: NodeId,
+        child: NodeId,
+        kind: ExactKind,
+        reduction: &Reduction,
+    ) -> Result<Relation, TranslationError> {
+        if self.node(id).timing != Timing::QueryTime {
+            return Err(unsupported(id, "summary built at ingestion"));
+        }
+        if self.is_range(child) {
+            let PlanOperator::TimeRange { range_ms, .. } = self.node(child).operator else {
+                unreachable!("a range");
+            };
+            let raw = self.raw_samples(child)?;
+            if let Some(function) = kind.function() {
+                let labels = self.reduced_labels(id, child, reduction, &raw.labels)?;
+                let from = format!("{} WHERE {}", raw.table, raw.where_sql);
+                return Ok(Relation {
+                    sql: grouped_select(&labels, &over_values(function), &from),
+                    labels,
+                    step_ms: 1,
+                    state: Some(kind),
+                });
+            }
+            if *reduction != Reduction::PerEntity {
+                return Err(unsupported(id, "grouped counter summary"));
+            }
+            let group = column_list(&raw.labels);
+            let inner = format!(
+                "SELECT {group}, \
+                 arraySort(groupArray((toUnixTimestamp64Milli(ts), value))) AS points, \
+                 arrayMap(p -> p.2, points) AS vals, \
+                 length(points) AS n, \
+                 points[1].1 AS first_ms, \
+                 points[n].1 AS last_ms, \
+                 vals[1] AS v_first, \
+                 vals[n] - vals[1] + arraySum(arrayMap((cur, prev) -> \
+                 if(cur < prev, prev, 0), arrayPopFront(vals), arrayPopBack(vals))) \
+                 AS increase \
+                 FROM {} WHERE {} GROUP BY {group} HAVING n >= 2",
+                raw.table, raw.where_sql
+            );
+            return Ok(Relation {
+                sql: extrapolated(&group, &inner, range_ms, kind),
+                labels: raw.labels,
+                step_ms: 1,
+                state: Some(kind),
+            });
+        }
+        let Some(function) = kind.function() else {
+            return Err(unsupported(id, "counter summary over computed values"));
+        };
+        let input = self.value_relation(id, child)?;
+        let labels = self.reduced_labels(id, child, reduction, &input.labels)?;
+        Ok(Relation {
+            sql: grouped_select(
+                &labels,
+                &over_values(function),
+                &format!("( {})", input.sql),
+            ),
+            labels,
+            step_ms: input.step_ms,
+            state: Some(kind),
+        })
+    }
+
+    /// A `SummaryMerge` that regroups the query-time states of `child` by
+    /// `columns` of `child`'s output.
+    fn regrouped(
+        &mut self,
+        id: NodeId,
+        child: NodeId,
+        input: Relation,
+        kind: ExactKind,
+        columns: &[usize],
+    ) -> Result<Relation, TranslationError> {
+        let Some(function) = kind.merge_function() else {
+            return Err(unsupported(id, "regrouping merge of a counter state"));
+        };
+        let labels = self.group_labels(id, child, columns, &input.labels)?;
+        Ok(Relation {
+            sql: grouped_select(
+                &labels,
+                &format!("{function}(value)"),
+                &format!("( {})", input.sql),
+            ),
+            labels,
+            step_ms: input.step_ms,
+            state: Some(kind),
+        })
+    }
+
+    /// An instant `TimeRange` over a query-time Scan: each series' latest
+    /// sample in `(t − lookback, t]`.
+    fn latest_samples(&self, range: NodeId) -> Result<Relation, TranslationError> {
+        let raw = self.raw_samples(range)?;
+        let group = column_list(&raw.labels);
+        Ok(Relation {
+            sql: format!(
+                "SELECT {group}, argMax(value, ts) AS value FROM {} WHERE {} GROUP BY {group}",
+                raw.table, raw.where_sql
+            ),
+            labels: raw.labels,
+            step_ms: 1,
+            state: None,
+        })
+    }
+
     /// The merged windows of stored chain `chain` in `(t − range_ms, t]`,
-    /// read by `TimeRange` node `range`.
+    /// read by `TimeRange` node `range`. `t` must be a window end.
     fn stored_read(
         &mut self,
         range: NodeId,
@@ -544,48 +929,86 @@ impl Translator<'_> {
                 "a range that is not a whole number of windows",
             ));
         }
-        self.query_time_step_ms = lcm(self.query_time_step_ms, stored.width_ms);
+        let width = stored.width_ms;
+        let table = stored.table_name();
         let group = column_list(&stored.labels);
-        let window =
-            format!("window_end_ms > {{t:Int64}} - {range_ms} AND window_end_ms <= {{t:Int64}}");
+        let window = format!(
+            "window_end_ms > {{t:Int64}} - {range_ms} AND window_end_ms <= {{t:Int64}} \
+             AND (SELECT throwIf({{t:Int64}} % {width} != 0, \
+             'the evaluation time is not a multiple of the window width, {width} ms')) = 0"
+        );
         let sql = match stored.kind.function() {
-            Some(function) => format!(
-                "SELECT {group}, {function}Merge(state) AS value FROM v{chain} \
-                 WHERE {window} GROUP BY {group}"
+            Some(function) => grouped_select(
+                &stored.labels,
+                &format!("{function}Merge(state)"),
+                &format!("{table} WHERE {window}"),
             ),
             None => {
+                // Each stored row is one time-ordered segment of a series:
+                // one insert's samples in one window, or adjacent ones a
+                // merge joined. No counter state is merged across rows here,
+                // because a parallel merge of non-adjacent states counts the
+                // increase between them twice. A series' segments are joined
+                // in time order: the step from one segment's last value into
+                // the next one's first value is added when it is an
+                // increase, as `deltaSumTimestamp` does within a segment, and
+                // overlapping segments (rows not inserted in time order) are
+                // an error. A counter chain is per series, so `group`
+                // always holds the series identity.
                 let inner = format!(
-                    "SELECT {group}, countMerge(s_count) AS n, minMerge(s_first_ms) AS first_ms, \
-                     maxMerge(s_last_ms) AS last_ms, argMinMerge(s_first_value) AS v_first, \
-                     deltaSumTimestampMerge(s_increase) AS increase \
-                     FROM v{chain} WHERE {window} GROUP BY {group} HAVING n >= 2"
+                    "SELECT {group}, sum(seg_sample_count) AS n, min(seg_first_ms) AS first_ms, \
+                     max(seg_last_ms) AS last_ms, argMin(seg_first_value, seg_first_ms) AS v_first, \
+                     sum(seg_positive_delta_sum) + sum(step_into_segment) AS increase \
+                     FROM ( SELECT {group}, seg_sample_count, seg_first_ms, seg_last_ms, \
+                     seg_first_value, seg_positive_delta_sum, \
+                     greatest(0, seg_first_value - lagInFrame(seg_last_value, 1, seg_first_value) \
+                     OVER segments) AS step_into_segment, \
+                     throwIf(lagInFrame(seg_last_ms, 1, toInt64(-1)) OVER segments >= seg_first_ms, \
+                     'stored segments of a series overlap in time: insert each series in time order') \
+                     AS segments_overlap \
+                     FROM ( SELECT {group}, \
+                     finalizeAggregation(s_sample_count) AS seg_sample_count, \
+                     finalizeAggregation(s_first_ms) AS seg_first_ms, \
+                     finalizeAggregation(s_last_ms) AS seg_last_ms, \
+                     finalizeAggregation(s_first_value) AS seg_first_value, \
+                     finalizeAggregation(s_last_value) AS seg_last_value, \
+                     finalizeAggregation(s_positive_delta_sum) AS seg_positive_delta_sum \
+                     FROM {table} WHERE {window}) \
+                     WINDOW segments AS (PARTITION BY {group} ORDER BY seg_first_ms \
+                     ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)) \
+                     GROUP BY {group} HAVING n >= 2 AND max(segments_overlap) = 0"
                 );
                 extrapolated(&group, &inner, range_ms, stored.kind)
             }
         };
         let labels = stored.labels.clone();
         self.chains.insert(chain, stored);
-        Ok(Relation { sql, labels })
+        Ok(Relation {
+            sql,
+            labels,
+            step_ms: width,
+            state: None,
+        })
     }
 
     /// The stored chain at `chain`, if this translator supports it:
-    /// ingestion-time, kept across evaluations, per series, over an
-    /// ingestion-time time-series Scan.
+    /// ingestion-time, kept across evaluations, over an ingestion-time
+    /// time-series Scan; a counter chain per series.
     fn stored_chain(&self, chain: NodeId) -> Result<StoredChain, TranslationError> {
         let node = self.node(chain);
-        let PlanOperator::WindowChain {
+        let PlanOperator::SummaryTumblingWindowChain {
             child,
-            family: SummaryFamily::Exact(kind),
+            family,
             reduction,
             width_ms,
             ..
         } = &node.operator
         else {
-            return Err(unsupported(chain, "time range over this operator"));
+            unreachable!("called on a window chain");
         };
-        let kind = ExactKind::of(kind).ok_or_else(|| unsupported(chain, "exact kind"))?;
-        if *reduction != Reduction::PerEntity {
-            return Err(unsupported(chain, "grouped window chain"));
+        let kind = ExactKind::of_checked(family);
+        if kind.is_counter() && *reduction != Reduction::PerEntity {
+            return Err(unsupported(chain, "grouped counter window chain"));
         }
         if *width_ms == 0 {
             return Err(unsupported(chain, "window width 0"));
@@ -610,7 +1033,8 @@ impl Translator<'_> {
             labels: node.label_columns.clone(),
             width_ms: *width_ms,
             source_table: source_table(metric),
-            where_sql: self.label_conditions(*child)?.join(" AND "),
+            where_sql: self.label_conditions(*child).join(" AND "),
+            retention_ms: node.retention_ms,
         })
     }
 
@@ -624,41 +1048,217 @@ impl Translator<'_> {
         let [measure] = measures else {
             return Err(unsupported(id, "several measures"));
         };
-        let value = aggregate_value(id, measure)?;
-        let (from, input_labels) = match self.node(child).operator {
-            PlanOperator::TimeRange { .. } => {
-                let raw = self.raw_samples(child)?;
-                (format!("{} WHERE {}", raw.table, raw.where_sql), raw.labels)
+        if let Some(column) = measure.column {
+            if !self.node(child).is_value_column(column) {
+                return Err(unsupported(id, "measure over a label column"));
             }
-            _ => {
-                let input = self.relation(child)?;
-                (format!("( {})", input.sql), input.labels)
-            }
-        };
-        let labels = match reduction {
-            Reduction::PerEntity => input_labels,
-            Reduction::Reduce { columns, .. } => {
-                let names = &self.node(child).output_columns;
-                columns
-                    .iter()
-                    .map(|&column| {
-                        names
-                            .get(column)
-                            .filter(|name| input_labels.contains(name))
-                            .cloned()
-                            .ok_or_else(|| unsupported(id, "group column"))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?
-            }
-        };
-        let sql = if labels.is_empty() {
-            format!("SELECT {value} AS value FROM {from} HAVING count() > 0")
+        }
+        let (from, input_labels, step_ms, raw) = if self.is_range(child) {
+            let raw = self.raw_samples(child)?;
+            (
+                format!("{} WHERE {}", raw.table, raw.where_sql),
+                raw.labels,
+                1,
+                true,
+            )
         } else {
-            let group = column_list(&labels);
-            format!("SELECT {group}, {value} AS value FROM {from} GROUP BY {group}")
+            let input = self.value_relation(id, child)?;
+            (
+                format!("( {})", input.sql),
+                input.labels,
+                input.step_ms,
+                false,
+            )
         };
-        Ok(Relation { sql, labels })
+        let group = self.reduced_labels(id, child, reduction, &input_labels)?;
+        if measure.kind == "top_k" {
+            if raw {
+                return Err(unsupported(id, "top_k over raw samples"));
+            }
+            let k = argument_count(id, measure, "k")?;
+            let order: Vec<String> = ["value DESC".to_string()]
+                .into_iter()
+                .chain(input_labels.iter().map(|l| quoted(l)))
+                .collect();
+            let by = if group.is_empty() {
+                String::new()
+            } else {
+                format!(" BY {}", column_list(&group))
+            };
+            let select: Vec<String> = input_labels
+                .iter()
+                .map(|l| quoted(l))
+                .chain(["value".to_string()])
+                .collect();
+            return Ok(Relation {
+                sql: format!(
+                    "SELECT {} FROM {from} ORDER BY {} LIMIT {k}{by}",
+                    select.join(", "),
+                    order.join(", ")
+                ),
+                labels: input_labels,
+                step_ms,
+                state: None,
+            });
+        }
+        let value = aggregate_value(id, measure)?;
+        Ok(Relation {
+            sql: grouped_select(&group, &value, &from),
+            labels: group,
+            step_ms,
+            state: None,
+        })
     }
+
+    /// `Project`: each output column is a child label, kept or renamed, or
+    /// the child's value, as is or cast to `Float64`.
+    fn projected(
+        &mut self,
+        id: NodeId,
+        child: NodeId,
+        expressions: &[Value],
+    ) -> Result<Relation, TranslationError> {
+        let input = self.value_relation(id, child)?;
+        let node = self.node(id);
+        let child_node = self.node(child);
+        let mut select = Vec::new();
+        let mut labels = Vec::new();
+        let mut value = None;
+        for (output, expression) in node.output_columns.iter().zip(expressions) {
+            let (column, cast) = match expression {
+                Value::Object(map) if map.contains_key("Column") => (&map["Column"], false),
+                Value::Object(map) if map.contains_key("Cast") => {
+                    let cast = &map["Cast"];
+                    if cast.get("to").and_then(Value::as_str) != Some("float64")
+                        || cast.get("try_cast") != Some(&Value::Bool(false))
+                    {
+                        return Err(unsupported(id, "projected expression"));
+                    }
+                    let column = cast
+                        .get("expr")
+                        .and_then(|e| e.get("Column"))
+                        .ok_or_else(|| unsupported(id, "projected expression"))?;
+                    (column, true)
+                }
+                _ => return Err(unsupported(id, "projected expression")),
+            };
+            let source = column
+                .as_u64()
+                .and_then(|c| child_node.output_columns.get(c as usize))
+                .ok_or_else(|| unsupported(id, "projected column"))?;
+            if node.label_columns.contains(output) {
+                if cast || !input.labels.contains(source) {
+                    return Err(unsupported(id, "projected label"));
+                }
+                select.push(format!("{} AS {}", quoted(source), quoted(output)));
+                labels.push(output.clone());
+            } else {
+                if value.is_some() || input.labels.contains(source) {
+                    return Err(unsupported(id, "projected value"));
+                }
+                let sql = if cast { "toFloat64(value)" } else { "value" };
+                value = Some(format!("{sql} AS value"));
+            }
+        }
+        let value = value.ok_or_else(|| unsupported(id, "projection without a value"))?;
+        select.push(value);
+        Ok(Relation {
+            sql: format!("SELECT {} FROM ( {})", select.join(", "), input.sql),
+            labels,
+            step_ms: input.step_ms,
+            state: None,
+        })
+    }
+
+    /// Arithmetic between the series of `lhs` and `rhs` that have the same
+    /// labels (PromQL one-to-one matching on all labels).
+    fn binary(
+        &mut self,
+        id: NodeId,
+        lhs: NodeId,
+        rhs: NodeId,
+        operator: &Value,
+    ) -> Result<Relation, TranslationError> {
+        let symbol = arithmetic_operator(operator).expect("checked in the first pass");
+        let left = self.value_relation(id, lhs)?;
+        let right = self.value_relation(id, rhs)?;
+        let mut left_set = left.labels.clone();
+        let mut right_set = right.labels.clone();
+        left_set.sort();
+        right_set.sort();
+        if left_set != right_set {
+            return Err(unsupported(id, "binary operation on different label sets"));
+        }
+        let labels = left.labels;
+        let side = |sql: &str, name: &str, side: &str| {
+            let select: Vec<String> = labels
+                .iter()
+                .map(|l| quoted(l))
+                .chain([format!("value AS {name}")])
+                .collect();
+            format!("( SELECT {} FROM ( {sql})) AS {side}", select.join(", "))
+        };
+        // Each side has one row per label set (every relation groups by its
+        // labels), so the join is one-to-one, as PromQL requires.
+        let (join_kind, using) = if labels.is_empty() {
+            ("CROSS JOIN", String::new())
+        } else {
+            ("INNER JOIN", format!(" USING ({})", column_list(&labels)))
+        };
+        let result = format!("toFloat64(lhs_value) {symbol} toFloat64(rhs_value)");
+        let select: Vec<String> = labels
+            .iter()
+            .map(|l| quoted(l))
+            .chain([format!("{result} AS value")])
+            .collect();
+        // A checked finite division (e.g. avg as sum / count) needs finite
+        // operands and a finite quotient; otherwise (e.g. a sum that
+        // overflowed) the planner's executor answers the original query
+        // exactly, which this translation cannot, so it is an error.
+        let checked = if operator.get("checked_finite_division") == Some(&Value::Bool(true)) {
+            format!(
+                " WHERE throwIf(NOT (isFinite(toFloat64(lhs_value)) AND isFinite(toFloat64(rhs_value)) \
+                 AND isFinite({result})), 'a checked division has a value that is not finite') = 0"
+            )
+        } else {
+            String::new()
+        };
+        Ok(Relation {
+            sql: format!(
+                "SELECT {} FROM {} {join_kind} {}{using}{checked}",
+                select.join(", "),
+                side(&left.sql, "lhs_value", "lhs"),
+                side(&right.sql, "rhs_value", "rhs"),
+            ),
+            labels,
+            step_ms: lcm(left.step_ms, right.step_ms),
+            state: None,
+        })
+    }
+}
+
+/// `SELECT <labels>, <value> AS value FROM <from> GROUP BY <labels>`; with no
+/// labels, no GROUP BY and `HAVING count() > 0`, so that an empty input
+/// gives no row (PromQL gives no series), not one row of 0.
+fn grouped_select(labels: &[String], value: &str, from: &str) -> String {
+    if labels.is_empty() {
+        format!("SELECT {value} AS value FROM {from} HAVING count() > 0")
+    } else {
+        let group = column_list(labels);
+        format!("SELECT {group}, {value} AS value FROM {from} GROUP BY {group}")
+    }
+}
+
+/// A whole-number argument of a measure, e.g. `k` of `top_k`.
+fn argument_count(id: NodeId, measure: &Measure, name: &str) -> Result<u64, TranslationError> {
+    if measure.arguments.keys().any(|key| key != name) {
+        return Err(unsupported(id, format!("measure {}", measure.kind)));
+    }
+    measure
+        .arguments
+        .get(name)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| unsupported(id, format!("{} {name}", measure.kind)))
 }
 
 /// The SQL of one Aggregate measure over the input's `value`.
@@ -669,9 +1269,6 @@ fn aggregate_value(id: NodeId, measure: &Measure) -> Result<String, TranslationE
             .keys()
             .any(|key| !allowed.contains(&key.as_str()))
     };
-    if measure.column.is_some() {
-        return Err(unsupported(id, "measure over a column"));
-    }
     match measure.kind.as_str() {
         "sum" | "count" | "min" | "max" | "avg" if !extra_arguments(&[]) => {
             Ok(over_values(&measure.kind))

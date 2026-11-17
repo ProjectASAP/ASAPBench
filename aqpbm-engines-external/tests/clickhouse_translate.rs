@@ -430,12 +430,12 @@ fn average_as_sum_over_count_translates() {
     let expected = format!(
         "SELECT `region` AS `region`, `service` AS `service`, value AS value FROM ( \
          SELECT `region`, `service`, toFloat64(lhs_value) / toFloat64(rhs_value) AS value \
-         FROM ( SELECT `region`, `service`, value AS lhs_value FROM ( {sum})) \
-         INNER JOIN ( SELECT `region`, `service`, value AS rhs_value FROM ( {count})) \
+         FROM ( SELECT `region`, `service`, value AS lhs_value FROM ( {sum})) AS lhs \
+         INNER JOIN ( SELECT `region`, `service`, value AS rhs_value FROM ( {count})) AS rhs \
          USING (`region`, `service`) \
-         WHERE throwIf(isFinite(toFloat64(lhs_value)) AND isFinite(toFloat64(rhs_value)) \
-         AND NOT isFinite(toFloat64(lhs_value) / toFloat64(rhs_value)), \
-         'a checked division of finite values is not finite') = 0)",
+         WHERE throwIf(NOT (isFinite(toFloat64(lhs_value)) AND isFinite(toFloat64(rhs_value)) \
+         AND isFinite(toFloat64(lhs_value) / toFloat64(rhs_value))), \
+         'a checked division has a value that is not finite') = 0)",
         sum = regrouped("sum(value)"),
     );
     assert_eq!(query, normalized(&expected));
@@ -587,7 +587,8 @@ fn goldens_run_on_clickhouse() {
         concat('latency{instance=\"', i, '\"}') FROM numbers(600) \
         ARRAY JOIN ['i1', 'i2', 'i3'] AS i ORDER BY 1";
     assert_eq!(run(&command, "f5.sql", instances, 600_000), "3");
-    assert_eq!(run(&command, "f5.sql", instances, 10_000_000), "");
+    // 9,960,000 ms is a window end (166 windows of 60 s), long after the data.
+    assert_eq!(run(&command, "f5.sql", instances, 9_960_000), "");
 }
 
 /// `job<TAB>rate` rows equal `expected` to 1e-9 (relative).
