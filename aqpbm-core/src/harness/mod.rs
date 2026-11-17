@@ -18,12 +18,12 @@
 //! the per-arm run records ([`records`]). It reads the clocks of
 //! [`crate::metrics`] (`ThreadCpuTime`, `CpuTimeSampler`) rather than its own.
 
-pub mod accuracy;
 pub mod arm_run;
 pub mod conformance;
 pub mod data;
 pub mod data_stats;
 pub mod engine;
+pub mod error_quantiles;
 pub mod fake;
 pub mod fit;
 pub mod gate;

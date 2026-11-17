@@ -1,8 +1,8 @@
 # `aqpbm-core` Harness Module Design
 
-The `harness` module of `aqpbm-core` (`aqpbm_core::harness`) measures an engine under test (an in-process planner and
-executor, an external server such as ClickHouse, or a fake) under one
-measurement protocol. The engine never times itself: the harness feeds it
+The `harness` module of `aqpbm-core` (`aqpbm_core::harness`) measures an
+engine under test (an in-process planner and executor, an external server
+such as ClickHouse, or a fake) under one measurement protocol. The engine never times itself: the harness feeds it
 data, asks it for answers and reads the clocks around every call.
 
 Example: the fake engine answers `sum_over_time(probe[10s])` over the
@@ -28,7 +28,7 @@ engine arm; core's `benchmark_result` records stay per sketch.
 | `arm_run` | `run_arm`: one arm of one workload under the protocol. |
 | `data`, `data_stats` | Workload data as `aqpbm-datagen` descriptions, cut into refresh chunks; per-metric statistics (series count, sample interval, distinct label values, value range and sign). |
 | `fit` | Relative-weighted least squares over named cost constants, and leave-one-setting-out validation. |
-| `accuracy` | Error quantiles and the worst accuracy curve over merge counts. |
+| `error_quantiles` | Error quantiles and the worst accuracy curve over merge counts. Core's `accuracy` comparators produce the per-trial errors it takes. |
 | `machine`, `records`, `rundir` | The machine key, the JSON records of a run, and the run directory they are written to. |
 | `gate`, `sweep` | The gate verdict (selected arm against exact) and sweep arithmetic (regret, ranking agreement). |
 | `fake`, `conformance` | A deterministic fake engine on a fake clock, and the checks every engine adapter must pass. |

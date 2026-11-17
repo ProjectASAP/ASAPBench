@@ -146,8 +146,10 @@ fn a_data_record_regenerates_bit_identical_samples() -> TestResult {
             seed: 42,
         },
     };
-    let dir =
-        std::env::temp_dir().join(format!("aqpbm_harness_data_record_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "aqpbm_core_harness_data_record_{}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     let path = dir.join("data").join("m.datagen.json");
     std::fs::create_dir_all(path.parent().unwrap())?;

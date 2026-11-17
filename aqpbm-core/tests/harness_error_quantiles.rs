@@ -1,7 +1,7 @@
 //! Accuracy curves: nearest-rank error quantiles, and per key the worst of
 //! them over merge counts.
 
-use aqpbm_core::harness::accuracy::{
+use aqpbm_core::harness::error_quantiles::{
     error_quantile, worst_over_merge_counts, AccuracyError, MergeCountErrors,
 };
 use rand::{Rng, SeedableRng};
