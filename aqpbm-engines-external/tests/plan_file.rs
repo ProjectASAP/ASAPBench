@@ -7,7 +7,7 @@ use aqpbm_engines_external::plan_file::{
     SummaryFamily, Timing, SUPPORTED_PLAN_WIRE_VERSION,
 };
 use aqpbm_engines_external::TranslationError;
-use common::{fixture, fixture_value, payload_body};
+use common::{fixture, fixture_value, payload_body, public_fixture};
 use serde_json::json;
 
 #[test]
@@ -36,13 +36,20 @@ fn reads_a_wire_15_plan() {
         scan.output_columns,
         vec!["ts", "value", "job", "$promql_series_identity"]
     );
-    // Labels are the `{"Plain": "utf8"}` columns.
+    // Labels are the `{"Plain": "utf8"}` columns, timestamps the
+    // `{"Plain": "timestamp"}` ones; `value` is neither.
     assert_eq!(scan.label_columns, vec!["job", "$promql_series_identity"]);
+    assert_eq!(scan.timestamp_columns, vec!["ts"]);
+    assert!(scan.is_value_column(1));
+    assert!(!scan.is_value_column(0));
+    assert!(!scan.is_value_column(2));
+    // An ingestion-time Scan carries no retention.
+    assert_eq!(scan.retention_ms, None);
 
     let chain = &plan.nodes[1];
     assert_eq!(
         chain.operator,
-        PlanOperator::WindowChain {
+        PlanOperator::SummaryTumblingWindowChain {
             child: 0,
             family: SummaryFamily::Exact("Sum".into()),
             width_ms: 60_000,
@@ -55,6 +62,8 @@ fn reads_a_wire_15_plan() {
     assert_eq!(chain.timing, Timing::IngestionTime);
     // `{"AcrossEvaluations": "Memory"}` on the wire.
     assert_eq!(chain.lifetime, Lifetime::AcrossEvaluations);
+    // Wire `retention_ms`: the 1 h the query reads back.
+    assert_eq!(chain.retention_ms, Some(3_600_000));
 
     let range = &plan.nodes[2];
     // 3600 s × 1000 + 0 ns / 10⁶.
@@ -69,6 +78,7 @@ fn reads_a_wire_15_plan() {
     assert_eq!(range.timing, Timing::QueryTime);
     // `"None"` on the wire.
     assert_eq!(range.lifetime, Lifetime::None);
+    assert_eq!(range.retention_ms, None);
 
     // `group_by` is absent on the wire when it is `None`.
     assert_eq!(
@@ -79,7 +89,10 @@ fn reads_a_wire_15_plan() {
         }
     );
     assert_eq!(plan.nodes[3].lifetime, Lifetime::OneEvaluation);
-    assert_eq!(plan.nodes[4].operator, PlanOperator::Finalize { child: 3 });
+    assert_eq!(
+        plan.nodes[4].operator,
+        PlanOperator::FinalizeExactAccumulator { child: 3 }
+    );
     assert_eq!(
         plan.nodes[5].operator,
         PlanOperator::Aggregate {
@@ -93,7 +106,7 @@ fn reads_a_wire_15_plan() {
                 columns: vec![2],
                 without: false
             },
-            filters: vec![],
+            measure_filters: vec![],
             having: None,
         }
     );
@@ -124,6 +137,94 @@ fn predicates_decode_to_label_equals() {
         panic!("node 0 is a Scan");
     };
     assert_eq!(predicates, &vec![Predicate::Other(ne)]);
+}
+
+#[test]
+fn only_promql_label_equality_is_label_equals() {
+    // L1: the same comparison with SQL semantics (where `job = ''` does not
+    // match a series without the label) is kept as is.
+    let mut value = fixture_value("max_5m_label_filter");
+    payload_body(&mut value, 0)["predicates"][0]["Compare"]["semantics"] = json!("sql");
+    let sql = payload_body(&mut value, 0)["predicates"][0].clone();
+    let plan = PlanFile::from_value(value).unwrap();
+    let PlanOperator::Scan { predicates, .. } = &plan.nodes[0].operator else {
+        panic!("node 0 is a Scan");
+    };
+    assert_eq!(predicates, &vec![Predicate::Other(sql)]);
+}
+
+#[test]
+fn aggregate_filters_are_one_optional_predicate_per_measure() {
+    // L2: wire `filters` is `Vec<Option<Predicate>>`, one entry per measure.
+    let filter = json!({"Literal": {"Boolean": true}});
+    for (wire, decoded) in [
+        (json!([null]), vec![None]),
+        (json!([filter.clone()]), vec![Some(filter.clone())]),
+        (json!([]), vec![]),
+    ] {
+        let mut value = fixture_value("sot_1h_stored_sum");
+        payload_body(&mut value, 5)["filters"] = wire;
+        let plan = PlanFile::from_value(value).unwrap();
+        let PlanOperator::Aggregate {
+            measure_filters, ..
+        } = &plan.nodes[5].operator
+        else {
+            panic!("node 5 is an Aggregate");
+        };
+        assert_eq!(measure_filters, &decoded);
+    }
+    // The planner's serde default: an absent list is no filter.
+    let mut value = fixture_value("sot_1h_stored_sum");
+    payload_body(&mut value, 5)
+        .as_object_mut()
+        .unwrap()
+        .remove("filters");
+    let plan = PlanFile::from_value(value).unwrap();
+    assert!(matches!(
+        &plan.nodes[5].operator,
+        PlanOperator::Aggregate { measure_filters, .. } if measure_filters.is_empty()
+    ));
+}
+
+#[test]
+fn query_time_scans_carry_their_retention() {
+    // T1: the planner keeps a query-time Scan's rows as long as its readers
+    // read back (`retention_ms`).
+    let plan = fixture("rate_5m_query_time");
+    assert_eq!(plan.nodes[0].timing, Timing::QueryTime);
+    assert_eq!(plan.nodes[0].retention_ms, Some(300_000));
+}
+
+#[test]
+fn projections_and_binary_operators_decode() {
+    // `avg by (region, service) (quantile_over_time(0.9, data[100s]))`, planned
+    // as sum / count: node 6 casts the count, node 10 divides.
+    let plan = public_fixture("mixed-03", "clickhouse.equivalent-only");
+    assert_eq!(
+        plan.nodes[6].operator,
+        PlanOperator::Project {
+            child: 5,
+            expressions: vec![
+                json!({"Column": 0}),
+                json!({"Column": 1}),
+                json!({"Cast": {"expr": {"Column": 2}, "to": "float64", "try_cast": false}}),
+            ],
+        }
+    );
+    assert_eq!(
+        plan.nodes[10].operator,
+        PlanOperator::BinaryOp {
+            lhs: 9,
+            rhs: 6,
+            operator: json!({"checked_relative_division": false,
+                             "checked_finite_division": true,
+                             "kind": {"Arithmetic": "Div"}, "vector_match": null}),
+            return_bool: false,
+        }
+    );
+    assert_eq!(plan.nodes[10].label_columns, vec!["region", "service"]);
+    assert!(plan.nodes[10].is_value_column(2));
+    assert_eq!(plan.readers_of(9), vec![10]);
 }
 
 #[test]

@@ -52,3 +52,60 @@ pub fn golden(name: &str) -> String {
         .join(name);
     std::fs::read_to_string(path).expect("golden")
 }
+
+/// A planner-written fixture of a public workload under
+/// `fixtures/plans/public/`, e.g. `("q4c_sum_over_time__1m_1hz_10s",
+/// "clickhouse.equivalent-only")`.
+pub fn public_fixture(workload: &str, variant: &str) -> PlanFile {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/plans/public")
+        .join(format!("{workload}.{variant}.plan.json"));
+    let text = std::fs::read_to_string(path).expect("public fixture");
+    PlanFile::from_json(&text).expect("public fixture decodes")
+}
+
+/// A public fixture as JSON, to be changed by a mutation.
+pub fn fixture_value_public(workload: &str, variant: &str) -> Value {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/plans/public")
+        .join(format!("{workload}.{variant}.plan.json"));
+    serde_json::from_str(&std::fs::read_to_string(path).expect("public fixture"))
+        .expect("public fixture JSON")
+}
+
+/// The `clickhouse local` command of `AQPBM_CLICKHOUSE_LOCAL`: a shell
+/// command that runs ClickHouse 26.8.39.13 reading SQL on stdin.
+pub fn clickhouse_local() -> String {
+    std::env::var("AQPBM_CLICKHOUSE_LOCAL").expect("AQPBM_CLICKHOUSE_LOCAL")
+}
+
+/// Runs `script` with the query parameter `t`; the TSV output rows, sorted
+/// and joined by newlines, or ClickHouse's error output.
+pub fn run_clickhouse(script: &str, t: i64) -> Result<String, String> {
+    use std::io::Write;
+    let mut child = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("{} --param_t={t}", clickhouse_local()))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("clickhouse local");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(script.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    let mut rows: Vec<String> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    rows.sort_unstable();
+    Ok(rows.join("\n"))
+}
