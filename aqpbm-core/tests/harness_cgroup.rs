@@ -344,16 +344,17 @@ fn the_idle_check_watches_the_server_cores() {
     // core 2: 1 busy tick of 10; core 22: 5 of 10.
     let before = "cpu2 0 0 0 0 0 0 0 0\ncpu22 0 0 0 0 0 0 0 0\n";
     let after = "cpu2 1 0 0 9 0 0 0 0\ncpu22 5 0 0 5 0 0 0 0\n";
-    // No server CPU: 6 busy ticks of 20.
+    // No server CPU: 6 busy ticks of 20, less 4 ticks of rounding.
     assert_eq!(
         foreign_busy_fraction(&[2, 22], before, after, 0, 10_000_000).unwrap(),
-        0.3
+        0.1
     );
     // The server's own work is not foreign load: 6 busy ticks (60 ms at
-    // 10 ms a tick) of 20, the server used 40 ms → 20 ms of 200 ms.
+    // 10 ms a tick) of 20, the server used 10 ms, 2 ticks per core (40 ms)
+    // are rounding → 10 ms of 200 ms.
     assert_eq!(
-        foreign_busy_fraction(&[2, 22], before, after, 40_000_000, 10_000_000).unwrap(),
-        0.1
+        foreign_busy_fraction(&[2, 22], before, after, 10_000_000, 10_000_000).unwrap(),
+        0.05
     );
     // A server busier than the ticks show (tick rounding) is never negative.
     assert_eq!(

@@ -678,9 +678,12 @@ pub fn parse_cpu_list(text: &str) -> Result<Vec<usize>, ProtocolError> {
 /// over the same interval (`server_cpu_ns`), over all ticks of the cores.
 /// A server pinned to these cores runs only on them, so its own merges and
 /// flushes never count as foreign load.
+/// `/proc/stat` counts whole ticks while the server's CPU is read in µs, and
+/// the two are read by separate requests, so up to two ticks per core of
+/// the busy time are rounding, not load: they are forgiven.
 /// Example: cores 2 and 22 over 10 ticks each (`tick_ns` 10 ms, 200 ms in
-/// all), 6 busy ticks (60 ms) of which the server used 40 ms: 20 ms of
-/// 200 ms, 0.1.
+/// all), 10 busy ticks (100 ms) of which the server used 40 ms: 60 ms, less
+/// 40 ms of rounding allowance, is 20 ms of 200 ms, 0.1.
 pub fn foreign_busy_fraction(
     cores: &[usize],
     before: &str,
@@ -702,7 +705,10 @@ pub fn foreign_busy_fraction(
             core: cores.first().copied().unwrap_or(0),
         });
     }
-    let foreign_ns = (busy_ticks * tick_ns).saturating_sub(server_cpu_ns);
+    let rounding_allowance_ns = 2 * tick_ns * cores.len() as u64;
+    let foreign_ns = (busy_ticks * tick_ns)
+        .saturating_sub(server_cpu_ns)
+        .saturating_sub(rounding_allowance_ns);
     Ok(foreign_ns as f64 / (total_ticks * tick_ns) as f64)
 }
 

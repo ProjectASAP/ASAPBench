@@ -163,11 +163,13 @@ pub struct StepCost {
 }
 
 /// The answers of one evaluation: per query id, one value per output series.
-/// An output series keeps its input labels; the query id is the outer key,
-/// so two queries over one metric never share a key and no label name is
-/// reserved. Example: `sum_over_time(probe[10s])` with id `sum` over the
-/// series `probe{instance="instance_0"}` answers under
-/// `"sum" -> {__name__="probe", instance="instance_0"}`.
+/// An output series carries PromQL's output labels: a function or an
+/// aggregation drops `__name__`, and only a bare selector keeps it; every
+/// lane uses this convention so the report can join lanes by label set. The
+/// query id is the outer key, so two queries over one metric never share a
+/// key and no label name is reserved. Example: `sum_over_time(probe[10s])`
+/// with id `sum` over the series `probe{instance="instance_0"}` answers
+/// under `"sum" -> {instance="instance_0"}`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Answers(pub BTreeMap<String, BTreeMap<SeriesLabels, f64>>);
 
