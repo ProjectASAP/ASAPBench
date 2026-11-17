@@ -44,7 +44,7 @@ fn fails(verdict: &GateVerdict) -> bool {
 /// fails; a missing exact arm, a failed selected arm, a NaN error, and a
 /// missing or extra row each fail by name; without the cost gate, cost 500
 /// with a met target passes.
-/// Adapted from ASAPPlanner #1332 `gate_rule_pure`.
+/// Adapted from the ASAPPlanner test `gate_rule_pure`.
 #[test]
 fn gate_rule_pure() {
     assert_eq!(

@@ -10,7 +10,7 @@
 fn main() {
     use aqpbm_harness::engine::StepReport;
     use aqpbm_harness::fake::FakeClock;
-    use aqpbm_harness::protocol::{LoadProbe, Protocol, ProtocolError};
+    use aqpbm_harness::protocol::{EngineClock, LoadProbe, Protocol, ProtocolError};
 
     struct IdleProbe;
     impl LoadProbe for IdleProbe {
@@ -48,11 +48,16 @@ fn main() {
     for &core in &cores {
         let mut ran_on = -1;
         let record = protocol
-            .run_job(core, &mut IdleProbe, &clock, &mut || {
-                // SAFETY: `sched_getcpu` has no preconditions.
-                ran_on = unsafe { libc::sched_getcpu() };
-                Ok(StepReport::default())
-            })
+            .run_job(
+                core,
+                &mut IdleProbe,
+                &EngineClock::CallingThread(&clock),
+                &mut || {
+                    // SAFETY: `sched_getcpu` has no preconditions.
+                    ran_on = unsafe { libc::sched_getcpu() };
+                    Ok(StepReport::default())
+                },
+            )
             .unwrap_or_else(|error| panic!("job on core {core}: {error}"));
         assert_eq!(record.core, core);
         assert_eq!(ran_on, core as i32, "the job on core {core} ran elsewhere");

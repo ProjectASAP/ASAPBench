@@ -15,6 +15,7 @@ use aqpbm_core::metrics::{CpuTimeSampler, ThreadCpuTime};
 use serde::{Deserialize, Serialize};
 
 use crate::engine::{CpuAccounting, EngineError, StepCost, StepReport};
+use crate::fit::FitPoint;
 
 /// The clocks the harness reads around a step.
 pub trait CpuClock {
@@ -59,40 +60,48 @@ impl CpuClock for OsCpuClock {
     }
 }
 
-/// Where a `Processes` engine's CPU is read: a `/proc` directory and the
-/// clock tick rate of its stat counters. Example: on Linux, `/proc` at 100
-/// ticks per second (`getconf CLK_TCK`), so a `utime` of 250 is 2.5 s.
+/// Where a `Processes` engine's CPU is read: the `/proc` root and the
+/// cgroup v2 mount. Example: on Linux, `/proc` and `/sys/fs/cgroup`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProcFs {
-    pub root: PathBuf,
-    pub ticks_per_second: u64,
+pub struct ProcessCpuFiles {
+    pub proc_root: PathBuf,
+    pub cgroup_root: PathBuf,
 }
 
-impl ProcFs {
-    /// The machine's `/proc` and `sysconf(_SC_CLK_TCK)` (100 when unknown).
+impl ProcessCpuFiles {
+    /// The machine's `/proc` and `/sys/fs/cgroup`.
     pub fn os() -> Self {
-        #[cfg(unix)]
-        // SAFETY: `sysconf` reads a constant of the C library and has no
-        // preconditions.
-        let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
-        #[cfg(not(unix))]
-        let ticks = 100;
-        ProcFs {
-            root: PathBuf::from("/proc"),
-            ticks_per_second: if ticks > 0 { ticks as u64 } else { 100 },
+        ProcessCpuFiles {
+            proc_root: PathBuf::from("/proc"),
+            cgroup_root: PathBuf::from("/sys/fs/cgroup"),
         }
     }
 }
 
-/// The clock of a `Processes` engine (an external server): process CPU is the
-/// summed `utime + stime` of the server pids in `<proc>/<pid>/stat`, thread
-/// CPU is always 0 (the harness thread does none of the engine's work), and
-/// wall time is the OS monotonic clock. Example: servers 101 and 102 at
-/// 100 ticks per second with 80 + 20 and 150 + 50 ticks read 3 s.
+/// The clock of a `Processes` engine (an external server). Thread CPU is
+/// always 0 (the harness thread does none of the engine's work), and wall
+/// time is the OS monotonic clock. Process CPU is read at µs or ns
+/// resolution, never from the 10 ms ticks of `/proc/<pid>/stat`:
+///
+/// - when every server pid is in one cgroup v2 group of its own (not the
+///   harness's, not the root), the group's `cpu.stat` `usage_usec`, which
+///   also counts threads and child processes that exited during a step.
+///   Example: a server in a container, group `/system.slice/docker-1a2b.scope`,
+///   with `usage_usec 2500` reads 2,500,000 ns;
+/// - otherwise the sum over the pids' live threads of the first field of
+///   `/proc/<pid>/task/<tid>/schedstat` (ns on CPU). A thread that exits
+///   during a step takes its CPU with it. Example: threads at 2,000 and
+///   3,000 ns read 5,000 ns.
+///
+/// Every reading first checks that each pid still runs: a missing pid is
+/// [`ProtocolError::MissingProcess`], a zombie (state `Z` or `X`)
+/// [`ProtocolError::ProcessExited`].
 #[derive(Debug)]
 pub struct ProcessesCpuClock {
     pids: Vec<u32>,
-    proc_fs: ProcFs,
+    proc_root: PathBuf,
+    /// The `cpu.stat` of the pids' own cgroup; `None` reads `schedstat`.
+    cgroup_cpu_stat: Option<PathBuf>,
     /// The last successful reading, returned after a failed one.
     last_process_cpu_ns: Cell<u64>,
     /// The first failed reading, until [`CpuClock::take_read_error`] takes it.
@@ -100,15 +109,31 @@ pub struct ProcessesCpuClock {
 }
 
 impl ProcessesCpuClock {
-    /// Reads the pids once, so a missing server fails here, before any job.
-    pub fn new(pids: Vec<u32>, proc_fs: ProcFs) -> Result<Self, ProtocolError> {
-        let first = processes_cpu_ns(&proc_fs.root, &pids, proc_fs.ticks_per_second)?;
-        Ok(ProcessesCpuClock {
+    /// Picks the source and reads the pids once, so a missing or exited
+    /// server fails here, before any job.
+    pub fn new(pids: Vec<u32>, files: ProcessCpuFiles) -> Result<Self, ProtocolError> {
+        let cgroup_cpu_stat = own_cgroup_cpu_stat(&files, &pids);
+        let clock = ProcessesCpuClock {
             pids,
-            proc_fs,
-            last_process_cpu_ns: Cell::new(first),
+            proc_root: files.proc_root,
+            cgroup_cpu_stat,
+            last_process_cpu_ns: Cell::new(0),
             read_error: RefCell::new(None),
-        })
+        };
+        clock.last_process_cpu_ns.set(clock.read_cpu_ns()?);
+        Ok(clock)
+    }
+
+    fn read_cpu_ns(&self) -> Result<u64, ProtocolError> {
+        match &self.cgroup_cpu_stat {
+            Some(cpu_stat) => {
+                for &pid in &self.pids {
+                    check_running(&self.proc_root, pid)?;
+                }
+                cgroup_usage_ns(cpu_stat)
+            }
+            None => processes_cpu_ns(&self.proc_root, &self.pids),
+        }
     }
 }
 
@@ -117,11 +142,7 @@ impl CpuClock for ProcessesCpuClock {
         0
     }
     fn process_cpu_ns(&self) -> u64 {
-        match processes_cpu_ns(
-            &self.proc_fs.root,
-            &self.pids,
-            self.proc_fs.ticks_per_second,
-        ) {
+        match self.read_cpu_ns() {
             Ok(ns) => {
                 self.last_process_cpu_ns.set(ns);
                 ns
@@ -140,46 +161,145 @@ impl CpuClock for ProcessesCpuClock {
     }
 }
 
+/// The cgroup v2 path of `<proc_root>/<pid>/cgroup` (its `0::` line), such
+/// as `/system.slice/docker-1a2b.scope`; `None` when unreadable or v1 only.
+fn cgroup_v2_path(proc_root: &Path, pid: &str) -> Option<String> {
+    let text = std::fs::read_to_string(proc_root.join(pid).join("cgroup")).ok()?;
+    text.lines()
+        .find_map(|line| line.strip_prefix("0::"))
+        .map(|path| path.trim().to_string())
+}
+
+/// The `cpu.stat` of the cgroup all of `pids` are in, when that group is
+/// their own: one group for every pid, not the root, not the harness's own
+/// group (`<proc_root>/self`), and its `cpu.stat` readable.
+fn own_cgroup_cpu_stat(files: &ProcessCpuFiles, pids: &[u32]) -> Option<PathBuf> {
+    let group = cgroup_v2_path(&files.proc_root, &pids.first()?.to_string())?;
+    let shared = pids
+        .iter()
+        .all(|pid| cgroup_v2_path(&files.proc_root, &pid.to_string()).as_ref() == Some(&group));
+    if !shared || group == "/" || cgroup_v2_path(&files.proc_root, "self") == Some(group.clone()) {
+        return None;
+    }
+    let cpu_stat = files
+        .cgroup_root
+        .join(group.trim_start_matches('/'))
+        .join("cpu.stat");
+    cgroup_usage_ns(&cpu_stat).ok().map(|_| cpu_stat)
+}
+
+/// `usage_usec` of a cgroup v2 `cpu.stat`, in ns.
+fn cgroup_usage_ns(cpu_stat: &Path) -> Result<u64, ProtocolError> {
+    let parse_error = |message: String| ProtocolError::Parse {
+        what: cpu_stat.display().to_string(),
+        message,
+    };
+    let text = std::fs::read_to_string(cpu_stat).map_err(|error| parse_error(error.to_string()))?;
+    let usage_usec: u64 = text
+        .lines()
+        .find_map(|line| line.strip_prefix("usage_usec "))
+        .ok_or_else(|| parse_error("no usage_usec line".into()))?
+        .trim()
+        .parse()
+        .map_err(|_| parse_error("usage_usec is not a number".into()))?;
+    Ok(usage_usec * 1_000)
+}
+
+/// The state (field 3) of one `/proc/<pid>/stat` line, such as `S` or `Z`.
+/// The command name in parentheses may hold spaces and parentheses.
+pub fn process_state_from_stat(stat: &str) -> Result<char, ProtocolError> {
+    // The command name may hold ") ", so the fields start after the last ')'.
+    stat.rfind(')')
+        .and_then(|end| stat[end + 1..].split_whitespace().next())
+        .and_then(|state| state.chars().next())
+        .ok_or_else(|| ProtocolError::Parse {
+            what: "/proc/<pid>/stat".into(),
+            message: "no state after the command name".into(),
+        })
+}
+
+/// `Ok` while `pid` runs: its stat file exists and its state is neither
+/// zombie (`Z`) nor dead (`X`).
+fn check_running(proc_root: &Path, pid: u32) -> Result<(), ProtocolError> {
+    let path = proc_root.join(pid.to_string()).join("stat");
+    let stat = std::fs::read_to_string(&path).map_err(|_| ProtocolError::MissingProcess {
+        pid,
+        path: path.display().to_string(),
+    })?;
+    match process_state_from_stat(&stat)? {
+        state @ ('Z' | 'X') => Err(ProtocolError::ProcessExited { pid, state }),
+        _ => Ok(()),
+    }
+}
+
+/// The summed CPU of `pids` in ns: per pid, the first field of every
+/// `<proc_root>/<pid>/task/<tid>/schedstat`. A missing pid is
+/// [`ProtocolError::MissingProcess`], an exited one
+/// [`ProtocolError::ProcessExited`]. A thread that exits between listing
+/// and reading is skipped.
+pub fn processes_cpu_ns(proc_root: &Path, pids: &[u32]) -> Result<u64, ProtocolError> {
+    let mut total_ns = 0;
+    for &pid in pids {
+        check_running(proc_root, pid)?;
+        let tasks = proc_root.join(pid.to_string()).join("task");
+        let missing = || ProtocolError::MissingProcess {
+            pid,
+            path: tasks.display().to_string(),
+        };
+        for task in std::fs::read_dir(&tasks).map_err(|_| missing())? {
+            let schedstat = task.map_err(|_| missing())?.path().join("schedstat");
+            let Ok(text) = std::fs::read_to_string(&schedstat) else {
+                continue;
+            };
+            total_ns += text
+                .split_whitespace()
+                .next()
+                .and_then(|ns| ns.parse::<u64>().ok())
+                .ok_or_else(|| ProtocolError::Parse {
+                    what: schedstat.display().to_string(),
+                    message: "the first field is not a number of ns".into(),
+                })?;
+        }
+    }
+    Ok(total_ns)
+}
+
 /// What the harness reads CPU from, per engine accounting: the caller's
 /// clock for a `CallingThread` engine ([`OsCpuClock`], or a fake clock in
-/// tests), and a [`ProcessesCpuClock`] it builds itself over `proc_fs` for a
-/// `Processes` engine, so an external server is never timed on the harness
-/// process.
+/// tests), and a [`ProcessesCpuClock`] it builds itself over
+/// `process_cpu_files` for a `Processes` engine, so an external server is
+/// never timed on the harness process.
 pub struct MeasurementClocks<'a> {
     pub calling_thread: &'a dyn CpuClock,
-    pub proc_fs: ProcFs,
+    pub process_cpu_files: ProcessCpuFiles,
 }
 
 impl<'a> MeasurementClocks<'a> {
-    /// [`OsCpuClock`] and the machine's `/proc`.
-    pub fn os() -> MeasurementClocks<'static> {
-        MeasurementClocks {
-            calling_thread: &OsCpuClock,
-            proc_fs: ProcFs::os(),
-        }
-    }
-
-    /// `calling_thread` and the machine's `/proc`.
+    /// `calling_thread`, and the machine's `/proc` and cgroup mount.
     pub fn with_calling_thread(calling_thread: &'a dyn CpuClock) -> Self {
         MeasurementClocks {
             calling_thread,
-            proc_fs: ProcFs::os(),
+            process_cpu_files: ProcessCpuFiles::os(),
         }
     }
 
     /// The clock an engine with `accounting` is measured on. For
-    /// `Processes(pids)` this reads every pid once and fails on a missing one.
+    /// `Processes(pids)` this reads every pid once and fails on a missing or
+    /// exited one.
     pub fn clock_for(&self, accounting: &CpuAccounting) -> Result<EngineClock<'a>, ProtocolError> {
         Ok(match accounting {
             CpuAccounting::CallingThread => EngineClock::CallingThread(self.calling_thread),
-            CpuAccounting::Processes(pids) => {
-                EngineClock::Processes(ProcessesCpuClock::new(pids.clone(), self.proc_fs.clone())?)
-            }
+            CpuAccounting::Processes(pids) => EngineClock::Processes(ProcessesCpuClock::new(
+                pids.clone(),
+                self.process_cpu_files.clone(),
+            )?),
         })
     }
 }
 
-/// The clock [`MeasurementClocks::clock_for`] picked for one engine.
+/// The clock one engine is measured on, and so the CPU its medians are
+/// taken over: the calling thread's for `CallingThread`, the server
+/// processes' for `Processes`.
 pub enum EngineClock<'a> {
     CallingThread(&'a dyn CpuClock),
     Processes(ProcessesCpuClock),
@@ -193,45 +313,76 @@ impl EngineClock<'_> {
         }
     }
 
-    /// The clock the median of a job is taken on.
-    pub(crate) fn median_clock(&self) -> MedianClock {
+    /// The CPU of `cost` this clock measures the engine by: thread CPU for
+    /// `CallingThread`, process CPU for `Processes`.
+    pub fn engine_cpu_ns(&self, cost: &StepCost) -> u64 {
         match self {
-            EngineClock::CallingThread(_) => MedianClock::Thread,
-            EngineClock::Processes(_) => MedianClock::Process,
+            EngineClock::CallingThread(_) => cost.thread_cpu_ns.unwrap_or(0),
+            EngineClock::Processes(_) => cost.process_cpu_ns,
         }
     }
 }
 
-/// Pins the calling thread to `core` with `sched_setaffinity`. A core outside
-/// the allowed set is refused, naming the set (for example `0-55`).
+/// The cores this process may run on, read once from the calling thread's
+/// affinity before this module pins any thread. A pinned thread (the main
+/// thread after a job on it) narrows its own mask, so a later read would
+/// refuse every other core.
 #[cfg(target_os = "linux")]
-pub fn pin_current_thread(core: usize) -> Result<(), ProtocolError> {
-    let set_bytes = std::mem::size_of::<libc::cpu_set_t>();
-    // SAFETY: `allowed` is a plain bit mask owned by this frame;
-    // `sched_getaffinity` writes at most `set_bytes` into it and the return
-    // value is checked. The process id reads the process's (main thread's)
-    // mask, so a thread pinned earlier does not narrow the allowed set.
-    let allowed = unsafe {
-        let mut allowed: libc::cpu_set_t = std::mem::zeroed();
-        if libc::sched_getaffinity(libc::getpid(), set_bytes, &mut allowed) != 0 {
-            return Err(ProtocolError::Pin {
-                core,
-                message: std::io::Error::last_os_error().to_string(),
-            });
-        }
-        allowed
-    };
-    let max_cores = 8 * set_bytes;
-    // SAFETY: `CPU_ISSET` reads one bit of `allowed` for a core below the set size.
-    let is_allowed = |c: usize| c < max_cores && unsafe { libc::CPU_ISSET(c, &allowed) };
-    if !is_allowed(core) {
-        let cores: Vec<usize> = (0..max_cores).filter(|&c| is_allowed(c)).collect();
+fn allowed_cores() -> Result<&'static [usize], String> {
+    static ALLOWED: OnceLock<Result<Vec<usize>, String>> = OnceLock::new();
+    ALLOWED
+        .get_or_init(|| {
+            let set_bytes = std::mem::size_of::<libc::cpu_set_t>();
+            // SAFETY: `allowed` is a plain bit mask owned by this frame;
+            // `sched_getaffinity` writes at most `set_bytes` into it and the
+            // return value is checked; `CPU_ISSET` reads one bit below the
+            // set size.
+            unsafe {
+                let mut allowed: libc::cpu_set_t = std::mem::zeroed();
+                if libc::sched_getaffinity(0, set_bytes, &mut allowed) != 0 {
+                    return Err(std::io::Error::last_os_error().to_string());
+                }
+                Ok((0..8 * set_bytes)
+                    .filter(|&core| libc::CPU_ISSET(core, &allowed))
+                    .collect())
+            }
+        })
+        .as_deref()
+        .map_err(Clone::clone)
+}
+
+/// Refuses a core outside the allowed set (one that does not exist, or one
+/// `taskset` excluded), naming the set, for example `0-55`.
+#[cfg(target_os = "linux")]
+fn check_core_allowed(core: usize) -> Result<(), ProtocolError> {
+    let allowed = allowed_cores().map_err(|message| ProtocolError::Pin { core, message })?;
+    if allowed.binary_search(&core).is_err() {
         return Err(ProtocolError::CoreNotAllowed {
             core,
-            allowed: core_ranges(&cores),
+            allowed: core_ranges(allowed),
         });
     }
-    // SAFETY: as above; `sched_setaffinity(0, ..)` changes only the calling thread.
+    Ok(())
+}
+
+/// Pinning needs Linux's `sched_setaffinity`; elsewhere it is refused.
+#[cfg(not(target_os = "linux"))]
+fn check_core_allowed(core: usize) -> Result<(), ProtocolError> {
+    Err(ProtocolError::Pin {
+        core,
+        message: "thread pinning is supported on Linux only".into(),
+    })
+}
+
+/// Pins the calling thread to `core` with `sched_setaffinity`. A core outside
+/// the process's allowed set is refused, naming the set (for example `0-55`).
+#[cfg(target_os = "linux")]
+pub fn pin_current_thread(core: usize) -> Result<(), ProtocolError> {
+    check_core_allowed(core)?;
+    let set_bytes = std::mem::size_of::<libc::cpu_set_t>();
+    // SAFETY: `set` is a plain bit mask owned by this frame and `core` is
+    // below its size (it is in the allowed set); `sched_setaffinity(0, ..)`
+    // changes only the calling thread.
     let status = unsafe {
         let mut set: libc::cpu_set_t = std::mem::zeroed();
         libc::CPU_SET(core, &mut set);
@@ -249,10 +400,7 @@ pub fn pin_current_thread(core: usize) -> Result<(), ProtocolError> {
 /// Pinning needs Linux's `sched_setaffinity`; elsewhere it is refused.
 #[cfg(not(target_os = "linux"))]
 pub fn pin_current_thread(core: usize) -> Result<(), ProtocolError> {
-    Err(ProtocolError::Pin {
-        core,
-        message: "thread pinning is supported on Linux only".into(),
-    })
+    check_core_allowed(core)
 }
 
 /// Ascending cores as ranges, as `taskset` writes them: `[0, 1, 2, 5]` is `0-2,5`.
@@ -315,55 +463,6 @@ fn core_ticks(core: usize, stat: &str) -> Result<[u64; 8], ProtocolError> {
             .map_err(|_| parse_error(format!("counter {field:?} is not a number")))?;
     }
     Ok(ticks)
-}
-
-/// `utime + stime` (fields 14 and 15) of one `/proc/<pid>/stat` line, in ns
-/// at `ticks_per_second`. The command name in parentheses may hold spaces and
-/// parentheses.
-pub fn process_cpu_ns_from_stat(stat: &str, ticks_per_second: u64) -> Result<u64, ProtocolError> {
-    let parse_error = |message: &str| ProtocolError::Parse {
-        what: "/proc/<pid>/stat".into(),
-        message: message.into(),
-    };
-    // The command name may hold ") ", so the fields start after the last ')'.
-    let after_comm = stat
-        .rfind(')')
-        .map(|end| &stat[end + 1..])
-        .ok_or_else(|| parse_error("no ')' closing the command name"))?;
-    // Field 3 (state) is the first after the command name, so field n is at
-    // index n - 3.
-    let fields: Vec<&str> = after_comm.split_whitespace().collect();
-    let ticks = |field: usize| -> Result<u64, ProtocolError> {
-        fields
-            .get(field - 3)
-            .ok_or_else(|| parse_error("fewer than 15 fields"))?
-            .parse::<u64>()
-            .map_err(|_| parse_error("utime or stime is not a number"))
-    };
-    if ticks_per_second == 0 {
-        return Err(parse_error("ticks_per_second is 0"));
-    }
-    let cpu_ticks = u128::from(ticks(14)?) + u128::from(ticks(15)?);
-    Ok((cpu_ticks * 1_000_000_000 / u128::from(ticks_per_second)) as u64)
-}
-
-/// The summed CPU of `pids`, read from `<proc_root>/<pid>/stat`. A missing
-/// pid is an error naming it.
-pub fn processes_cpu_ns(
-    proc_root: &Path,
-    pids: &[u32],
-    ticks_per_second: u64,
-) -> Result<u64, ProtocolError> {
-    let mut total_ns = 0;
-    for &pid in pids {
-        let path = proc_root.join(pid.to_string()).join("stat");
-        let stat = std::fs::read_to_string(&path).map_err(|_| ProtocolError::MissingProcess {
-            pid,
-            path: path.display().to_string(),
-        })?;
-        total_ns += process_cpu_ns_from_stat(&stat, ticks_per_second)?;
-    }
-    Ok(total_ns)
 }
 
 /// How busy the machine is; the OS form reads `/proc/stat` and `/proc/loadavg`.
@@ -494,38 +593,39 @@ impl CoreLoad {
 }
 
 impl Protocol {
-    /// Check the core is idle, pin, warm up, run `measured_runs` times, check
-    /// idle again. The calling thread stays pinned to `core` afterwards, so
-    /// the jobs of one run all stay on it; a caller that needs another core
-    /// pins again.
+    /// Check the core exists, check it is idle, pin, warm up, run
+    /// `measured_runs` times, check idle again. The calling thread stays
+    /// pinned to `core` afterwards, so the jobs of one run all stay on it; a
+    /// caller that needs another core pins again.
+    ///
+    /// Each run is timed on `clock`, and the median is the sample in the
+    /// middle by the CPU the clock measures the engine by
+    /// ([`EngineClock::engine_cpu_ns`]): thread CPU for `CallingThread`,
+    /// process CPU for `Processes`, whose samples carry no thread CPU.
     pub fn run_job(
         &self,
         core: usize,
         probe: &mut dyn LoadProbe,
-        clock: &dyn CpuClock,
+        clock: &EngineClock,
         job: &mut dyn FnMut() -> Result<StepReport, EngineError>,
     ) -> Result<JobRecord, ProtocolError> {
-        self.run_job_accounted(core, probe, None, clock, MedianClock::Thread, job)
+        self.run_next_job(core, probe, None, clock, job)
     }
 
-    /// [`Protocol::run_job`] for either accounting: with
-    /// [`MedianClock::Process`] (an engine measured as processes) the samples
-    /// carry no thread CPU and the median is taken over process CPU.
-    ///
-    /// `load_before` is the previous job's after-sample of the same core, when
-    /// the caller runs jobs back to back: nothing but the harness ran on the
-    /// core between the two, so it stands in for a fresh before-sample and
-    /// each job costs one sampling interval instead of two.
-    pub(crate) fn run_job_accounted(
+    /// [`Protocol::run_job`] after another job on the same core.
+    /// `load_before` is the previous job's after-sample: nothing but the
+    /// harness ran on the core between the two, so it stands in for a fresh
+    /// before-sample and each job costs one sampling interval instead of two.
+    pub(crate) fn run_next_job(
         &self,
         core: usize,
         probe: &mut dyn LoadProbe,
         load_before: Option<CoreLoad>,
-        clock: &dyn CpuClock,
-        median_clock: MedianClock,
+        clock: &EngineClock,
         job: &mut dyn FnMut() -> Result<StepReport, EngineError>,
     ) -> Result<JobRecord, ProtocolError> {
         self.check_run_count()?;
+        check_core_allowed(core)?;
         let before = match load_before {
             Some(load) => load,
             None => CoreLoad::sample(probe, core)?,
@@ -542,23 +642,27 @@ impl Protocol {
         for _ in 0..self.warmup_runs {
             job()?;
         }
+        let records_thread_cpu = matches!(clock, EngineClock::CallingThread(_));
+        let cpu = clock.as_clock();
         let mut samples = Vec::with_capacity(self.measured_runs as usize);
         for _ in 0..self.measured_runs {
-            let (thread_before, process_before, wall_before) = (
-                clock.thread_cpu_ns(),
-                clock.process_cpu_ns(),
-                clock.wall_ns(),
-            );
+            // The wall clock is read last before the call and first after
+            // it, so it does not include the CPU clocks' own reads (file
+            // reads for a `Processes` engine).
+            let thread_before = cpu.thread_cpu_ns();
+            let process_before = cpu.process_cpu_ns();
+            let wall_before = cpu.wall_ns();
             let report = job()?;
-            let thread_cpu_ns = clock.thread_cpu_ns().saturating_sub(thread_before);
-            let process_cpu_ns = clock.process_cpu_ns().saturating_sub(process_before);
-            if let Some(error) = clock.take_read_error() {
+            let wall_ns = cpu.wall_ns().saturating_sub(wall_before);
+            let thread_cpu_ns = cpu.thread_cpu_ns().saturating_sub(thread_before);
+            let process_cpu_ns = cpu.process_cpu_ns().saturating_sub(process_before);
+            if let Some(error) = cpu.take_read_error() {
                 return Err(error);
             }
             samples.push(StepCost {
-                thread_cpu_ns: (median_clock == MedianClock::Thread).then_some(thread_cpu_ns),
+                thread_cpu_ns: records_thread_cpu.then_some(thread_cpu_ns),
                 process_cpu_ns,
-                wall_ns: clock.wall_ns().saturating_sub(wall_before),
+                wall_ns,
                 report,
             });
         }
@@ -569,7 +673,7 @@ impl Protocol {
                 busy_fraction: after.busy_fraction,
             });
         }
-        let median = median_sample(&samples, median_clock);
+        let median = median_sample(&samples, clock);
         Ok(JobRecord {
             core,
             busy_before: before.busy_fraction,
@@ -590,24 +694,57 @@ impl Protocol {
     }
 }
 
-/// The clock a job's median is taken on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MedianClock {
-    /// The calling thread's CPU (`CpuAccounting::CallingThread`).
-    Thread,
-    /// The measured processes' CPU (`CpuAccounting::Processes`).
-    Process,
+/// The sample in the middle of an odd number of samples, ordered by the CPU
+/// `clock` measures the engine by; ties keep run order, so the choice is
+/// deterministic.
+fn median_sample(samples: &[StepCost], clock: &EngineClock) -> StepCost {
+    let mut order: Vec<&StepCost> = samples.iter().collect();
+    order.sort_by_key(|sample| clock.engine_cpu_ns(sample));
+    order[order.len() / 2].clone()
 }
 
-/// The sample in the middle of an odd number of samples, ordered by the
-/// median clock; ties keep run order, so the choice is deterministic.
-fn median_sample(samples: &[StepCost], median_clock: MedianClock) -> StepCost {
-    let mut order: Vec<&StepCost> = samples.iter().collect();
-    order.sort_by_key(|sample| match median_clock {
-        MedianClock::Thread => sample.thread_cpu_ns.unwrap_or(0),
-        MedianClock::Process => sample.process_cpu_ns,
-    });
-    order[order.len() / 2].clone()
+/// Times `run(size)` at each size as one protocol job pinned to `core`
+/// ([`Protocol::run_job`]: idle check, warm-up, the median of
+/// `measured_runs` times on `clock`). `run` returns the units it processed;
+/// the point takes the units of the median run. One point per size:
+/// setting = the size, terms = `[units, 1]`, measured = the median's engine
+/// CPU ([`EngineClock::engine_cpu_ns`]). Consecutive sizes share an idle
+/// sample, as the steps of [`crate::arm_run::run_arm`] do.
+///
+/// An engine's calibration plugs in as
+/// `|size| calibratable.prepare_cost_target(&target, size)?()`.
+pub fn measure_sizes(
+    protocol: &Protocol,
+    core: usize,
+    probe: &mut dyn LoadProbe,
+    clock: &EngineClock,
+    sizes: &[u64],
+    run: &mut dyn FnMut(u64) -> Result<u64, EngineError>,
+) -> Result<Vec<FitPoint>, ProtocolError> {
+    let mut load: Option<CoreLoad> = None;
+    let mut points = Vec::with_capacity(sizes.len());
+    for &size in sizes {
+        // Units of every call, warm-up first; the measured ones are the last
+        // `measured_runs`.
+        let mut units_per_call = Vec::new();
+        let job = protocol.run_next_job(core, probe, load, clock, &mut || {
+            units_per_call.push(run(size)?);
+            Ok(StepReport::default())
+        })?;
+        load = Some(job.load_after());
+        let measured_units = &units_per_call[protocol.warmup_runs as usize..];
+        let median_run = job
+            .samples
+            .iter()
+            .position(|sample| *sample == job.median)
+            .expect("the median is one of the samples");
+        points.push(FitPoint {
+            setting: size.to_string(),
+            terms: vec![measured_units[median_run] as f64, 1.0],
+            measured: clock.engine_cpu_ns(&job.median) as f64,
+        });
+    }
+    Ok(points)
 }
 
 /// The median of an odd number of values: the middle one, never a mean.
@@ -622,9 +759,9 @@ pub fn median(values: &[f64]) -> Result<f64, ProtocolError> {
 
 /// `|m_a - m_b| / min(m_a, m_b)` of the medians of two arms that ran the same
 /// plan.
-// TODO(S2, the harness CLI): record the band in the protocol record (a
-// `noise_band` field of `Protocol`, written to `run.json`); until then the
-// caller reports the value.
+// TODO: record the band in the protocol record (a `noise_band` field of
+// `Protocol`, written to `run.json`) once the harness CLI writes it; until
+// then the caller reports the value.
 pub fn noise_band(arm_a: &[f64], arm_b: &[f64]) -> Result<f64, ProtocolError> {
     let (median_a, median_b) = (median(arm_a)?, median(arm_b)?);
     let smaller = median_a.min(median_b);
@@ -678,12 +815,17 @@ pub enum ProtocolError {
     /// A median of zero or less, which cannot scale a noise band.
     #[error("a noise band needs positive medians, got {median}")]
     NonPositiveMedian { median: f64 },
-    /// `/proc/stat` or `/proc/<pid>/stat` text that does not parse.
+    /// `/proc/stat`, `/proc/<pid>/stat`, `schedstat` or `cpu.stat` text that
+    /// does not parse.
     #[error("cannot parse {what}: {message}")]
     Parse { what: String, message: String },
     /// A process whose stat file is missing.
     #[error("process {pid} has no {path}")]
     MissingProcess { pid: u32, path: String },
+    /// A process that exited but is not yet reaped (state `Z`) or is dead
+    /// (`X`): it runs no more, so its CPU no longer grows.
+    #[error("process {pid} has exited (state {state})")]
+    ProcessExited { pid: u32, state: char },
     /// Pinning failed in the OS.
     #[error("pinning to core {core} failed: {message}")]
     Pin { core: usize, message: String },

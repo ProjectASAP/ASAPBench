@@ -2,6 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
+use aqpbm_datagen::{DataDistribution, SeriesLabelSpec, TimeSeriesDescription, UniformParameter};
+use aqpbm_harness::data::DataRecord;
 use aqpbm_harness::engine::{EngineDescription, Footprint, PlanSummary, StepCost};
 use aqpbm_harness::machine::MachineDescription;
 use aqpbm_harness::protocol::{JobRecord, Protocol};
@@ -109,7 +111,7 @@ fn job(core: usize, busy_before: f64, busy_after: f64, loadavg: [f64; 2]) -> Job
 /// `sketch-benefit` on the E5 machine is
 /// `<root>/runs/x86_64-intel-xeon-e5-2683-v3-56c-registered-ddr4/20261116T201500Z-sweep-sketch-benefit/`,
 /// created with `workloads/`, `data/`, `plans/` and `results/`.
-/// Adapted from ASAPPlanner #1332 `gate_output_files`.
+/// Adapted from the ASAPPlanner test `gate_output_files`.
 #[test]
 fn run_dir_is_machine_key_utc_subcommand_label() {
     let root = TempDir::new("run_dir_is_machine_key_utc_subcommand_label");
@@ -299,5 +301,53 @@ fn a_calibration_from_a_dirty_build_names_the_recorded_build() {
     assert!(
         !warning.contains("the engine is a dirty build"),
         "{warning}"
+    );
+}
+
+/// A data record is written to `data/<metric>.datagen.json` and reads back
+/// equal; a metric name with `/` (which would leave `data/`) is refused by
+/// name.
+#[test]
+fn a_data_record_is_filed_under_data_by_metric() {
+    let tmp = TempDir::new("write-data");
+    let run = create(&tmp.0).unwrap();
+    let record = DataRecord {
+        metric: "node_cpu:rate".into(),
+        description: TimeSeriesDescription {
+            labels: vec![SeriesLabelSpec {
+                name: "instance".into(),
+                cardinality: 2,
+                skewness: 0.0,
+            }],
+            series_num: 2,
+            start_ms: 0,
+            sample_interval_ms: 1_000,
+            duration_ms: 60_000,
+            value_distribution: DataDistribution::Uniform(UniformParameter {
+                lower_bound: 0.0,
+                upper_bound: 1.0,
+                seed: 0,
+            }),
+            counter: false,
+            seed: 1,
+        },
+    };
+    let path = run.write_data(&record).unwrap();
+    assert_eq!(
+        path,
+        run.path().join("data").join("node_cpu:rate.datagen.json")
+    );
+    let read_back: DataRecord =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(read_back, record);
+
+    let escaping = DataRecord {
+        metric: "../m".into(),
+        ..record
+    };
+    let error = run.write_data(&escaping).unwrap_err();
+    assert!(
+        matches!(&error, RunDirError::BadName { name, .. } if name == "../m"),
+        "{error:?}"
     );
 }

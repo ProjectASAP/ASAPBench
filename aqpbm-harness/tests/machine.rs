@@ -40,7 +40,7 @@ fn e5(
 /// and `@ 2.00GHz` are dropped from the model, the rest is lowercased and
 /// dash-joined. 56 cores of the E5-2683 v3 with registered DDR4 DIMMs give
 /// `x86_64-intel-xeon-e5-2683-v3-56c-registered-ddr4`.
-/// Moved from ASAPPlanner #1332 `machine_key_from_cpu_cores_memory`.
+/// Moved from the ASAPPlanner test `machine_key_from_cpu_cores_memory`.
 #[test]
 fn machine_key_from_cpu_cores_memory() {
     let machine = e5(E5_MEMORY_KIB, &["Registered-DDR4", "Registered-DDR4"], None);
@@ -56,7 +56,7 @@ fn machine_key_from_cpu_cores_memory() {
 /// The key is a function of architecture, CPU model, cores and memory type
 /// only: this machine's detected key contains no hostname token of 3 or more
 /// characters that the CPU model does not also contain.
-/// Moved from ASAPPlanner #1332 `machine_key_ignores_hostname`.
+/// Moved from the ASAPPlanner test `machine_key_ignores_hostname`.
 #[test]
 fn machine_key_ignores_hostname() {
     let fixture = e5(E5_MEMORY_KIB, &["Registered-DDR4"], None).machine_key();
@@ -86,7 +86,7 @@ fn machine_key_ignores_hostname() {
 /// Total memory is not part of the key: 64 GiB, 256 GiB and `MemTotal`
 /// +0.5% (boot jitter) of the same DIMM type all give `E5_KEY`, while
 /// `memory_kib` differs.
-/// Moved from ASAPPlanner #1332 `machine_key_ignores_memory_size`.
+/// Moved from the ASAPPlanner test `machine_key_ignores_memory_size`.
 #[test]
 fn machine_key_ignores_memory_size() {
     let dimms = ["Registered-DDR4"];
@@ -105,7 +105,7 @@ fn machine_key_ignores_memory_size() {
 /// A VM without EDAC and without an override: `unknown-memory` ends the
 /// key (`...-56c-unknown-memory`), and the warning names it and the
 /// `AQPBM_MEMORY_TYPE` override. Known DIMMs give no warning.
-/// Moved from ASAPPlanner #1332 `machine_key_without_edac_is_unknown_memory`.
+/// Moved from the ASAPPlanner test `machine_key_without_edac_is_unknown_memory`.
 #[test]
 fn machine_key_without_edac_is_unknown_memory() {
     let machine = e5(E5_MEMORY_KIB, &[], None);
@@ -123,7 +123,7 @@ fn machine_key_without_edac_is_unknown_memory() {
 
 /// `--memory-type` / `AQPBM_MEMORY_TYPE` = `Registered-DDR4` supplies the
 /// type when EDAC has none: the key is `E5_KEY` and no warning is given.
-/// Moved from ASAPPlanner #1332 `machine_key_memory_type_override`.
+/// Moved from the ASAPPlanner test `machine_key_memory_type_override`.
 #[test]
 fn machine_key_memory_type_override() {
     let machine = e5(E5_MEMORY_KIB, &[], Some("Registered-DDR4"));
@@ -134,7 +134,7 @@ fn machine_key_memory_type_override() {
 /// DIMMs of different types give the sorted unique values joined, whatever
 /// the DIMM order: `[Registered, LRDIMM, Registered]` and a permutation both
 /// end `-56c-lrdimm-ddr4-registered-ddr4`.
-/// Moved from ASAPPlanner #1332 `machine_key_mixed_dimm_types`.
+/// Moved from the ASAPPlanner test `machine_key_mixed_dimm_types`.
 #[test]
 fn machine_key_mixed_dimm_types() {
     for dimms in [
@@ -150,7 +150,7 @@ fn machine_key_mixed_dimm_types() {
 
 /// A model with `(TM)`, a double space, `@ 2.35GHz` and a trailing `(R)`
 /// still gives only `[a-z0-9-]`, with no leading, trailing or double dash.
-/// Moved from ASAPPlanner #1332 `machine_key_slug_charset`.
+/// Moved from the ASAPPlanner test `machine_key_slug_charset`.
 #[test]
 fn machine_key_slug_charset() {
     let machine = MachineDescription::from_proc(

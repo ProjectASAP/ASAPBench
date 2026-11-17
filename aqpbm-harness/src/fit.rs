@@ -8,9 +8,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::engine::{EngineError, StepReport};
-use crate::protocol::{CoreLoad, CpuClock, LoadProbe, MedianClock, Protocol, ProtocolError};
-
 /// One measurement: the units charged per constant (`terms`, in the order of
 /// the constant names) and the measured value.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -335,56 +332,6 @@ pub fn leave_one_setting_out(
         rms_log_error,
         settings_scored,
     })
-}
-
-/// Times `run(size)` at each size as one protocol job pinned to `core`
-/// ([`Protocol::run_job`]: idle check, warm-up, the median of
-/// `measured_runs` thread-CPU times). `run` returns the units it processed;
-/// the point takes the units of the median run. One point per size:
-/// setting = the size, terms = `[units, 1]`. Consecutive sizes share an idle
-/// sample, as the steps of [`crate::arm_run::run_arm`] do.
-///
-/// An engine's calibration plugs in as
-/// `|size| calibratable.prepare_cost_target(&target, size)?()`.
-pub fn measure_sizes(
-    protocol: &Protocol,
-    core: usize,
-    probe: &mut dyn LoadProbe,
-    clock: &dyn CpuClock,
-    sizes: &[u64],
-    run: &mut dyn FnMut(u64) -> Result<u64, EngineError>,
-) -> Result<Vec<FitPoint>, ProtocolError> {
-    let mut load: Option<CoreLoad> = None;
-    let mut points = Vec::with_capacity(sizes.len());
-    for &size in sizes {
-        // Units of every call, warm-up first; the measured ones are the last
-        // `measured_runs`.
-        let mut units_per_call = Vec::new();
-        let job = protocol.run_job_accounted(
-            core,
-            probe,
-            load,
-            clock,
-            MedianClock::Thread,
-            &mut || {
-                units_per_call.push(run(size)?);
-                Ok(StepReport::default())
-            },
-        )?;
-        load = Some(job.load_after());
-        let measured_units = &units_per_call[protocol.warmup_runs as usize..];
-        let median_run = job
-            .samples
-            .iter()
-            .position(|sample| *sample == job.median)
-            .expect("the median is one of the samples");
-        points.push(FitPoint {
-            setting: size.to_string(),
-            terms: vec![measured_units[median_run] as f64, 1.0],
-            measured: job.median.thread_cpu_ns.unwrap_or(0) as f64,
-        });
-    }
-    Ok(points)
 }
 
 /// A fit that cannot be computed.

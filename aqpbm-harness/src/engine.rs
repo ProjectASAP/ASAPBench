@@ -51,8 +51,9 @@ pub enum CpuAccounting {
     /// In-process: the work of a step runs on the thread that calls it, and
     /// the harness reads that thread's CPU clock.
     CallingThread,
-    /// External servers: the harness sums `/proc/<pid>/stat` CPU of these
-    /// processes around each step.
+    /// External servers: the harness reads the CPU of these processes
+    /// around each step (their own cgroup's `cpu.stat`, or their threads'
+    /// `schedstat`; see [`crate::protocol::ProcessesCpuClock`]).
     Processes(Vec<u32>),
 }
 
@@ -121,10 +122,6 @@ pub trait InstalledArm {
     /// Per-operator timing hook: per node, per batch, the CPU the node itself
     /// used during the evaluations since the last call.
     fn node_profiles(&mut self) -> Option<Vec<NodeProfile>> {
-        None
-    }
-    /// Per node: the units the engine's own cost model charges per constant.
-    fn node_terms(&self) -> Option<Vec<NodeTerms>> {
         None
     }
     /// Measured usage priced at the engine's own prices (the Planner: cost
@@ -233,7 +230,9 @@ pub struct PlanSummary {
     pub stored_outputs: Vec<String>,
 }
 
-/// The engine's own predicted cost of an arm.
+/// The engine's own predicted cost of an arm, recorded in each
+/// [`crate::records::ArmResult`] beside the measured cost so a sweep can
+/// rank arms by both ([`crate::sweep::ranking_agreement`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PredictedCost {
@@ -266,31 +265,15 @@ pub struct MeasuredUsage {
     pub held_bytes: u64,
 }
 
-/// One node's own CPU per batch, from the per-operator timing hook.
+/// One node's own CPU per batch, from the per-operator timing hook (the
+/// executor times each operator per batch).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeProfile {
     pub node: String,
-    pub method: ProfilingMethod,
     /// The node's own CPU in each batch, in ns. A node shared by two
     /// consumers is timed once per batch.
     pub cpu_ns_per_batch: Vec<u64>,
-}
-
-/// How node CPU was measured; recorded so the method can be replaced later.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ProfilingMethod {
-    /// The executor times each operator per batch.
-    OperatorTimingHook,
-}
-
-/// The units a node is charged per cost constant by the engine's cost model,
-/// for fitting the constants from measured node CPU.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NodeTerms {
-    pub node: String,
-    pub units_per_constant: Vec<(String, f64)>,
 }
 
 /// An engine whose cost constants the harness can calibrate.
@@ -315,7 +298,9 @@ pub trait Calibratable {
 pub struct CostTarget {
     /// Opaque to the harness; the engine maps it back to its operator.
     pub key: serde_json::Value,
-    /// The constant measured, such as `ns_per_unit`.
+    /// The name of the engine's own cost constant this target measures, such
+    /// as `ns_per_unit`; [`Calibratable::charged_units`] gives the units the
+    /// engine's cost model charges it.
     pub constant: String,
     /// What one unit is, such as `samples`.
     pub unit: String,

@@ -126,7 +126,7 @@ fn two_series_one_minute() -> DataRecord {
 /// chunks hash the same as `aqpbm-datagen`'s own samples of the original
 /// (4,800 samples), seed 43 hashes differently, and the file holds no
 /// samples (< 2 KB).
-/// Adapted from ASAPPlanner #1332 `datagen_seeded_bit_identical`.
+/// Adapted from the ASAPPlanner test `datagen_seeded_bit_identical`.
 #[test]
 fn a_data_record_regenerates_bit_identical_samples() -> TestResult {
     let record = DataRecord {
@@ -261,7 +261,7 @@ fn a_generator_error_ends_the_chunks_with_that_error() {
 /// Two JSONL lines `{labels, ts_ms, value}` read as two samples. A text whose
 /// line at 0-based index 1 lacks `value` (`{"labels": {}, "ts_ms": 1}`
 /// after one good line) is an error with `line: 1`.
-/// Moved from ASAPPlanner #1332 `facts_reads_jsonl_samples`.
+/// Moved from the ASAPPlanner test `facts_reads_jsonl_samples`.
 #[test]
 fn samples_jsonl_reads_and_names_the_bad_line() {
     let good = "{\"labels\": {\"__name__\": \"m\", \"job\": \"a\"}, \"ts_ms\": 1000, \"value\": 2.0}\n\

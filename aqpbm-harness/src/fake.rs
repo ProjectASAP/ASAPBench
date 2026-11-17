@@ -9,7 +9,7 @@
 //! 4 series 10,600 ns.
 //!
 //! With a [`FakeServer`] it plays an external server instead: its work is
-//! charged to the server's `/proc/<pid>/stat` under a fake `/proc` root, not
+//! charged to the server thread's `schedstat` under a fake `/proc` root, not
 //! to the harness's clock, and it reports `CpuAccounting::Processes`.
 //!
 //! Its plan has one `scan` node, shared by every query and charged
@@ -26,10 +26,10 @@ use std::sync::Arc;
 use crate::data::{SampleChunk, SeriesLabels};
 use crate::engine::{
     Answers, ArmSpec, Calibratable, CostTarget, CpuAccounting, EngineDescription, EngineError,
-    EngineUnderTest, Footprint, InstalledArm, NodeProfile, PlanSummary, ProfilingMethod,
-    QueryLanguage, StepReport, WorkloadSpec,
+    EngineUnderTest, Footprint, InstalledArm, NodeProfile, PlanSummary, QueryLanguage, StepReport,
+    WorkloadSpec,
 };
-use crate::protocol::{CpuClock, ProcFs};
+use crate::protocol::{CpuClock, ProcessCpuFiles};
 
 /// The ticks of a [`FakeClock`], in ns.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -78,31 +78,38 @@ impl CpuClock for FakeClock {
     }
 }
 
-/// A fake external server: one pid under a fake `/proc` root, whose
-/// `<root>/<pid>/stat` the fake rewrites after every charge, with `utime` in
-/// ns at 1e9 ticks per second. Clones share the server's CPU.
-/// Example: after 10,150 ns of work, its stat reads `utime` 10150, `stime` 0.
+/// A fake external server: one pid under a fake `/proc` root, with a
+/// `<root>/<pid>/stat` in state `S` and one thread whose
+/// `<root>/<pid>/task/<pid>/schedstat` the fake rewrites after every charge,
+/// its first field the server's CPU in ns. No cgroup files, so the clock
+/// reads `schedstat`. Clones share the server's CPU.
+/// Example: after 10,150 ns of work, its `schedstat` reads 10150.
 #[derive(Debug, Clone)]
 pub struct FakeServer {
     pub pid: u32,
-    /// The fake `/proc`, at 1e9 ticks per second.
-    pub proc_fs: ProcFs,
+    /// The fake `/proc` (and an empty cgroup mount beside it).
+    pub cpu_files: ProcessCpuFiles,
     cpu_ns: Rc<Cell<u64>>,
 }
 
 impl FakeServer {
-    /// Creates `<root>/<pid>/stat` with no CPU used.
+    /// Creates `<root>/<pid>/stat` and the thread's `schedstat` with no CPU used.
     pub fn start(root: &Path, pid: u32) -> std::io::Result<Self> {
-        std::fs::create_dir_all(root.join(pid.to_string()))?;
+        let process = root.join(pid.to_string());
+        std::fs::create_dir_all(process.join("task").join(pid.to_string()))?;
+        std::fs::write(
+            process.join("stat"),
+            format!("{pid} (fake server) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0\n"),
+        )?;
         let server = FakeServer {
             pid,
-            proc_fs: ProcFs {
-                root: root.to_path_buf(),
-                ticks_per_second: 1_000_000_000,
+            cpu_files: ProcessCpuFiles {
+                proc_root: root.to_path_buf(),
+                cgroup_root: root.join("cgroup"),
             },
             cpu_ns: Rc::default(),
         };
-        server.write_stat()?;
+        server.write_schedstat()?;
         Ok(server)
     }
 
@@ -113,29 +120,29 @@ impl FakeServer {
 
     fn charge(&self, ns: u64) {
         self.cpu_ns.set(self.cpu_ns.get() + ns);
-        self.write_stat()
-            .unwrap_or_else(|error| panic!("fake server {} stat: {error}", self.pid));
+        self.write_schedstat()
+            .unwrap_or_else(|error| panic!("fake server {} schedstat: {error}", self.pid));
     }
 
-    /// Fields 1 to 15 of a `/proc/<pid>/stat` line; 14 and 15 are `utime`
-    /// and `stime`. `utime` is zero-padded to 20 digits so every write has
-    /// the same length and overwrites the file in place: truncating and
-    /// rewriting a file makes some file systems (ext4) flush it on close,
-    /// about 100 ms per write.
-    fn write_stat(&self) -> std::io::Result<()> {
+    /// The thread's `schedstat`: CPU ns, wait ns, time slices. The CPU is
+    /// zero-padded to 20 digits so every write has the same length and
+    /// overwrites the file in place: truncating and rewriting a file makes
+    /// some file systems (ext4) flush it on close, about 100 ms per write.
+    fn write_schedstat(&self) -> std::io::Result<()> {
         use std::io::Write;
-        let path = self.proc_fs.root.join(self.pid.to_string()).join("stat");
-        let line = format!(
-            "{} (fake server) S 1 1 1 0 -1 0 0 0 0 0 {:020} 0 0 0\n",
-            self.pid,
-            self.cpu_ns.get()
-        );
+        let path = self
+            .cpu_files
+            .proc_root
+            .join(self.pid.to_string())
+            .join("task")
+            .join(self.pid.to_string())
+            .join("schedstat");
         std::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(false)
             .open(path)?
-            .write_all(line.as_bytes())
+            .write_all(format!("{:020} 0 0\n", self.cpu_ns.get()).as_bytes())
     }
 }
 
@@ -509,7 +516,6 @@ impl InstalledArm for FakeArm {
                 .into_iter()
                 .map(|(node, cpu_ns_per_batch)| NodeProfile {
                     node,
-                    method: ProfilingMethod::OperatorTimingHook,
                     cpu_ns_per_batch,
                 })
                 .collect(),

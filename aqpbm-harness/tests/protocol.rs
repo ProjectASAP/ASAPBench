@@ -9,9 +9,9 @@ use std::rc::Rc;
 use aqpbm_harness::engine::{CpuAccounting, EngineError, StepReport};
 use aqpbm_harness::fake::FakeClock;
 use aqpbm_harness::protocol::{
-    compare, core_busy_fraction, median, noise_band, pin_current_thread, process_cpu_ns_from_stat,
-    processes_cpu_ns, Comparison, CpuClock, JobMark, LoadProbe, MeasurementClocks, OsCpuClock,
-    ProcFs, ProcessesCpuClock, Protocol, ProtocolError,
+    compare, core_busy_fraction, median, noise_band, pin_current_thread, process_state_from_stat,
+    processes_cpu_ns, Comparison, CpuClock, EngineClock, JobMark, LoadProbe, MeasurementClocks,
+    OsCpuClock, ProcessCpuFiles, ProcessesCpuClock, Protocol, ProtocolError,
 };
 use aqpbm_harness::rundir::RunDir;
 use chrono::{TimeZone, Utc};
@@ -101,7 +101,7 @@ fn pinning_runs_the_job_on_the_requested_core() {
         Ok(StepReport::default())
     };
     let record = Protocol::default()
-        .run_job(0, &mut probe, &clock, &mut job)
+        .run_job(0, &mut probe, &EngineClock::CallingThread(&clock), &mut job)
         .unwrap();
     assert_eq!(record.core, 0);
     assert_eq!(ran_on.get(), 0);
@@ -156,7 +156,7 @@ fn idle_check_refuses_a_busy_core_and_never_runs_the_job() {
         ..Protocol::default()
     };
     let error = protocol
-        .run_job(3, &mut probe, &clock, &mut job)
+        .run_job(3, &mut probe, &EngineClock::CallingThread(&clock), &mut job)
         .unwrap_err();
     let message = error.to_string();
     match error {
@@ -189,7 +189,7 @@ fn a_core_that_turns_busy_during_the_job_marks_it() {
     let calls = Rc::new(Cell::new(0));
     let mut job = counting_job(&clock, 10, &calls);
     let record = Protocol::default()
-        .run_job(0, &mut probe, &clock, &mut job)
+        .run_job(0, &mut probe, &EngineClock::CallingThread(&clock), &mut job)
         .unwrap();
     assert_eq!(
         record.marks,
@@ -242,7 +242,9 @@ fn warm_up_runs_are_discarded() {
         measured_runs: 5,
         ..Protocol::default()
     };
-    let record = protocol.run_job(0, &mut probe, &clock, &mut job).unwrap();
+    let record = protocol
+        .run_job(0, &mut probe, &EngineClock::CallingThread(&clock), &mut job)
+        .unwrap();
     assert_eq!(calls.get(), 6);
     let samples: Vec<Option<u64>> = record.samples.iter().map(|s| s.thread_cpu_ns).collect();
     assert_eq!(
@@ -266,7 +268,7 @@ fn an_even_or_zero_run_count_is_refused() {
             ..Protocol::default()
         };
         assert_eq!(
-            protocol.run_job(0, &mut probe, &clock, &mut job),
+            protocol.run_job(0, &mut probe, &EngineClock::CallingThread(&clock), &mut job),
             Err(ProtocolError::RunCountNotOdd(runs))
         );
     }
@@ -315,37 +317,24 @@ fn a_non_positive_median_cannot_set_a_noise_band() {
 }
 
 /// A `/proc/<pid>/stat` line whose command name `(click (house) srv)` holds
-/// spaces and parentheses, with utime 250 and stime 50 ticks (fields 14 and
-/// 15) at 100 ticks/s, is 300 / 100 s = 3,000,000,000 ns.
+/// spaces and parentheses has state `S`, the first field after the last `)`.
 #[test]
-fn process_cpu_from_a_proc_pid_stat_line() {
+fn process_state_from_a_proc_pid_stat_line() {
     let stat = "1234 (click (house) srv) S 1 1234 1234 0 -1 4194560 100 0 0 0 \
                 250 50 0 0 20 0 1 0 100 1000 10\n";
-    assert_eq!(process_cpu_ns_from_stat(stat, 100), Ok(3_000_000_000));
+    assert_eq!(process_state_from_stat(stat), Ok('S'));
 }
 
-/// Pids with 1 s and 2 s of CPU in `<proc_root>/<pid>/stat` sum to 3 s; a
-/// pid without a stat file is an error naming the pid.
+/// Pids with 1 s and 2 s of thread CPU in `<proc_root>/<pid>/task/*/schedstat`
+/// sum to 3 s; a pid without a stat file is an error naming the pid.
 #[test]
 fn process_accounting_sums_every_pid_and_names_a_missing_one() {
     let root = TempDir::new("processes");
-    let write_stat = |pid: u32, utime: u64, stime: u64| {
-        let dir = root.0.join(pid.to_string());
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("stat"),
-            format!("{pid} (srv) S 1 {pid} {pid} 0 -1 0 0 0 0 0 {utime} {stime} 0 0 20 0 1 0\n"),
-        )
-        .unwrap();
-    };
-    write_stat(101, 80, 20);
-    write_stat(102, 150, 50);
-    assert_eq!(
-        processes_cpu_ns(&root.0, &[101, 102], 100),
-        Ok(3_000_000_000)
-    );
+    write_fake_process(&root.0, 101, 'S', &[1_000_000_000]);
+    write_fake_process(&root.0, 102, 'S', &[1_500_000_000, 500_000_000]);
+    assert_eq!(processes_cpu_ns(&root.0, &[101, 102]), Ok(3_000_000_000));
 
-    let error = processes_cpu_ns(&root.0, &[101, 999], 100).unwrap_err();
+    let error = processes_cpu_ns(&root.0, &[101, 999]).unwrap_err();
     assert!(
         matches!(error, ProtocolError::MissingProcess { pid: 999, .. }),
         "{error:?}"
@@ -378,17 +367,16 @@ fn calling_thread_accounting_ignores_other_threads() {
     assert!(process_ns > 30_000_000, "process CPU {process_ns} ns");
 }
 
-/// Writes a fake process under `root`: `<pid>/stat` in state `state` with
-/// `utime` = `cpu_ns` at 1e9 ticks per second, and one
-/// `<pid>/task/<tid>/schedstat` per entry of `thread_cpu_ns` (tid = pid,
-/// pid + 1, ...), whose first field is that thread's CPU in ns.
+/// Writes a fake process under `root`: `<pid>/stat` in state `state` (its
+/// `utime` and `stime` 0, as on a real `/proc` for less than one 10 ms
+/// tick), and one `<pid>/task/<tid>/schedstat` per entry of `thread_cpu_ns`
+/// (tid = pid, pid + 1, ...), whose first field is that thread's CPU in ns.
 fn write_fake_process(root: &std::path::Path, pid: u32, state: char, thread_cpu_ns: &[u64]) {
     let dir = root.join(pid.to_string());
     std::fs::create_dir_all(&dir).unwrap();
-    let cpu_ns: u64 = thread_cpu_ns.iter().sum();
     std::fs::write(
         dir.join("stat"),
-        format!("{pid} (srv) {state} 1 {pid} {pid} 0 -1 0 0 0 0 0 {cpu_ns} 0 0 0 20 0 1 0\n"),
+        format!("{pid} (srv) {state} 1 {pid} {pid} 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0\n"),
     )
     .unwrap();
     for (index, ns) in thread_cpu_ns.iter().enumerate() {
@@ -408,10 +396,7 @@ fn a_processes_engine_median_is_the_middle_process_cpu() {
     write_fake_process(&root.0, 4343, 'S', &[0]);
     let engine_clock = MeasurementClocks {
         calling_thread: &OsCpuClock,
-        proc_fs: ProcFs {
-            root: root.0.clone(),
-            ticks_per_second: 1_000_000_000,
-        },
+        process_cpu_files: fake_cpu_files(&root.0),
     }
     .clock_for(&CpuAccounting::Processes(vec![4343]))
     .unwrap();
@@ -427,7 +412,7 @@ fn a_processes_engine_median_is_the_middle_process_cpu() {
         .run_job(
             0,
             &mut FakeProbe::new(&[0.0], 0.0),
-            engine_clock.as_clock(),
+            &engine_clock,
             &mut || {
                 server_cpu_ns += costs[call];
                 call += 1;
@@ -455,22 +440,32 @@ fn a_processes_engine_median_is_the_middle_process_cpu() {
 fn a_zombie_server_pid_is_an_exited_process() {
     let root = TempDir::new("zombie");
     write_fake_process(&root.0, 4444, 'Z', &[1_000]);
-    let error = processes_cpu_ns(&root.0, &[4444], 1_000_000_000).unwrap_err();
+    let error = processes_cpu_ns(&root.0, &[4444]).unwrap_err();
+    assert_eq!(
+        error,
+        ProtocolError::ProcessExited {
+            pid: 4444,
+            state: 'Z'
+        }
+    );
     assert!(error.to_string().contains("4444"), "{error}");
     assert!(error.to_string().contains("exited"), "{error}");
+    assert_eq!(
+        ProcessesCpuClock::new(vec![4444], fake_cpu_files(&root.0)).unwrap_err(),
+        error
+    );
 
     write_fake_process(&root.0, 4445, 'S', &[1_000]);
-    let proc_fs = ProcFs {
-        root: root.0.clone(),
-        ticks_per_second: 1_000_000_000,
-    };
-    let clock = ProcessesCpuClock::new(vec![4445], proc_fs).unwrap();
+    let clock = ProcessesCpuClock::new(vec![4445], fake_cpu_files(&root.0)).unwrap();
     write_fake_process(&root.0, 4445, 'Z', &[2_000]);
     assert_eq!(clock.process_cpu_ns(), 1_000, "the last good reading");
-    let error = clock
-        .take_read_error()
-        .expect("a zombie is a failed reading");
-    assert!(error.to_string().contains("4445"), "{error}");
+    assert_eq!(
+        clock.take_read_error(),
+        Some(ProtocolError::ProcessExited {
+            pid: 4445,
+            state: 'Z'
+        })
+    );
 }
 
 /// A server's CPU at ns resolution: two threads whose `schedstat` read
@@ -480,19 +475,62 @@ fn a_zombie_server_pid_is_an_exited_process() {
 fn server_cpu_is_the_sum_of_its_threads_schedstat() {
     let root = TempDir::new("schedstat");
     write_fake_process(&root.0, 4646, 'S', &[2_000, 3_000]);
-    // `utime` 0, as 5 µs is far below one 10 ms tick.
-    std::fs::write(
-        root.0.join("4646/stat"),
-        "4646 (srv) S 1 4646 4646 0 -1 0 0 0 0 0 0 0 0 0 20 0 2 0\n",
-    )
-    .unwrap();
-    let proc_fs = ProcFs {
-        root: root.0.clone(),
-        ticks_per_second: 100,
-    };
-    let clock = ProcessesCpuClock::new(vec![4646], proc_fs).unwrap();
+    let clock = ProcessesCpuClock::new(vec![4646], fake_cpu_files(&root.0)).unwrap();
     assert_eq!(clock.process_cpu_ns(), 5_000);
     assert_eq!(clock.take_read_error(), None);
+}
+
+/// Puts `pids` in the cgroup v2 group `group` (their `<pid>/cgroup` reads
+/// `0::<group>`) and writes the group's `cpu.stat` with `usage_usec`.
+fn write_fake_cgroup(root: &std::path::Path, pids: &[u32], group: &str, usage_usec: u64) {
+    for pid in pids {
+        std::fs::write(root.join(format!("{pid}/cgroup")), format!("0::{group}\n")).unwrap();
+    }
+    let dir = root.join("cgroup").join(group.trim_start_matches('/'));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("cpu.stat"),
+        format!("usage_usec {usage_usec}\nuser_usec {usage_usec}\nsystem_usec 0\n"),
+    )
+    .unwrap();
+}
+
+/// Servers 4747 and 4748 in their own cgroup `/system.slice/engine.scope`
+/// with `usage_usec 2500` read 2,500,000 ns, the group's CPU, not their
+/// threads' 5,000 ns of `schedstat` (the group also counts threads that
+/// exited). The same pids sharing the harness's group (`<proc>/self`), or
+/// split over two groups, read their threads' `schedstat` instead.
+#[test]
+fn servers_in_their_own_cgroup_read_its_cpu_stat() {
+    let root = TempDir::new("cgroup");
+    write_fake_process(&root.0, 4747, 'S', &[2_000]);
+    write_fake_process(&root.0, 4748, 'S', &[3_000]);
+    let group = "/system.slice/engine.scope";
+    write_fake_cgroup(&root.0, &[4747, 4748], group, 2_500);
+    let read = |pids: &[u32]| {
+        ProcessesCpuClock::new(pids.to_vec(), fake_cpu_files(&root.0))
+            .unwrap()
+            .process_cpu_ns()
+    };
+    assert_eq!(read(&[4747, 4748]), 2_500_000);
+
+    // The harness in the same group: the group is not the servers' own.
+    std::fs::create_dir_all(root.0.join("self")).unwrap();
+    std::fs::write(root.0.join("self/cgroup"), format!("0::{group}\n")).unwrap();
+    assert_eq!(read(&[4747, 4748]), 5_000);
+    std::fs::remove_dir_all(root.0.join("self")).unwrap();
+
+    // Two groups: no one group holds the servers.
+    write_fake_cgroup(&root.0, &[4748], "/other.scope", 9);
+    assert_eq!(read(&[4747, 4748]), 5_000);
+}
+
+/// The fake `/proc` at `root`, with its cgroup mount at `root/cgroup`.
+fn fake_cpu_files(root: &std::path::Path) -> ProcessCpuFiles {
+    ProcessCpuFiles {
+        proc_root: root.to_path_buf(),
+        cgroup_root: root.join("cgroup"),
+    }
 }
 
 /// A load probe that counts its samples.
@@ -519,7 +557,12 @@ fn a_nonexistent_core_is_refused_before_the_idle_sample() {
     let calls = Rc::new(Cell::new(0));
     let mut job = counting_job(&clock, 10, &calls);
     let error = Protocol::default()
-        .run_job(100_000, &mut probe, &clock, &mut job)
+        .run_job(
+            100_000,
+            &mut probe,
+            &EngineClock::CallingThread(&clock),
+            &mut job,
+        )
         .unwrap_err();
     assert!(
         matches!(error, ProtocolError::CoreNotAllowed { core: 100_000, .. }),

@@ -7,7 +7,7 @@ use crate::engine::{
     Answers, ArmSpec, EngineError, EngineUnderTest, InstalledArm, MeasuredUsage, WorkloadSpec,
 };
 use crate::protocol::{
-    CoreLoad, JobRecord, LoadProbe, MeasurementClocks, MedianClock, Protocol, ProtocolError,
+    CoreLoad, EngineClock, JobRecord, LoadProbe, MeasurementClocks, Protocol, ProtocolError,
 };
 use crate::records::ArmResult;
 
@@ -26,7 +26,7 @@ pub struct ArmSchedule {
 ///
 /// The engine is measured on the clock its [`EngineUnderTest::cpu_accounting`]
 /// names: `clocks.calling_thread` for `CallingThread`, and for
-/// `Processes(pids)` a clock over the server pids under `clocks.proc_fs` that
+/// `Processes(pids)` a clock over the server pids under `clocks.process_cpu_files` that
 /// `run_arm` builds itself, never the harness process.
 ///
 /// Every run gets its own install up front, and each step (one refresh
@@ -37,9 +37,16 @@ pub struct ArmSchedule {
 ///
 /// Memory: all `warmup_runs + measured_runs` installs are held at once, so a
 /// run needs that many times the memory of one arm (6× with the default
-/// protocol). Because consecutive calls go to different installs, each call
-/// starts with the previous install's data in the caches, not its own: steps
-/// are measured with cold caches, as a refresh that runs after other work.
+/// protocol). Installing them one after another instead would make a
+/// protocol job span whole runs rather than one step, so the idle check and
+/// the median would no longer be per step. Because consecutive calls go to
+/// different installs, each call starts with the previous install's data in
+/// the caches, not its own: steps are measured with cold caches, as a
+/// refresh that runs after other work.
+///
+/// Answers: each call's answers are moved out of the timed call and freed
+/// after the job, so freeing them is never charged to a step; the last
+/// run's answers are kept.
 ///
 /// Idle checks: consecutive jobs share a sample, the after-sample of one job
 /// is the before-sample of the next, so each step costs one sampling interval
@@ -67,8 +74,7 @@ pub fn run_arm(
             workload: workload.name.clone(),
         });
     }
-    let engine_clock = clocks.clock_for(&engine.cpu_accounting())?;
-    let (clock, median_clock) = (engine_clock.as_clock(), engine_clock.median_clock());
+    let clock = clocks.clock_for(&engine.cpu_accounting())?;
     let runs = (protocol.warmup_runs + protocol.measured_runs) as usize;
     let mut installs: Vec<Box<dyn InstalledArm>> = (0..runs)
         .map(|_| engine.install(workload, arm))
@@ -85,31 +91,29 @@ pub fn run_arm(
                            probe: &mut dyn LoadProbe,
                            load: &mut Option<CoreLoad>|
      -> Result<(), ArmRunError> {
-        let mut call = 0;
-        let mut last_answers = Answers::default();
-        let job =
-            protocol.run_job_accounted(core, probe, *load, clock, median_clock, &mut || {
-                let (step_answers, report) = installs[call].evaluate(at_ms)?;
-                call += 1;
-                if call == runs {
-                    last_answers = step_answers;
-                }
-                Ok(report)
-            })?;
+        // Every call's answers, reserved up front so the timed calls only
+        // move into it; freed after the job, outside every timed window.
+        let mut answers_per_call: Vec<Answers> = Vec::with_capacity(runs);
+        let job = protocol.run_next_job(core, probe, *load, &clock, &mut || {
+            let (step_answers, report) = installs[answers_per_call.len()].evaluate(at_ms)?;
+            answers_per_call.push(step_answers);
+            Ok(report)
+        })?;
         *load = Some(job.load_after());
         evaluate.push(job);
+        let last_answers = answers_per_call.pop().expect("at least one measured run");
+        drop(answers_per_call);
         answers.push((at_ms, last_answers));
         Ok(())
     };
     for chunk in workload_chunks(&workload.data, schedule.refresh_ms)? {
         let chunk = chunk?;
         let mut call = 0;
-        let job =
-            protocol.run_job_accounted(core, probe, load, clock, median_clock, &mut || {
-                let report = installs[call].ingest(&chunk);
-                call += 1;
-                report
-            })?;
+        let job = protocol.run_next_job(core, probe, load, &clock, &mut || {
+            let report = installs[call].ingest(&chunk);
+            call += 1;
+            report
+        })?;
         load = Some(job.load_after());
         ingest.push(job);
         while let Some(at_ms) = pending_evaluations.next_if(|&at_ms| at_ms <= chunk.end_ms) {
@@ -124,8 +128,8 @@ pub fn run_arm(
     let footprint = last.footprint()?;
     let data_seconds = data_ms as f64 / 1_000.0;
     let usage = MeasuredUsage {
-        ingest_cpu_ns_per_second: median_cpu_ns(&ingest, median_clock) / data_seconds,
-        query_cpu_ns_per_second: median_cpu_ns(&evaluate, median_clock) / data_seconds,
+        ingest_cpu_ns_per_second: median_cpu_ns(&ingest, &clock) / data_seconds,
+        query_cpu_ns_per_second: median_cpu_ns(&evaluate, &clock) / data_seconds,
         held_bytes: footprint.view_bytes + footprint.raw_retained_bytes,
     };
     Ok(ArmResult {
@@ -144,12 +148,9 @@ pub fn run_arm(
 }
 
 /// The summed median CPU of `jobs`, on the clock the medians were taken on.
-fn median_cpu_ns(jobs: &[JobRecord], median_clock: MedianClock) -> f64 {
+fn median_cpu_ns(jobs: &[JobRecord], clock: &EngineClock) -> f64 {
     jobs.iter()
-        .map(|job| match median_clock {
-            MedianClock::Thread => job.median.thread_cpu_ns.unwrap_or(0),
-            MedianClock::Process => job.median.process_cpu_ns,
-        } as f64)
+        .map(|job| clock.engine_cpu_ns(&job.median) as f64)
         .sum()
 }
 

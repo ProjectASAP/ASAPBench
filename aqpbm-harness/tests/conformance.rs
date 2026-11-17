@@ -2,7 +2,7 @@
 
 use aqpbm_harness::conformance::{check, ConformanceCheck, ConformanceFailure};
 use aqpbm_harness::fake::{FakeEngine, FakeFault, FakeServer};
-use aqpbm_harness::protocol::{MeasurementClocks, ProcFs};
+use aqpbm_harness::protocol::{MeasurementClocks, ProcessCpuFiles};
 
 /// Runs the kit on a fake with `faults`, reading the fake's own clock.
 fn check_fake(faults: &[FakeFault]) -> Result<Vec<ConformanceCheck>, Vec<ConformanceFailure>> {
@@ -84,8 +84,9 @@ fn a_fake_that_counts_the_window_start_fails_the_boundary_check() {
 
 /// A fake whose calibration closure processes 1,000 units at size 1,000
 /// while `charged_units` reports 2,000 fails the units check, naming the
-/// target `fake/ingest`, the size and both unit counts. Replaces ASAPPlanner
-/// #1332 `units_match_cost_model`, which parsed the cost model's text.
+/// target `fake/ingest`, the size and both unit counts. Replaces the
+/// ASAPPlanner test `units_match_cost_model`, which parsed the cost model's
+/// text.
 #[test]
 fn a_fake_whose_calibration_units_differ_from_its_charged_units_fails() {
     let failures = check_fake(&[FakeFault::CalibrationUnitsDouble]).unwrap_err();
@@ -177,7 +178,7 @@ fn a_processes_engine_is_checked_on_its_server_pids() {
     let clock = engine.clock.clone();
     let clocks = MeasurementClocks {
         calling_thread: &clock,
-        proc_fs: server.proc_fs.clone(),
+        process_cpu_files: server.cpu_files.clone(),
     };
     assert_eq!(
         check(&mut engine, &clocks).map(|report| report.passed),
@@ -192,9 +193,9 @@ fn a_processes_engine_is_checked_on_its_server_pids() {
     std::fs::create_dir_all(&empty).unwrap();
     let clocks = MeasurementClocks {
         calling_thread: &clock,
-        proc_fs: ProcFs {
-            root: empty,
-            ticks_per_second: 100,
+        process_cpu_files: ProcessCpuFiles {
+            proc_root: empty.clone(),
+            cgroup_root: empty,
         },
     };
     let failures = check(&mut engine, &clocks).unwrap_err();

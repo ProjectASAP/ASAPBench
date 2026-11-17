@@ -79,7 +79,7 @@ pub enum ConformanceFailure {
 ///
 /// The engine is timed on the clock its `cpu_accounting()` names, picked by
 /// [`MeasurementClocks::clock_for`]; for a `Processes` engine, its pids must
-/// be readable under `clocks.proc_fs`, or the check fails with
+/// be running under `clocks.process_cpu_files`, or the check fails with
 /// `EngineFailed { step: "cpu accounting" }`.
 pub fn check(
     engine: &mut dyn EngineUnderTest,

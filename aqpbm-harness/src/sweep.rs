@@ -19,20 +19,27 @@ pub fn regret(arms: &[(String, f64)], selected: &str) -> Result<f64, SweepError>
     Ok(measured / best)
 }
 
+/// The engine's predicted and the harness's measured cost per second of
+/// data of the selected arm and the exact arm in one setting.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SelectedAndExactCosts {
+    pub predicted_selected: f64,
+    pub predicted_exact: f64,
+    pub measured_selected: f64,
+    pub measured_exact: f64,
+}
+
 /// The share of rows where predicted and measured order the selected arm
 /// against exact the same way; a measured tie (inside `band`) counts as
-/// agreement. Each row is (predicted selected, predicted exact, measured
-/// selected, measured exact). `NaN` for no rows.
-pub fn ranking_agreement(rows: &[(f64, f64, f64, f64)], band: f64) -> f64 {
+/// agreement. `NaN` for no rows.
+pub fn ranking_agreement(rows: &[SelectedAndExactCosts], band: f64) -> f64 {
     let agreeing = rows
         .iter()
-        .filter(
-            |&&(predicted_selected, predicted_exact, measured_selected, measured_exact)| {
-                let measured = compare(measured_selected, measured_exact, band);
-                measured == Comparison::Tie
-                    || measured == compare(predicted_selected, predicted_exact, 0.0)
-            },
-        )
+        .filter(|row| {
+            let measured = compare(row.measured_selected, row.measured_exact, band);
+            measured == Comparison::Tie
+                || measured == compare(row.predicted_selected, row.predicted_exact, 0.0)
+        })
         .count();
     agreeing as f64 / rows.len() as f64
 }

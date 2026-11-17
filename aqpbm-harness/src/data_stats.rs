@@ -3,7 +3,8 @@
 //! Statistics that depend on a query's window or grouping stay with the
 //! engine that plans the query.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -53,124 +54,151 @@ pub fn data_statistics(
     label_sets: &[Vec<String>],
 ) -> BTreeMap<String, DataStatistics> {
     let mut metrics: BTreeMap<&str, MetricSamples> = BTreeMap::new();
+    // The series of each label `Arc` seen so far, so the labels of a series
+    // are cloned once, not once per sample (every sample of a series shares
+    // one `Arc`).
+    let mut series_of_labels: HashMap<*const SeriesLabels, (&str, usize)> = HashMap::new();
     for sample in samples {
-        let metric = sample
-            .labels
-            .get("__name__")
-            .map(String::as_str)
-            .unwrap_or("");
-        let gathered = metrics.entry(metric).or_default();
-        let mut labels = SeriesLabels::clone(&sample.labels);
-        labels.remove("__name__");
-        gathered
-            .timestamps_per_series
-            .entry(labels)
-            .or_default()
-            .push(sample.ts_ms);
-        gathered.values.push(sample.value);
+        let (metric, series) = *series_of_labels
+            .entry(Arc::as_ptr(&sample.labels))
+            .or_insert_with(|| {
+                let metric = sample
+                    .labels
+                    .get("__name__")
+                    .map(String::as_str)
+                    .unwrap_or("");
+                let mut labels = SeriesLabels::clone(&sample.labels);
+                labels.remove("__name__");
+                (
+                    metric,
+                    metrics.entry(metric).or_default().series_index(labels),
+                )
+            });
+        let gathered = metrics.get_mut(metric).expect("added with its series");
+        gathered.timestamps_per_series[series].push(sample.ts_ms);
+        gathered.values.add(sample.value);
     }
     metrics
         .into_iter()
-        .map(|(metric, gathered)| {
-            (
-                metric.to_string(),
-                metric_statistics(
-                    &gathered.timestamps_per_series,
-                    &gathered.values,
-                    label_sets,
-                ),
-            )
-        })
+        .map(|(metric, gathered)| (metric.to_string(), gathered.statistics(label_sets)))
         .collect()
 }
 
 /// One metric's samples, gathered for its statistics.
 #[derive(Default)]
 struct MetricSamples {
-    /// Per series (labels without `__name__`), its timestamps in ms.
-    timestamps_per_series: BTreeMap<SeriesLabels, Vec<i64>>,
-    /// Every value, in sample order.
-    values: Vec<f64>,
+    /// Per series (labels without `__name__`), its index into
+    /// `timestamps_per_series`.
+    series: BTreeMap<SeriesLabels, usize>,
+    /// Per series, its timestamps in ms.
+    timestamps_per_series: Vec<Vec<i64>>,
+    values: ValueRange,
 }
 
-/// The statistics of one metric's series and values.
-fn metric_statistics(
-    series: &BTreeMap<SeriesLabels, Vec<i64>>,
-    values: &[f64],
-    label_sets: &[Vec<String>],
-) -> DataStatistics {
-    let label_names: BTreeSet<&str> = series
-        .keys()
-        .flat_map(|labels| labels.keys().map(String::as_str))
-        .collect();
-    let distinct_values_per_label = label_names
-        .iter()
-        .map(|&name| {
-            let values: BTreeSet<Option<&String>> =
-                series.keys().map(|labels| labels.get(name)).collect();
-            (name.to_string(), values.len() as u64)
-        })
-        .collect();
-    let distinct_values_per_label_set = label_sets
-        .iter()
-        .filter(|set| set.iter().all(|name| label_names.contains(name.as_str())))
-        .map(|set| {
-            let mut names = set.clone();
-            names.sort();
-            names.dedup();
-            let combinations: BTreeSet<Vec<Option<&String>>> = series
-                .keys()
-                .map(|labels| names.iter().map(|name| labels.get(name)).collect())
-                .collect();
-            (names, combinations.len() as u64)
-        })
-        .collect();
+impl MetricSamples {
+    /// The index of the series `labels`, added if new. Two `Arc`s with equal
+    /// labels are one series.
+    fn series_index(&mut self, labels: SeriesLabels) -> usize {
+        let next = self.timestamps_per_series.len();
+        let index = *self.series.entry(labels).or_insert(next);
+        if index == next {
+            self.timestamps_per_series.push(Vec::new());
+        }
+        index
+    }
 
-    let series_intervals: Vec<i64> = series
-        .values()
-        .filter_map(|timestamps| {
-            let mut timestamps = timestamps.clone();
-            timestamps.sort_unstable();
-            let gaps: Vec<i64> = timestamps
-                .windows(2)
-                .map(|pair| pair[1] - pair[0])
-                .collect();
-            lower_median(gaps)
-        })
-        .collect();
-    let sample_interval_ms = lower_median(series_intervals).map(|gap| gap as u64);
+    /// The statistics of this metric's series and values.
+    fn statistics(&self, label_sets: &[Vec<String>]) -> DataStatistics {
+        let series = &self.series;
+        let label_names: BTreeSet<&str> = series
+            .keys()
+            .flat_map(|labels| labels.keys().map(String::as_str))
+            .collect();
+        let distinct_values_per_label = label_names
+            .iter()
+            .map(|&name| {
+                let values: BTreeSet<Option<&String>> =
+                    series.keys().map(|labels| labels.get(name)).collect();
+                (name.to_string(), values.len() as u64)
+            })
+            .collect();
+        let distinct_values_per_label_set = label_sets
+            .iter()
+            .filter(|set| set.iter().all(|name| label_names.contains(name.as_str())))
+            .map(|set| {
+                let mut names = set.clone();
+                names.sort();
+                names.dedup();
+                let combinations: BTreeSet<Vec<Option<&String>>> = series
+                    .keys()
+                    .map(|labels| names.iter().map(|name| labels.get(name)).collect())
+                    .collect();
+                (names, combinations.len() as u64)
+            })
+            .collect();
 
-    let non_zero = values.iter().filter(|v| **v != 0.0 && !v.is_nan());
-    let value_magnitude =
-        non_zero
-            .map(|v| v.abs())
-            .fold(None, |range: Option<ObservedMagnitude>, abs| {
-                Some(match range {
-                    None => ObservedMagnitude {
-                        min_abs: abs,
-                        max_abs: abs,
-                    },
-                    Some(range) => ObservedMagnitude {
-                        min_abs: range.min_abs.min(abs),
-                        max_abs: range.max_abs.max(abs),
-                    },
-                })
-            });
-    let negative = values.iter().any(|v| v.is_sign_negative());
-    let non_negative = values.iter().any(|v| v.is_sign_positive());
-    let value_sign = match (negative, non_negative) {
-        (true, true) => ObservedSign::Mixed,
-        (true, false) => ObservedSign::Negative,
-        (false, _) => ObservedSign::NonNegative,
-    };
+        let series_intervals: Vec<i64> = self
+            .timestamps_per_series
+            .iter()
+            .filter_map(|timestamps| {
+                let mut timestamps = timestamps.clone();
+                timestamps.sort_unstable();
+                let gaps: Vec<i64> = timestamps
+                    .windows(2)
+                    .map(|pair| pair[1] - pair[0])
+                    .collect();
+                lower_median(gaps)
+            })
+            .collect();
+        let sample_interval_ms = lower_median(series_intervals).map(|gap| gap as u64);
 
-    DataStatistics {
-        series_count: series.len() as u64,
-        sample_interval_ms,
-        distinct_values_per_label,
-        distinct_values_per_label_set,
-        value_magnitude,
-        value_sign,
+        let value_sign = match (self.values.any_negative, self.values.any_non_negative) {
+            (true, true) => ObservedSign::Mixed,
+            (true, false) => ObservedSign::Negative,
+            (false, _) => ObservedSign::NonNegative,
+        };
+        DataStatistics {
+            series_count: series.len() as u64,
+            sample_interval_ms,
+            distinct_values_per_label,
+            distinct_values_per_label_set,
+            value_magnitude: self.values.magnitude.clone(),
+            value_sign,
+        }
+    }
+}
+
+/// The running range and signs of a metric's values.
+#[derive(Default)]
+struct ValueRange {
+    /// Over non-zero, non-NaN values; `None` until one is seen.
+    magnitude: Option<ObservedMagnitude>,
+    /// A value with the sign bit set (`-0.0` included).
+    any_negative: bool,
+    any_non_negative: bool,
+}
+
+impl ValueRange {
+    fn add(&mut self, value: f64) {
+        if value.is_sign_negative() {
+            self.any_negative = true;
+        } else {
+            self.any_non_negative = true;
+        }
+        if value == 0.0 || value.is_nan() {
+            return;
+        }
+        let abs = value.abs();
+        self.magnitude = Some(match self.magnitude.take() {
+            None => ObservedMagnitude {
+                min_abs: abs,
+                max_abs: abs,
+            },
+            Some(range) => ObservedMagnitude {
+                min_abs: range.min_abs.min(abs),
+                max_abs: range.max_abs.max(abs),
+            },
+        });
     }
 }
 

@@ -76,7 +76,7 @@ fn job_instance() -> Vec<Vec<String>> {
 }
 
 /// `m` has four distinct label sets (A, B, C, D).
-/// Moved from ASAPPlanner #1332 `facts_series_count`.
+/// Moved from the ASAPPlanner test `facts_series_count`.
 #[test]
 fn statistics_series_count() {
     assert_eq!(statistics_m().series_count, 4);
@@ -87,7 +87,7 @@ fn statistics_series_count() {
 /// 1286, is wrong). A second source separates the two medians: P has 10
 /// samples 1 s apart, Q and R 2 samples 5 s apart; the pooled median gap
 /// is 1000, the median of per-series medians 5000.
-/// Moved from ASAPPlanner #1332 `facts_sample_interval_median_gap`.
+/// Moved from the ASAPPlanner test `facts_sample_interval_median_gap`.
 #[test]
 fn statistics_sample_interval_is_the_median_of_series_medians() {
     assert_eq!(statistics_m().sample_interval_ms, Some(1_000));
@@ -103,7 +103,7 @@ fn statistics_sample_interval_is_the_median_of_series_medians() {
 
 /// `job` takes 2 values; `instance` 3 (1, 2, and missing on D); `__name__`
 /// is not a label here.
-/// Moved from ASAPPlanner #1332 `facts_distinct_per_label`.
+/// Moved from the ASAPPlanner test `facts_distinct_per_label`.
 #[test]
 fn statistics_distinct_per_label_counts_missing_as_one() {
     let statistics = statistics_m();
@@ -117,7 +117,7 @@ fn statistics_distinct_per_label_counts_missing_as_one() {
 /// The label set `[job, instance]` sees 4 observed combinations (a/1, a/2,
 /// b/1, b/missing), not the product 6, reported with names sorted; `lat`
 /// has neither label, so it gets no entry.
-/// Moved from ASAPPlanner #1332 `facts_label_set_from_workload_by`.
+/// Moved from the ASAPPlanner test `facts_label_set_from_workload_by`.
 #[test]
 fn statistics_label_sets_are_the_observed_combinations() {
     let statistics = data_statistics(&fixture(), &job_instance());
@@ -130,7 +130,7 @@ fn statistics_label_sets_are_the_observed_combinations() {
 
 /// Zeros are excluded: `m`'s values span 0.25 to 100 (a `min_abs` of 0
 /// would be invalid). A source of only 0.0 and −0.0 has no magnitude.
-/// Moved from ASAPPlanner #1332 `facts_column_magnitudes_exclude_zero`.
+/// Moved from the ASAPPlanner test `facts_column_magnitudes_exclude_zero`.
 #[test]
 fn statistics_magnitudes_exclude_zero() {
     assert_eq!(
@@ -147,7 +147,7 @@ fn statistics_magnitudes_exclude_zero() {
 /// Signs by sign bit: `m` has −3 and positives, so `Mixed`; `lat` holds
 /// −0.0 and positives, so `Mixed` too, not `NonNegative` (a `v >= 0.0`
 /// check would accept −0.0).
-/// Moved from ASAPPlanner #1332 `facts_sign_suggestion_sign_bit` (the observed sign only).
+/// Moved from the ASAPPlanner test `facts_sign_suggestion_sign_bit` (the observed sign only).
 #[test]
 fn statistics_sign_is_read_from_the_sign_bit() {
     let statistics = data_statistics(&fixture(), &[]);
@@ -157,7 +157,7 @@ fn statistics_sign_is_read_from_the_sign_bit() {
 
 /// A counter 0, 5, 10, 2, 7 resets once: still `NonNegative`; magnitudes
 /// over the raw samples (zeros excluded): 2 to 10.
-/// Moved from ASAPPlanner #1332 `facts_counter_reset`.
+/// Moved from the ASAPPlanner test `facts_counter_reset`.
 #[test]
 fn statistics_of_a_counter_with_a_reset() {
     let samples: Vec<Sample> = [0.0, 5.0, 10.0, 2.0, 7.0]
@@ -179,7 +179,7 @@ fn statistics_of_a_counter_with_a_reset() {
 /// A series of one sample has no gap and does not panic: with a second
 /// series of 2 samples 3 s apart the interval is 3000; a source of one
 /// sample alone has no interval (`None`).
-/// Moved from ASAPPlanner #1332 `facts_single_sample_series`.
+/// Moved from the ASAPPlanner test `facts_single_sample_series`.
 #[test]
 fn statistics_of_a_single_sample_series() {
     let samples = vec![
@@ -195,7 +195,7 @@ fn statistics_of_a_single_sample_series() {
 /// Generated data: 50 series of `g` over `host` (100 values) × `endpoint`
 /// (8 values, Zipf 1.1) every 10 s for 600 s give series count 50, interval
 /// 10,000, at most 50 hosts and at most 8 endpoints.
-/// Moved from ASAPPlanner #1332 `facts_datagen_round_trip`.
+/// Moved from the ASAPPlanner test `facts_datagen_round_trip`.
 #[test]
 fn statistics_of_generated_data() {
     let record = DataRecord {
@@ -240,7 +240,7 @@ fn statistics_of_generated_data() {
 /// Four 1 Hz series of `m` over 600 s (one of them varying as
 /// `ts % 13,000`), with the label set `[job, instance]`: two runs of
 /// `data_statistics` serialize to the same JSON string.
-/// Adapted from ASAPPlanner #1332 `facts_seeded_bit_identical`.
+/// Adapted from the ASAPPlanner test `facts_seeded_bit_identical`.
 #[test]
 fn statistics_json_is_byte_identical_across_runs() {
     let series = [

@@ -11,7 +11,7 @@ use serde_json::json;
 /// Errors i / 1e5 for i = 1..1000, given in descending order: the
 /// nearest-rank 0.99 quantile is the ⌈0.99 · 1000⌉ = 990th smallest,
 /// 0.0099.
-/// Moved from ASAPPlanner #1332 `quantile_of_errors_nearest_rank`.
+/// Moved from the ASAPPlanner test `quantile_of_errors_nearest_rank`.
 #[test]
 fn quantile_of_errors_nearest_rank() {
     let errors: Vec<f64> = (1..=1000).rev().map(|i| i as f64 / 1e5).collect();
@@ -31,7 +31,7 @@ fn nearest_rank_is_exact_where_a_float_ceil_is_not() {
 /// 0.0015, 0.0018, 0.0017, 1,000 trials each. The curve records the worst,
 /// 0.0018, not the mean (0.001667) or the last (0.0017), under the opaque
 /// key it was given.
-/// Moved from ASAPPlanner #1332 `worst_over_merge_counts_is_recorded`.
+/// Moved from the ASAPPlanner test `worst_over_merge_counts_is_recorded`.
 #[test]
 fn worst_over_merge_counts_is_recorded() {
     let key = json!({"sketch": "kll", "k": 547, "metric": "rank"});
@@ -68,7 +68,7 @@ fn failure_probabilities_below_three_over_trials_are_dropped() {
 /// δ = 0.001 … 0.5. Every curve has δ ascending in (0, 1] and ≥ 3 / trials,
 /// errors finite, ≥ 0 and non-increasing in δ, and each error equal to the
 /// max over that key's merge counts at that δ.
-/// Adapted from ASAPPlanner #1332 `accuracy_table_is_monotone`.
+/// Adapted from the ASAPPlanner test `accuracy_table_is_monotone`.
 #[test]
 fn accuracy_curve_is_monotone_and_the_worst_of_its_merge_counts() {
     const TRIALS: u32 = 3_000;

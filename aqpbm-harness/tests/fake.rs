@@ -7,11 +7,13 @@ use aqpbm_harness::arm_run::{run_arm, ArmSchedule};
 use aqpbm_harness::conformance::probe_workloads;
 use aqpbm_harness::data::{DataRecord, Sample, SampleChunk, SeriesLabels};
 use aqpbm_harness::engine::{
-    ArmSpec, CpuAccounting, EngineUnderTest, ProfilingMethod, QueryLanguage, QueryText, StepReport,
-    WorkloadQuery, WorkloadSpec,
+    ArmSpec, CpuAccounting, EngineUnderTest, QueryLanguage, QueryText, StepReport, WorkloadQuery,
+    WorkloadSpec,
 };
 use aqpbm_harness::fake::{FakeEngine, FakeServer};
-use aqpbm_harness::protocol::{CpuClock, LoadProbe, MeasurementClocks, Protocol, ProtocolError};
+use aqpbm_harness::protocol::{
+    CpuClock, EngineClock, LoadProbe, MeasurementClocks, Protocol, ProtocolError,
+};
 use aqpbm_harness::records::ArmResult;
 
 /// A machine that is always idle.
@@ -187,9 +189,12 @@ fn step_costs_come_from_the_harness_clock() {
     };
 
     let ingest = protocol
-        .run_job(0, &mut IdleProbe, &clock, &mut || {
-            installed.ingest(&samples)
-        })
+        .run_job(
+            0,
+            &mut IdleProbe,
+            &EngineClock::CallingThread(&clock),
+            &mut || installed.ingest(&samples),
+        )
         .unwrap();
     assert_eq!(ingest.median.thread_cpu_ns, Some(60_000));
     assert_eq!(ingest.median.process_cpu_ns, 60_000);
@@ -197,11 +202,16 @@ fn step_costs_come_from_the_harness_clock() {
 
     let mut answered_series = 0;
     let evaluate = protocol
-        .run_job(0, &mut IdleProbe, &clock, &mut || {
-            let (answers, report) = installed.evaluate(250_000)?;
-            answered_series = answers.iter().count();
-            Ok(report)
-        })
+        .run_job(
+            0,
+            &mut IdleProbe,
+            &EngineClock::CallingThread(&clock),
+            &mut || {
+                let (answers, report) = installed.evaluate(250_000)?;
+                answered_series = answers.iter().count();
+                Ok(report)
+            },
+        )
         .unwrap();
     assert_eq!(answered_series, 4);
     assert_eq!(evaluate.median.thread_cpu_ns, Some(10_600));
@@ -266,7 +276,6 @@ fn the_operator_timing_hook_counts_a_shared_node_once() {
     nodes.sort_unstable();
     assert_eq!(nodes, ["scan", "sum_a", "sum_b"]);
     for profile in &profiles {
-        assert_eq!(profile.method, ProfilingMethod::OperatorTimingHook);
         assert_eq!(profile.cpu_ns_per_batch.len(), 3, "{profile:?}");
     }
     let node_medians: u64 = profiles
@@ -276,10 +285,10 @@ fn the_operator_timing_hook_counts_a_shared_node_once() {
     assert_eq!(node_medians, median_of_three(&evaluate_ns));
 }
 
-/// A fake external server (pid 4242 under a fake `/proc` whose stat file
-/// advances with the server's work) that keeps its own CPU counter (90 ns
-/// per step): every evaluate sample of the harness run carries the server's
-/// process CPU read from that stat file, exactly the 10 µs call + 150 ns for
+/// A fake external server (pid 4242 under a fake `/proc` whose thread
+/// `schedstat` advances with the server's work) that keeps its own CPU
+/// counter (90 ns per step): every evaluate sample of the harness run
+/// carries the server's process CPU read from that file, exactly the 10 µs call + 150 ns for
 /// the probe's one series, no thread CPU, and the engine's own 90 ns beside
 /// them. The harness's own clock (the fake clock passed as the calling-thread
 /// clock) never moves, so a run that read it instead would record 0.
@@ -299,7 +308,7 @@ fn engine_reported_cpu_is_recorded_beside_process_cpu() {
     let clock = engine.clock.clone();
     let clocks = MeasurementClocks {
         calling_thread: &clock,
-        proc_fs: server.proc_fs.clone(),
+        process_cpu_files: server.cpu_files.clone(),
     };
     let result = run_probe_on(&engine, 7, &clocks).unwrap();
     assert!(!result.evaluate.is_empty());

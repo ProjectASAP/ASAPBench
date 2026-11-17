@@ -195,7 +195,11 @@ pub struct SeriesLabelSpec {
 
 `generate()` draws the label sets; `samples()` on the result yields
 `Result<(&[(name, value)], timestamp_ms, value)>` time-major, drawing values
-lazily.
+lazily. `into_samples()` yields the same samples from an iterator that owns
+the series, as `Result<(series_index, timestamp_ms, value)>`, for a reader
+that keeps the iterator beyond the borrow (the harness's refresh chunks);
+series `i`'s labels are `labels[i]` of the consumed series, so a reader
+takes `labels` before calling it.
 
 - **Timestamps:** series `i`'s samples sit at `start_ms + k * sample_interval_ms`
   for every `k >= 1` with `k * sample_interval_ms <= duration_ms`

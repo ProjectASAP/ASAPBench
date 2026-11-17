@@ -132,7 +132,9 @@ impl MachineDescription {
 
     /// The directory name calibrations and runs are stored under: `[a-z0-9_-]+`
     /// from architecture, model, cores and memory type, e.g.
-    /// `x86_64-intel-xeon-e5-2683-v3-56c-registered-ddr4`.
+    /// `x86_64-<cpu-model>-16c-registered-ddr4` for 16 logical cores and
+    /// registered DDR4, where `<cpu-model>` is the model name of
+    /// `/proc/cpuinfo` lowercased with every other character run as `-`.
     ///
     /// The model drops `(R)`, `(TM)`, the word `CPU` and everything from `@`
     /// (the clock); the architecture is kept as the OS names it, so its

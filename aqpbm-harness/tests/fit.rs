@@ -6,10 +6,12 @@ use std::time::{Duration, Instant};
 
 use aqpbm_harness::fake::FakeClock;
 use aqpbm_harness::fit::{
-    fit_constants, leave_one_setting_out, measure_sizes, ConstantsFit, FitError, FitFlag, FitPoint,
+    fit_constants, leave_one_setting_out, ConstantsFit, FitError, FitFlag, FitPoint,
     LeaveOneSettingOut,
 };
-use aqpbm_harness::protocol::{LoadProbe, OsCpuClock, OsLoadProbe, Protocol, ProtocolError};
+use aqpbm_harness::protocol::{
+    measure_sizes, EngineClock, LoadProbe, OsCpuClock, OsLoadProbe, Protocol, ProtocolError,
+};
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
@@ -101,7 +103,7 @@ fn held_out_errors(loso: &LeaveOneSettingOut) -> Vec<Option<f64>> {
 
 /// The line through (1e3, 60,000), (1e4, 510,000), (1e5, 5,010,000) is
 /// 50 ns per unit + 10,000 ns per invocation, within 1e-9, with no flags.
-/// Moved from ASAPPlanner #1332 `fit_recovers_exact_line`.
+/// Moved from the ASAPPlanner test `fit_recovers_exact_line`.
 #[test]
 fn fit_recovers_exact_line() {
     let fit = fit_constants(
@@ -124,7 +126,7 @@ fn fit_recovers_exact_line() {
 /// gives 49.69 / 11,391 (by hand from the normal equations with weights
 /// 1/y²); plain least squares gives an intercept of 2,783, which fails the
 /// 8,000..=12,500 bound.
-/// Moved from ASAPPlanner #1332 `fit_is_relative_weighted`.
+/// Moved from the ASAPPlanner test `fit_is_relative_weighted`.
 #[test]
 fn fit_is_relative_weighted() {
     let fit = fit_constants(
@@ -148,7 +150,7 @@ fn fit_is_relative_weighted() {
 
 /// Five sizes from 10 to 1e5 units, noise +2%, −2%, +2%, −2%, +2%: the
 /// weighted fit is 50.12 / 10,045 by hand, within 0.5 / 100 of 50 / 10,000.
-/// Moved from ASAPPlanner #1332 `fit_five_sizes_tightens`.
+/// Moved from the ASAPPlanner test `fit_five_sizes_tightens`.
 #[test]
 fn fit_five_sizes_tightens() {
     let noise = [1.02, 0.98, 1.02, 0.98, 1.02];
@@ -172,7 +174,7 @@ fn fit_five_sizes_tightens() {
 /// `ns_per_invocation` to 0, refits through the origin (weighted:
 /// Σ(x/y) / Σ(x²/y²) = 9.770231720134127) and flags the clamp with the raw
 /// value.
-/// Moved from ASAPPlanner #1332 `fit_negative_intercept_is_clamped`.
+/// Moved from the ASAPPlanner test `fit_negative_intercept_is_clamped`.
 #[test]
 fn fit_negative_intercept_is_clamped() {
     let fit = fit_constants(
@@ -198,7 +200,7 @@ fn fit_negative_intercept_is_clamped() {
 /// A quadratic kernel (1e3, 1e4), (1e4, 1e5), (1e5, 1e7) misses a line by
 /// far more than 10% at some point (−89% at 1e5 for the weighted line):
 /// flagged, not silently accepted.
-/// Moved from ASAPPlanner #1332 `fit_flags_nonlinear`.
+/// Moved from the ASAPPlanner test `fit_flags_nonlinear`.
 #[test]
 fn fit_flags_nonlinear() {
     let fit = fit_constants(
@@ -219,7 +221,7 @@ fn fit_flags_nonlinear() {
 /// (1e3, 60,000), (1e4, 510,000), (1e5, 5,010,000) with setting = the size
 /// and terms `[units, 1]` (one call per run, not a batch), and they fit
 /// 50 / 10,000.
-/// Moved from ASAPPlanner #1332 `fit_recovers_fake_clock_kernel`.
+/// Moved from the ASAPPlanner test `fit_recovers_fake_clock_kernel`.
 #[test]
 fn fit_recovers_fake_clock_kernel() {
     let clock = FakeClock::default();
@@ -233,7 +235,7 @@ fn fit_recovers_fake_clock_kernel() {
         &protocol,
         0,
         &mut IdleProbe,
-        &clock,
+        &EngineClock::CallingThread(&clock),
         &[1_000, 10_000, 100_000],
         &mut |units| {
             kernel_clock.charge_thread(50 * units + 10_000);
@@ -259,7 +261,7 @@ fn fit_recovers_fake_clock_kernel() {
 /// On the OS thread CPU clock, a kernel that busy-spins 50 ns per unit +
 /// 20 µs per call comes back within ±5 ns per unit and ±5 µs per call
 /// (9 measured runs on an idle core).
-/// Moved from ASAPPlanner #1332 `fit_recovers_spin_kernel`.
+/// Moved from the ASAPPlanner test `fit_recovers_spin_kernel`.
 #[test]
 #[ignore = "timing: run on a dedicated host"]
 fn fit_recovers_spin_kernel() {
@@ -272,7 +274,7 @@ fn fit_recovers_spin_kernel() {
         &protocol,
         0,
         &mut OsLoadProbe::default(),
-        &OsCpuClock,
+        &EngineClock::CallingThread(&OsCpuClock),
         &[1_000, 10_000, 100_000],
         &mut |units| {
             let until = Instant::now() + Duration::from_nanos(50 * units + 20_000);
