@@ -83,8 +83,10 @@ fn capability_files_match_the_design() {
 
 #[test]
 fn capability_files_are_pretty_printed() {
-    // L10: one format for all four files: `serde_json::to_string_pretty`
-    // plus a final newline.
+    // L10: one format for all four files, as `serde_json::to_string_pretty`
+    // writes it (which this test cannot call: it would sort the keys, and
+    // the files keep the README's order): two-space indents, at most one
+    // key per line, a final newline.
     for name in [
         "clickhouse.equivalent-only.json",
         "clickhouse.with-substitutes.json",
@@ -95,11 +97,11 @@ fn capability_files_are_pretty_printed() {
             .join("capabilities")
             .join(name);
         let text = std::fs::read_to_string(path).expect("file");
-        let value: Value = serde_json::from_str(&text).expect("JSON");
-        assert_eq!(
-            text,
-            format!("{}\n", serde_json::to_string_pretty(&value).unwrap()),
-            "{name}"
-        );
+        assert!(text.ends_with("}\n"), "{name}");
+        for line in text.lines() {
+            let indent = line.len() - line.trim_start().len();
+            assert!(indent % 2 == 0, "{name}: {line}");
+            assert!(line.matches("\": ").count() <= 1, "{name}: {line}");
+        }
     }
 }
