@@ -1,0 +1,21 @@
+{
+  "supported_summaries": [
+    {"summary_type": "Hll", "readouts": ["Distinct"]},
+    {"summary_type": "Kmv", "readouts": ["Distinct"]},
+    {"summary_type": "Kll", "readouts": ["Quantile"]},
+    {"summary_type": "DDSketch", "readouts": ["Quantile"]},
+    {"summary_type": "CmsWithHeap", "readouts": ["TopK"]},
+    {"summary_type": "CountSketchWithHeap", "readouts": ["TopK"]}
+  ],
+  "raw_data_retained": true,
+  "query_time_results_retained": false,
+  "counter_semantics": {"reset_handling": true, "extrapolation": true},
+  "state_not_mergeable_across_windows": [
+    {"exact": "IRate"},
+    {"sketch": "Hll"},
+    {"sketch": "Kmv"},
+    {"sketch": "CmsWithHeap"},
+    {"sketch": "CountSketchWithHeap"}
+  ],
+  "excluded_candidates": []
+}
