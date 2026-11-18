@@ -83,7 +83,8 @@ DASHBOARD = {"uid": "video-experience", "title": "3 · Video experience", "figur
                                   "play_time": "Play time of the session, in seconds",
                                   "startup_time": "Time until the video starts, in seconds",
                                   "device_id": "ID of the viewer's device"}},
-             "parts": ("overview", "runs", "rules", "rule_error", "cost", "stage1"),
+             "parts": ("overview", "runs", "rules", "rule_error", "cost"),
+             "open_rows": ("Rule ${signal:text}", "Query cost"),
              "rule_error": {"metrics": ("relative_error", "rank_error"), "file_var": "city", "subpopulation": DIMENSIONS}}
 
 CASE = {
