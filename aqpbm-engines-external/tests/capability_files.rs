@@ -1,4 +1,4 @@
-//! K1: the committed deployment-capabilities files (ASAPPlanner #1374
+//! The committed deployment-capabilities files (ASAPPlanner #1374
 //! format, as merged into ASAPPlanner main at `bc725bda8`) are exactly the hand-computed values of the design. An edit to a
 //! file must also edit this test and the README row it comes from.
 
@@ -83,7 +83,7 @@ fn capability_files_match_the_design() {
 
 #[test]
 fn capability_files_are_pretty_printed() {
-    // L10: one format for all four files, as `serde_json::to_string_pretty`
+    // One format for all four files, as `serde_json::to_string_pretty`
     // writes it (which this test cannot call: it would sort the keys, and
     // the files keep the README's order): two-space indents, at most one
     // key per line, a final newline.

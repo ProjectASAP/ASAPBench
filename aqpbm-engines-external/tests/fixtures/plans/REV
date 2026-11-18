@@ -6,22 +6,22 @@ compile check.
 
 Named fixtures (pretty-printed):
 
-  sot_1h_stored_sum      sum by (job) (sum_over_time(latency[1h])), every 60 s        default capabilities
-                         (workloads/grid/sot__1h__1hz__60s.json)
+  sum_over_time_1h_stored_sum      sum by (job) (sum_over_time(latency[1h])), every 60 s        default capabilities
+                         (workloads/grid/sum_over_time__1h__1hz__60s.json)
   rate_5m_stored         sum by (job) (rate(requests_total[5m])), every 60 s          default capabilities
                          (workloads/grid/rate__5m__1hz__60s.json)
   rate_5m_query_time     same query                                                  capabilities/clickhouse.equivalent-only.json
   max_5m_label_filter    max_over_time(latency{job="j3"}[5m]), every 300 s           capabilities/clickhouse.equivalent-only.json
-                         (workloads/heldout/s1000__maxf__5m__10hz__300s.json)
+                         (workloads/heldout/series_1000__max_label_filter__5m__10hz__300s.json)
   count_distinct_5m      count(count by (instance) (count_over_time(latency[5m])))   capabilities/clickhouse.equivalent-only.json
-                         (workloads/grid/cdist__5m__1hz__60s.json)
+                         (workloads/grid/count_distinct__5m__1hz__60s.json)
   joint_5m               five 5m queries over latency and requests_total             capabilities/clickhouse.equivalent-only.json
                          (workloads/grid/joint__5m__1hz__60s.json)
 
 Public plans (`public/<workload>.<variant>.plan.json`, compact): the workload
 `workloads/<set>/<workload>.json` planned with `capabilities/<variant>.json`. They are
-the eight RUN-1 showcase shapes (1 m windows, 1 Hz, every 10 s), `mixed-03`,
-`rangeheavy` and `topk__5m__1hz__60s`, plus a greedy cover of every node shape
+the eight showcase shapes (1 m windows, 1 Hz, every 10 s), `mixed-03`,
+`range_heavy` and `topk__5m__1hz__60s`, plus a greedy cover of every node shape
 (operator, timing, lifetime, family or measure, reduction, range kind, merge regrouping,
 projection and binary-operator fields, and the children's operators) that the full
 sweep produces. The full sweep plans all 206 public PromQL workloads (showcase, grid,

@@ -1,11 +1,11 @@
-//! P1: an equivalent-only plan must translate (the capability README's
+//! An equivalent-only plan must translate (the capability README's
 //! rule). Every planner-written plan of a public synthetic workload under
 //! `fixtures/plans/public/` translates, and the equivalent-only ones with no
 //! substitution. A query-time node several readers share is recomputed per
 //! reader (`SharingLost`); that changes cost, not answers, so it is no
 //! substitution.
 //!
-//! The committed plans are the RUN-1 showcase shapes plus a cover of every
+//! The committed plans are the showcase shapes plus a cover of every
 //! node shape that planning all 206 public PromQL workloads with the two
 //! ClickHouse files produces (see `fixtures/plans/REV`).
 
