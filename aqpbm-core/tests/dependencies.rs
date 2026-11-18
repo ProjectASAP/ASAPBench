@@ -31,8 +31,15 @@ fn core_without_default_features_depends_on_no_sketch_library_polars_clap_or_pla
         String::from_utf8_lossy(&output.stderr)
     );
     let tree = String::from_utf8(output.stdout).unwrap();
-    assert!(tree.contains("aqpbm-core"), "{tree}");
+    let package_names: Vec<&str> = tree
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+    assert!(package_names.contains(&"aqpbm-core"), "{tree}");
     for forbidden in ["asap_sketchlib", "polars", "sketch-bench", "clap", "asap-"] {
-        assert!(!tree.contains(forbidden), "{forbidden} in:\n{tree}");
+        assert!(
+            !package_names.iter().any(|name| name.contains(forbidden)),
+            "{forbidden} in:\n{tree}"
+        );
     }
 }
