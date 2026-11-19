@@ -7,7 +7,7 @@ use aqpbm_core::harness::engine::{EngineDescription, Footprint, PlanSummary, Ste
 use aqpbm_core::harness::machine::MachineDescription;
 use aqpbm_core::harness::protocol::{JobRecord, Protocol};
 use aqpbm_core::harness::records::{calibration_staleness, ArmResult, RunRecord};
-use aqpbm_core::harness::rundir::{RunDir, RunDirError};
+use aqpbm_core::harness::run_directory::{RunDirectory, RunDirectoryError};
 use aqpbm_datagen::{DataDistribution, SeriesLabelSpec, TimeSeriesDescription, UniformParameter};
 use chrono::{DateTime, TimeZone, Utc};
 
@@ -20,7 +20,7 @@ struct TempDir(PathBuf);
 impl TempDir {
     fn new(test: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "aqpbm-core-harness-rundir-{}-{test}",
+            "aqpbm-core-harness-run_directory-{}-{test}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&path);
@@ -40,8 +40,8 @@ fn utc() -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 11, 16, 20, 15, 0).unwrap()
 }
 
-fn create(root: &Path) -> Result<RunDir, RunDirError> {
-    RunDir::create(root, E5_KEY, utc(), "sweep", "sketch-benefit")
+fn create(root: &Path) -> Result<RunDirectory, RunDirectoryError> {
+    RunDirectory::create(root, E5_KEY, utc(), "sweep", "sketch-benefit")
 }
 
 fn fake_engine(version: &str, version_dirty: bool) -> EngineDescription {
@@ -92,6 +92,12 @@ fn arm_result(workload: &str) -> ArmResult {
         footprint: Footprint::default(),
         measured_engine_cost_per_second: None,
         node_profiles: None,
+        ingested_samples: 0,
+        server_memory_before: None,
+        server_memory_after: None,
+        server_cpu_ns_whole_arm: None,
+        cpu_source: "calling-thread".into(),
+        installs_held: 1,
     }
 }
 
@@ -104,6 +110,7 @@ fn job(core: usize, busy_before: f64, busy_after: f64, loadavg: [f64; 2]) -> Job
         marks: Vec::new(),
         samples: vec![StepCost::default()],
         median: StepCost::default(),
+        median_run: 0,
     }
 }
 
@@ -137,9 +144,10 @@ fn run_dir_is_machine_key_utc_subcommand_label() {
 #[test]
 fn a_label_outside_the_slug_charset_is_refused() {
     let root = TempDir::new("a_label_outside_the_slug_charset_is_refused");
-    let error = RunDir::create(&root.0, E5_KEY, utc(), "sweep", "Sketch Benefit/1").unwrap_err();
+    let error =
+        RunDirectory::create(&root.0, E5_KEY, utc(), "sweep", "Sketch Benefit/1").unwrap_err();
     assert!(
-        matches!(&error, RunDirError::BadName { name, .. } if name == "Sketch Benefit/1"),
+        matches!(&error, RunDirectoryError::BadName { name, .. } if name == "Sketch Benefit/1"),
         "{error:?}"
     );
     let message = error.to_string();
@@ -148,7 +156,7 @@ fn a_label_outside_the_slug_charset_is_refused() {
     assert!(!root.0.join("runs").exists());
 }
 
-/// Creating the same run directory twice fails with `RunDirExists` naming
+/// Creating the same run directory twice fails with `RunDirectoryExists` naming
 /// it, and the first run's `run.json` stays byte for byte as written.
 #[test]
 fn an_existing_run_dir_is_never_overwritten() {
@@ -160,7 +168,7 @@ fn an_existing_run_dir_is_never_overwritten() {
 
     let error = create(&root.0).unwrap_err();
     assert!(
-        matches!(&error, RunDirError::RunDirExists(path) if *path == first.path()),
+        matches!(&error, RunDirectoryError::RunDirectoryExists(path) if *path == first.path()),
         "{error:?}"
     );
     assert_eq!(std::fs::read(&run_json).unwrap(), before);
@@ -201,7 +209,7 @@ fn arm_results_are_filed_per_engine_workload_and_arm() {
 
     let error = run.write_arm(&arm_result("a__b")).unwrap_err();
     assert!(
-        matches!(&error, RunDirError::AmbiguousName { name, .. } if name == "a__b"),
+        matches!(&error, RunDirectoryError::AmbiguousName { name, .. } if name == "a__b"),
         "{error:?}"
     );
     assert!(!run.path().join("results/fake/a__b__planned.json").exists());
@@ -277,7 +285,7 @@ fn a_result_file_is_never_overwritten() {
     let first = std::fs::read_to_string(&path).unwrap();
     let error = run.write_arm(&arm_result("w")).unwrap_err();
     assert!(
-        matches!(&error, RunDirError::Io { path: p, source } if *p == path
+        matches!(&error, RunDirectoryError::Io { path: p, source } if *p == path
             && source.kind() == std::io::ErrorKind::AlreadyExists),
         "{error:?}"
     );
@@ -347,7 +355,31 @@ fn a_data_record_is_filed_under_data_by_metric() {
     };
     let error = run.write_data(&escaping).unwrap_err();
     assert!(
-        matches!(&error, RunDirError::BadName { name, .. } if name == "../m"),
+        matches!(&error, RunDirectoryError::BadName { name, .. } if name == "../m"),
         "{error:?}"
     );
+}
+
+/// `create_at` makes the given directory with the four subdirectories and
+/// refuses an existing one; `open` accepts it and refuses a directory
+/// missing `plans/`.
+#[test]
+fn create_at_and_open_a_run_directory_shared_by_engine_runs() {
+    let temp = TempDir::new("create-at");
+    let path = temp.0.join("goal").join("run-1");
+    let run = RunDirectory::create_at(&path).unwrap();
+    assert_eq!(run.path(), path.as_path());
+    for sub in ["workloads", "data", "plans", "results"] {
+        assert!(path.join(sub).is_dir(), "{sub}");
+    }
+    assert!(matches!(
+        RunDirectory::create_at(&path),
+        Err(RunDirectoryError::RunDirectoryExists(existing)) if existing == path
+    ));
+    assert_eq!(RunDirectory::open(&path).unwrap().path(), path.as_path());
+    std::fs::remove_dir(path.join("plans")).unwrap();
+    match RunDirectory::open(&path) {
+        Err(RunDirectoryError::NotARunDirectory { missing, .. }) => assert_eq!(missing, "plans"),
+        other => panic!("expected NotARunDirectory, got {other:?}"),
+    }
 }

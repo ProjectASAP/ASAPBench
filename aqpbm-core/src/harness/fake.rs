@@ -19,10 +19,11 @@
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
+use crate::harness::cgroup::CgroupSource;
 use crate::harness::data::{SampleChunk, SeriesLabels};
 use crate::harness::engine::{
     Answers, ArmSpec, Calibratable, CostTarget, CpuAccounting, EngineDescription, EngineError,
@@ -90,6 +91,9 @@ pub struct FakeServer {
     /// The fake `/proc` (and an empty cgroup mount beside it).
     pub cpu_files: ProcessCpuFiles,
     cpu_ns: Rc<Cell<u64>>,
+    /// Set by [`FakeServer::start_in_cgroup`]: the group directory whose
+    /// `cpu.stat` the fake rewrites after every charge.
+    pub cgroup_dir: Option<PathBuf>,
 }
 
 impl FakeServer {
@@ -108,7 +112,28 @@ impl FakeServer {
                 cgroup_root: root.join("cgroup"),
             },
             cpu_ns: Rc::default(),
+            cgroup_dir: None,
         };
+        server.write_schedstat()?;
+        Ok(server)
+    }
+
+    /// A server in its own cgroup v2 group at `cgroup_dir`: after every
+    /// charge its `cpu.stat` reads `usage_usec` = CPU in whole µs (rounded
+    /// down, as the kernel reports it) and `nr_throttled 0`; the memory files
+    /// read `memory.current` 3,145,728 bytes, `memory.peak` 5,242,880,
+    /// `memory.stat` `anon` 2,097,152 and `file` 1,048,576. The engine then reports
+    /// `CpuAccounting::Cgroup(Local(cgroup_dir))`.
+    pub fn start_in_cgroup(root: &Path, pid: u32, cgroup_dir: &Path) -> std::io::Result<Self> {
+        let mut server = FakeServer::start(root, pid)?;
+        std::fs::create_dir_all(cgroup_dir)?;
+        std::fs::write(cgroup_dir.join("memory.current"), "3145728\n")?;
+        std::fs::write(cgroup_dir.join("memory.peak"), "5242880\n")?;
+        std::fs::write(
+            cgroup_dir.join("memory.stat"),
+            "anon 2097152\nfile 1048576\nkernel 4096\n",
+        )?;
+        server.cgroup_dir = Some(cgroup_dir.to_path_buf());
         server.write_schedstat()?;
         Ok(server)
     }
@@ -118,7 +143,9 @@ impl FakeServer {
         self.cpu_ns.get()
     }
 
-    fn charge(&self, ns: u64) {
+    /// Charges `ns` of server CPU, as work between steps does (such as a
+    /// background merge).
+    pub fn charge(&self, ns: u64) {
         self.cpu_ns.set(self.cpu_ns.get() + ns);
         self.write_schedstat()
             .unwrap_or_else(|error| panic!("fake server {} schedstat: {error}", self.pid));
@@ -130,6 +157,20 @@ impl FakeServer {
     /// some file systems (ext4) flush it on close, about 100 ms per write.
     fn write_schedstat(&self) -> std::io::Result<()> {
         use std::io::Write;
+        if let Some(dir) = &self.cgroup_dir {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(dir.join("cpu.stat"))?
+                .write_all(
+                    format!(
+                        "usage_usec {:020}\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\n",
+                        self.cpu_ns.get() / 1_000
+                    )
+                    .as_bytes(),
+                )?;
+        }
         let path = self
             .cpu_files
             .proc_root
@@ -167,6 +208,9 @@ pub struct FakeEngine {
     pub ns_per_sample: u64,
     pub ns_per_series: u64,
     pub ns_per_call: u64,
+    /// Charged at every install, outside every step (0 by default), as a
+    /// server's setup work.
+    pub ns_per_install: u64,
     /// Reported in every `StepReport`, like an external engine's own counter.
     pub engine_reported_cpu_ns: Option<u64>,
     pub cpu_accounting: CpuAccounting,
@@ -187,6 +231,7 @@ impl Default for FakeEngine {
             ns_per_sample: 50,
             ns_per_series: 150,
             ns_per_call: 10_000,
+            ns_per_install: 0,
             engine_reported_cpu_ns: None,
             cpu_accounting: CpuAccounting::CallingThread,
             faults: Vec::new(),
@@ -222,7 +267,10 @@ impl EngineUnderTest for FakeEngine {
 
     fn cpu_accounting(&self) -> CpuAccounting {
         match &self.server {
-            Some(server) => CpuAccounting::Processes(vec![server.pid]),
+            Some(server) => match &server.cgroup_dir {
+                Some(dir) => CpuAccounting::Cgroup(CgroupSource::Local(dir.clone())),
+                None => CpuAccounting::Processes(vec![server.pid]),
+            },
             None => self.cpu_accounting.clone(),
         }
     }
@@ -234,8 +282,12 @@ impl EngineUnderTest for FakeEngine {
         workload: &WorkloadSpec,
         arm: &ArmSpec,
     ) -> Result<Box<dyn InstalledArm>, EngineError> {
-        let _ = arm;
         self.installs.set(self.installs.get() + 1);
+        let plan = FakePlanFile::read(arm)?;
+        match &self.server {
+            Some(server) => server.charge(self.ns_per_install),
+            None => self.clock.charge_thread(self.ns_per_install),
+        }
         let mut queries = Vec::new();
         let mut scanned_metrics: Vec<String> = Vec::new();
         for query in &workload.queries {
@@ -273,6 +325,7 @@ impl EngineUnderTest for FakeEngine {
             },
             queries,
             scanned_metrics,
+            plan,
             stored: BTreeMap::new(),
             node_cpu_ns_per_batch: BTreeMap::new(),
         }))
@@ -349,6 +402,44 @@ fn parse_over_time(text: &str) -> Result<(OverTime, String), EngineError> {
     Ok((function, metric.to_string()))
 }
 
+/// The plan file an arm names in `engine_options.plan_file`, as the fake
+/// reads it: `{}` installs normally, `{"refuse": "<message>"}` fails the
+/// install with that message, and `{"substitutions": ["..."]}` reports
+/// those substitutions, as a translating engine would.
+#[derive(Debug, Clone, Default)]
+struct FakePlanFile {
+    path: Option<String>,
+    substitutions: Vec<String>,
+}
+
+impl FakePlanFile {
+    fn read(arm: &ArmSpec) -> Result<FakePlanFile, EngineError> {
+        let Some(path) = arm.engine_options.get("plan_file").and_then(|p| p.as_str()) else {
+            return Ok(FakePlanFile::default());
+        };
+        let text = std::fs::read_to_string(path)
+            .map_err(|error| EngineError(format!("plan file {path}: {error}")))?;
+        let json: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|error| EngineError(format!("plan file {path}: {error}")))?;
+        if let Some(message) = json.get("refuse").and_then(|m| m.as_str()) {
+            return Err(EngineError(message.to_string()));
+        }
+        let substitutions = json
+            .get("substitutions")
+            .and_then(|list| list.as_array())
+            .map(|list| {
+                list.iter()
+                    .filter_map(|s| s.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(FakePlanFile {
+            path: Some(path.to_string()),
+            substitutions,
+        })
+    }
+}
+
 /// One installed query.
 #[derive(Debug, Clone)]
 struct FakeQuery {
@@ -377,6 +468,7 @@ struct FakeArm {
     queries: Vec<FakeQuery>,
     /// The metrics the shared `scan` node reads.
     scanned_metrics: Vec<String>,
+    plan: FakePlanFile,
     /// Per metric, per series, its `(ts_ms, value)` samples in time order
     /// (chunks arrive in time order).
     stored: BTreeMap<String, StoredSeries>,
@@ -433,10 +525,15 @@ impl InstalledArm for FakeArm {
             ));
             node_kinds.push(kind.to_string());
         }
+        if let Some(path) = &self.plan.path {
+            lines.push(format!("plan_file = {path}"));
+        }
         PlanSummary {
             text: lines.join("\n"),
             node_kinds,
             stored_outputs: Vec::new(),
+            substitutions: self.plan.substitutions.clone(),
+            sharing_lost: Vec::new(),
         }
     }
 
@@ -485,10 +582,13 @@ impl InstalledArm for FakeArm {
                     OverTime::Sum => values.iter().sum(),
                     OverTime::Count => values.len() as f64,
                 };
+                // A range function drops the metric name (PromQL's output labels).
+                let mut output_labels = SeriesLabels::clone(labels);
+                output_labels.remove("__name__");
                 answers
                     .entry(query.id.clone())
                     .or_default()
-                    .insert(SeriesLabels::clone(labels), value + self.answer_offset);
+                    .insert(output_labels, value + self.answer_offset);
             }
             self.charge_node(&query.id, self.ns_per_series * answered_series);
         }

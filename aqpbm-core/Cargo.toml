@@ -53,8 +53,8 @@ tikv-jemalloc-ctl = { workspace = true, optional = true }
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
-# Runs on the process's main thread (no libtest harness), where a pinned
-# thread is also the thread whose affinity `getpid()` names.
+# Runs on the process's main thread (no libtest harness), so the thread the
+# test pins is the one whose affinity it then reads.
 [[test]]
 name = "harness_pin_main_thread"
 harness = false

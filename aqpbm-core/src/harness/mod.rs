@@ -19,6 +19,8 @@
 //! [`crate::metrics`] (`ThreadCpuTime`, `CpuTimeSampler`) rather than its own.
 
 pub mod arm_run;
+pub mod benchmark_external;
+pub mod cgroup;
 pub mod conformance;
 pub mod data;
 pub mod data_stats;
@@ -30,5 +32,5 @@ pub mod gate;
 pub mod machine;
 pub mod protocol;
 pub mod records;
-pub mod rundir;
+pub mod run_directory;
 pub mod sweep;

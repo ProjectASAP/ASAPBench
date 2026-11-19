@@ -8,6 +8,7 @@ use clap::builder::TypedValueParser;
 use clap::{Parser, Subcommand};
 
 use crate::atomic_costs_cmd;
+use crate::benchmark_external_cmd;
 use crate::flatten_cmd;
 
 #[derive(Parser, Debug)]
@@ -37,6 +38,8 @@ pub enum Cmd {
     /// records that came from several invocations of the same cell rather
     /// than one.
     Flatten(flatten_cmd::FlattenArgs),
+    /// Run one engine of a comparison over a run directory, or report all engine runs.
+    BenchmarkExternal(benchmark_external_cmd::BenchmarkExternalArgs),
 }
 
 /// One target of the sketch bundle: one variant, one library, one construction

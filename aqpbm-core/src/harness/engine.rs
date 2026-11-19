@@ -55,6 +55,10 @@ pub enum CpuAccounting {
     /// around each step (their own cgroup's `cpu.stat`, or their threads'
     /// `schedstat`; see [`crate::harness::protocol::ProcessesCpuClock`]).
     Processes(Vec<u32>),
+    /// An external server in its own cgroup v2 group (a container), whose
+    /// `cpu.stat` and memory files the harness reads, on this host or over
+    /// SSH on the server host ([`crate::harness::cgroup::CgroupSource`]).
+    Cgroup(crate::harness::cgroup::CgroupSource),
 }
 
 /// One arm of a workload: how the engine is asked to run it.
@@ -159,11 +163,13 @@ pub struct StepCost {
 }
 
 /// The answers of one evaluation: per query id, one value per output series.
-/// An output series keeps its input labels; the query id is the outer key,
-/// so two queries over one metric never share a key and no label name is
-/// reserved. Example: `sum_over_time(probe[10s])` with id `sum` over the
-/// series `probe{instance="instance_0"}` answers under
-/// `"sum" -> {__name__="probe", instance="instance_0"}`.
+/// An output series carries PromQL's output labels: a function or an
+/// aggregation drops `__name__`, and only a bare selector keeps it; every
+/// engine uses this convention so the report can join engine runs by label set. The
+/// query id is the outer key, so two queries over one metric never share a
+/// key and no label name is reserved. Example: `sum_over_time(probe[10s])`
+/// with id `sum` over the series `probe{instance="instance_0"}` answers
+/// under `"sum" -> {instance="instance_0"}`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Answers(pub BTreeMap<String, BTreeMap<SeriesLabels, f64>>);
 
@@ -228,6 +234,14 @@ pub struct PlanSummary {
     pub node_kinds: Vec<String>,
     /// Outputs the arm stores between evaluations (views, sketches).
     pub stored_outputs: Vec<String>,
+    /// Rules of a translating engine whose answers differ from the plan's
+    /// guarantee, such as `quantileDD for Kll at node 3`.
+    #[serde(default)]
+    pub substitutions: Vec<String>,
+    /// Shared query-time nodes the engine recomputes for each reader, such
+    /// as `node 4 for nodes 6, 7`.
+    #[serde(default)]
+    pub sharing_lost: Vec<String>,
 }
 
 /// The engine's own predicted cost of an arm, recorded in each
