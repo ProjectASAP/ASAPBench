@@ -1,6 +1,6 @@
 pub mod atomic_costs;
 pub mod atomic_costs_cmd;
-pub mod bench_external_cmd;
+pub mod benchmark_external_cmd;
 pub mod cli;
 pub mod external;
 pub mod flatten_cmd;

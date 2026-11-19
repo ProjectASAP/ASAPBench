@@ -121,8 +121,8 @@ impl FakeServer {
     /// A server in its own cgroup v2 group at `cgroup_dir`: after every
     /// charge its `cpu.stat` reads `usage_usec` = CPU in whole µs (rounded
     /// down, as the kernel reports it) and `nr_throttled 0`; the memory files
-    /// read `memory.current` 3 MiB, `memory.peak` 5 MiB, `memory.stat`
-    /// `anon` 2 MiB and `file` 1 MiB. The engine then reports
+    /// read `memory.current` 3,145,728 bytes, `memory.peak` 5,242,880,
+    /// `memory.stat` `anon` 2,097,152 and `file` 1,048,576. The engine then reports
     /// `CpuAccounting::Cgroup(Local(cgroup_dir))`.
     pub fn start_in_cgroup(root: &Path, pid: u32, cgroup_dir: &Path) -> std::io::Result<Self> {
         let mut server = FakeServer::start(root, pid)?;

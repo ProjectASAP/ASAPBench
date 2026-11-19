@@ -1,6 +1,6 @@
-//! Lanes over one run directory, and the report that joins them.
+//! Engine runs over one run directory, and the report that joins them.
 //!
-//! A lane is one engine under test run as its own process over a run
+//! An engine run is one engine under test run as its own process over a run
 //! directory another step prepared:
 //!
 //! ```text
@@ -10,15 +10,15 @@
 //! plans/<variant>/<workload>.no-plan.json   {"reason": "ExcludedByDeployment"}
 //! ```
 //!
-//! [`run_lane`] runs every (workload, variant) cell on the engine and writes
-//! `results/<lane>/<workload>__<variant>.cell.json` (always) and the
-//! `ArmResult` beside it (when the cell ran). [`report`] joins every lane's
+//! [`run_engine`] runs every (workload, variant) cell on the engine and writes
+//! `results/<engine>/<workload>__<variant>.cell.json` (always) and the
+//! `ArmResult` beside it (when the cell ran). [`report`] joins every engine run's
 //! cells into one row per cell, with absolute CPU, memory and accuracy
-//! against a truth lane, and [`write_report`] writes `summary.csv`,
+//! against a truth engine run, and [`write_report`] writes `summary.csv`,
 //! `summary.md` and `accuracy.csv`.
 //!
-//! Example: lane `clickhouse` over variants `clickhouse.equivalent-only` and
-//! `clickhouse.with-substitutes`, lane `asap` over both, report with truth
+//! Example: engine `clickhouse` over variants `clickhouse.equivalent-only` and
+//! `clickhouse.with-substitutes`, engine `asap` over both, report with truth
 //! `asap/exact`.
 
 use std::collections::BTreeMap;
@@ -33,7 +33,9 @@ use crate::harness::engine::{
 };
 use crate::harness::protocol::{LoadProbe, MeasurementClocks, Protocol};
 use crate::harness::records::ArmResult;
-use crate::harness::rundir::{check_result_name, write_json, RunDir, RunDirError};
+use crate::harness::run_directory::{
+    check_result_name, write_json, RunDirectory, RunDirectoryError,
+};
 
 /// `plans/<variant>/variant.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,11 +70,11 @@ pub struct Variant {
     pub entries: BTreeMap<String, PlanEntry>,
 }
 
-/// One (workload, variant) cell of one lane: `<workload>__<variant>.cell.json`.
+/// One (workload, variant) cell of one engine: `<workload>__<variant>.cell.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LaneCell {
-    pub lane: String,
+pub struct EngineRunCell {
+    pub engine: String,
     pub workload: String,
     pub variant: String,
     pub outcome: CellOutcome,
@@ -88,10 +90,10 @@ pub enum CellOutcome {
     NotRun { error: String },
 }
 
-/// `results/<lane>/lane-<UTC>.json`: one lane process and how it measured.
+/// `results/<engine>/engine-run-<UTC>.json`: one engine run and how it measured.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LaneRecord {
+pub struct EngineRunRecord {
     pub engine: EngineDescription,
     pub cpu_accounting: CpuAccounting,
     pub protocol: Protocol,
@@ -103,16 +105,16 @@ pub struct LaneRecord {
 /// The workloads of a run directory, by name (the file stem, which must
 /// equal the spec's `name`).
 pub fn read_workloads(
-    run_dir: &RunDir,
-) -> Result<BTreeMap<String, WorkloadSpec>, BenchExternalError> {
+    run_directory: &RunDirectory,
+) -> Result<BTreeMap<String, WorkloadSpec>, BenchmarkExternalError> {
     let mut workloads = BTreeMap::new();
-    for path in sorted_files(&run_dir.path().join("workloads"))? {
+    for path in sorted_files(&run_directory.path().join("workloads"))? {
         let stem = file_stem_with_suffix(&path, ".json")?;
         // Refused here, before any cell runs, not when its result is written.
         check_result_name("workload", &stem, true)?;
         let spec: WorkloadSpec = read_json(&path)?;
         if spec.name != stem {
-            return Err(BenchExternalError::Layout(format!(
+            return Err(BenchmarkExternalError::Layout(format!(
                 "{} holds workload '{}'; the file must be named after it",
                 path.display(),
                 spec.name
@@ -125,13 +127,13 @@ pub fn read_workloads(
 
 /// The variants under `plans/`, each with one entry per workload.
 pub fn read_variants(
-    run_dir: &RunDir,
+    run_directory: &RunDirectory,
     workloads: &BTreeMap<String, WorkloadSpec>,
-) -> Result<Vec<Variant>, BenchExternalError> {
+) -> Result<Vec<Variant>, BenchmarkExternalError> {
     let mut variants = Vec::new();
-    for dir in sorted_entries(&run_dir.path().join("plans"))? {
+    for dir in sorted_entries(&run_directory.path().join("plans"))? {
         if !dir.is_dir() {
-            return Err(BenchExternalError::Layout(format!(
+            return Err(BenchmarkExternalError::Layout(format!(
                 "{} is not a variant directory",
                 dir.display()
             )));
@@ -151,28 +153,28 @@ pub fn read_variants(
                 let NoPlanRecord { reason } = read_json(&path)?;
                 (workload.to_string(), PlanEntry::NoPlan { reason })
             } else {
-                return Err(BenchExternalError::Layout(format!(
+                return Err(BenchmarkExternalError::Layout(format!(
                     "{} is neither variant.json, <workload>.plan.json nor <workload>.no-plan.json",
                     path.display()
                 )));
             };
             if !workloads.contains_key(&workload) {
-                return Err(BenchExternalError::Layout(format!(
+                return Err(BenchmarkExternalError::Layout(format!(
                     "{} names workload '{workload}', which is not in workloads/",
                     path.display()
                 )));
             }
             if entries.insert(workload.clone(), entry).is_some() {
-                return Err(BenchExternalError::Layout(format!(
+                return Err(BenchmarkExternalError::Layout(format!(
                     "variant {name} has both {workload}.plan.json and {workload}.no-plan.json"
                 )));
             }
         }
         let record = record.ok_or_else(|| {
-            BenchExternalError::Layout(format!("variant {name} has no variant.json"))
+            BenchmarkExternalError::Layout(format!("variant {name} has no variant.json"))
         })?;
         if let Some(missing) = workloads.keys().find(|w| !entries.contains_key(*w)) {
-            return Err(BenchExternalError::Layout(format!(
+            return Err(BenchmarkExternalError::Layout(format!(
                 "variant {name} has neither {missing}.plan.json nor {missing}.no-plan.json"
             )));
         }
@@ -185,8 +187,8 @@ pub fn read_variants(
     Ok(variants)
 }
 
-/// How one lane process measures.
-pub struct LaneSetup<'a> {
+/// How one engine run measures.
+pub struct EngineRunSetup<'a> {
     pub protocol: &'a Protocol,
     pub core: usize,
     pub probe: &'a mut dyn LoadProbe,
@@ -194,47 +196,47 @@ pub struct LaneSetup<'a> {
     pub args: Vec<String>,
 }
 
-/// Runs every (workload, variant) cell of `run_dir` on `engine`, the
+/// Runs every (workload, variant) cell of `run_directory` on `engine`, the
 /// variants limited to `only_variants` when given. A cell whose
-/// `.cell.json` exists is refused before anything runs, so a lane can run
+/// `.cell.json` exists is refused before anything runs, so an engine run can go
 /// variant by variant but never overwrites a result. A cell that fails is
 /// written as `NotRun` and the next one runs.
-pub fn run_lane(
-    run_dir: &RunDir,
+pub fn run_engine(
+    run_directory: &RunDirectory,
     engine: &dyn EngineUnderTest,
     only_variants: Option<&[String]>,
-    mut setup: LaneSetup,
-) -> Result<Vec<LaneCell>, BenchExternalError> {
-    let workloads = read_workloads(run_dir)?;
-    let mut variants = read_variants(run_dir, &workloads)?;
+    mut setup: EngineRunSetup,
+) -> Result<Vec<EngineRunCell>, BenchmarkExternalError> {
+    let workloads = read_workloads(run_directory)?;
+    let mut variants = read_variants(run_directory, &workloads)?;
     if let Some(only) = only_variants {
         if let Some(unknown) = only
             .iter()
             .find(|v| !variants.iter().any(|x| &x.name == *v))
         {
-            return Err(BenchExternalError::Layout(format!(
+            return Err(BenchmarkExternalError::Layout(format!(
                 "no variant {unknown} under plans/"
             )));
         }
         variants.retain(|variant| only.contains(&variant.name));
     }
-    let lane = engine.description().id;
-    let lane_dir = run_dir.path().join("results").join(&lane);
+    let engine_id = engine.description().id;
+    let engine_directory = run_directory.path().join("results").join(&engine_id);
     for variant in &variants {
         for workload in workloads.keys() {
-            let cell = cell_path(&lane_dir, workload, &variant.name);
+            let cell = cell_path(&engine_directory, workload, &variant.name);
             if cell.exists() {
-                return Err(BenchExternalError::CellExists(cell));
+                return Err(BenchmarkExternalError::CellExists(cell));
             }
         }
     }
-    std::fs::create_dir_all(&lane_dir).map_err(|e| io(&lane_dir, e))?;
+    std::fs::create_dir_all(&engine_directory).map_err(|e| io(&engine_directory, e))?;
     write_json(
-        &lane_dir.join(format!(
-            "lane-{}.json",
+        &engine_directory.join(format!(
+            "engine-run-{}.json",
             Utc::now().format("%Y%m%dT%H%M%S%.3fZ")
         )),
-        &LaneRecord {
+        &EngineRunRecord {
             engine: engine.description(),
             cpu_accounting: engine.cpu_accounting(),
             protocol: setup.protocol.clone(),
@@ -251,19 +253,29 @@ pub fn run_lane(
                     reason: reason.clone(),
                 },
                 PlanEntry::PlanFile(plan_file) => {
-                    match run_cell(run_dir, engine, workload, variant, plan_file, &mut setup) {
+                    match run_cell(
+                        run_directory,
+                        engine,
+                        workload,
+                        variant,
+                        plan_file,
+                        &mut setup,
+                    ) {
                         Ok(()) => CellOutcome::Ran,
                         Err(error) => CellOutcome::NotRun { error },
                     }
                 }
             };
-            let cell = LaneCell {
-                lane: lane.clone(),
+            let cell = EngineRunCell {
+                engine: engine_id.clone(),
                 workload: workload_name.clone(),
                 variant: variant.name.clone(),
                 outcome,
             };
-            write_json(&cell_path(&lane_dir, workload_name, &variant.name), &cell)?;
+            write_json(
+                &cell_path(&engine_directory, workload_name, &variant.name),
+                &cell,
+            )?;
             cells.push(cell);
         }
     }
@@ -272,12 +284,12 @@ pub fn run_lane(
 
 /// Runs one cell and writes its `ArmResult`; the error text otherwise.
 fn run_cell(
-    run_dir: &RunDir,
+    run_directory: &RunDirectory,
     engine: &dyn EngineUnderTest,
     workload: &WorkloadSpec,
     variant: &Variant,
     plan_file: &Path,
-    setup: &mut LaneSetup,
+    setup: &mut EngineRunSetup,
 ) -> Result<(), String> {
     let schedule = ArmSchedule::for_workload(workload).map_err(|e| e.to_string())?;
     let arm = ArmSpec {
@@ -304,17 +316,19 @@ fn run_cell(
             ));
         }
     }
-    run_dir.write_arm(&result).map_err(|e| e.to_string())?;
+    run_directory
+        .write_arm(&result)
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
-/// One row of `summary.csv`: one cell of one lane. Every number is absolute;
+/// One row of `summary.csv`: one cell of one engine. Every number is absolute;
 /// `None` is an empty field (the cell did not run, or the engine has no such
 /// counter).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReportRow {
     pub workload: String,
-    pub lane: String,
+    pub engine: String,
     pub variant: String,
     /// `ok`, `no plan: <reason>` or `not run: <error>`.
     pub status: String,
@@ -324,19 +338,19 @@ pub struct ReportRow {
     /// Sum over refresh chunks of the median ingest CPU, per ingested sample.
     pub ingest_cpu_ns_per_sample: Option<f64>,
     /// Mean over evaluation times of the median evaluation CPU, in ms.
-    pub query_cpu_ms_per_eval: Option<f64>,
+    pub query_cpu_ms_per_evaluation: Option<f64>,
     /// The same for the engine's own per-query CPU counter; `None` when any
     /// step lacks it.
-    pub engine_counter_cpu_ms_per_eval: Option<f64>,
+    pub engine_counter_cpu_ms_per_evaluation: Option<f64>,
     /// A `cgroup` server's CPU over the whole arm, steps and the work between
     /// them, over every install, in ms.
     pub server_cpu_ms_whole_arm: Option<f64>,
     /// A `cgroup` server's `memory.current` before the installs.
-    pub server_memory_before_mib: Option<f64>,
+    pub server_memory_before_bytes: Option<u64>,
     /// A `cgroup` server's `memory.current` after the run, every install held.
-    pub server_memory_after_mib: Option<f64>,
+    pub server_memory_after_bytes: Option<u64>,
     /// A `cgroup` server's `memory.peak` over the container's whole life.
-    pub server_lifetime_peak_mib: Option<f64>,
+    pub server_lifetime_peak_bytes: Option<u64>,
     pub installs_held: Option<u32>,
     /// View plus raw bytes the last install holds.
     pub stored_bytes_last_install: Option<u64>,
@@ -350,8 +364,8 @@ pub struct ReportRow {
 /// Relative errors of answers against the truth over a set of points.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PointErrors {
-    pub max_rel_error: Option<f64>,
-    pub median_rel_error: Option<f64>,
+    pub max_relative_error: Option<f64>,
+    pub median_relative_error: Option<f64>,
     /// Points both answered.
     pub points: u64,
     /// Truth points the answer lacks.
@@ -364,7 +378,7 @@ pub struct PointErrors {
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueryAccuracy {
     pub workload: String,
-    pub lane: String,
+    pub engine: String,
     pub variant: String,
     pub query: String,
     pub errors: PointErrors,
@@ -372,7 +386,7 @@ pub struct QueryAccuracy {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Report {
-    /// `lane/variant` of the truth.
+    /// `engine/variant` of the truth.
     pub truth: String,
     pub rows: Vec<ReportRow>,
     pub accuracy: Vec<QueryAccuracy>,
@@ -412,8 +426,8 @@ fn median_of(values: &[f64]) -> Option<f64> {
 
 fn point_errors(errors: &[f64], missing_points: u64, extra_points: u64) -> PointErrors {
     PointErrors {
-        max_rel_error: errors.iter().copied().reduce(f64::max),
-        median_rel_error: median_of(errors),
+        max_relative_error: errors.iter().copied().reduce(f64::max),
+        median_relative_error: median_of(errors),
         points: errors.len() as u64,
         missing_points,
         extra_points,
@@ -470,26 +484,26 @@ fn errors_against(
     Ok(per_query)
 }
 
-/// Joins every lane's cells into the report, with accuracy against the
-/// cells of `truth_lane`/`truth_variant`. Refuses a truth with no cell, and
+/// Joins every engine run's cells into the report, with accuracy against the
+/// cells of `truth_engine`/`truth_variant`. Refuses a truth with no cell, and
 /// a workload whose ran cells ingested different numbers of samples (the
-/// lanes did not read the same data).
+/// engine runs did not read the same data).
 pub fn report(
-    run_dir: &RunDir,
-    truth_lane: &str,
+    run_directory: &RunDirectory,
+    truth_engine: &str,
     truth_variant: &str,
-) -> Result<Report, BenchExternalError> {
-    let results = run_dir.path().join("results");
-    let mut cells: Vec<(LaneCell, Option<ArmResult>)> = Vec::new();
-    for lane_dir in sorted_entries(&results)? {
-        for path in sorted_entries(&lane_dir)? {
+) -> Result<Report, BenchmarkExternalError> {
+    let results = run_directory.path().join("results");
+    let mut cells: Vec<(EngineRunCell, Option<ArmResult>)> = Vec::new();
+    for engine_directory in sorted_entries(&results)? {
+        for path in sorted_entries(&engine_directory)? {
             if !file_name(&path).ends_with(".cell.json") {
                 continue;
             }
-            let cell: LaneCell = read_json(&path)?;
+            let cell: EngineRunCell = read_json(&path)?;
             let result = match cell.outcome {
                 CellOutcome::Ran => Some(read_json::<ArmResult>(
-                    &lane_dir.join(format!("{}__{}.json", cell.workload, cell.variant)),
+                    &engine_directory.join(format!("{}__{}.json", cell.workload, cell.variant)),
                 )?),
                 _ => None,
             };
@@ -498,29 +512,31 @@ pub fn report(
     }
     if !cells
         .iter()
-        .any(|(cell, _)| cell.lane == truth_lane && cell.variant == truth_variant)
+        .any(|(cell, _)| cell.engine == truth_engine && cell.variant == truth_variant)
     {
-        return Err(BenchExternalError::Report(format!(
-            "the truth {truth_lane}/{truth_variant} has no cells under results/"
+        return Err(BenchmarkExternalError::Report(format!(
+            "the truth {truth_engine}/{truth_variant} has no cells under results/"
         )));
     }
     let mut samples_per_workload: BTreeMap<&str, (u64, String)> = BTreeMap::new();
     for (cell, result) in &cells {
         let Some(result) = result else { continue };
-        let here = format!("{}/{}", cell.lane, cell.variant);
+        let here = format!("{}/{}", cell.engine, cell.variant);
         let (samples, first) = samples_per_workload
             .entry(&cell.workload)
             .or_insert((result.ingested_samples, here.clone()));
         if *samples != result.ingested_samples {
-            return Err(BenchExternalError::Report(format!(
-                "workload {}: {first} ingested {samples} samples but {here} {}; the lanes did not read the same data",
+            return Err(BenchmarkExternalError::Report(format!(
+                "workload {}: {first} ingested {samples} samples but {here} {}; the engine runs did not read the same data",
                 cell.workload, result.ingested_samples
             )));
         }
     }
     let truth_of = |workload: &str| {
         cells.iter().find_map(|(cell, result)| {
-            (cell.lane == truth_lane && cell.variant == truth_variant && cell.workload == workload)
+            (cell.engine == truth_engine
+                && cell.variant == truth_variant
+                && cell.workload == workload)
                 .then_some(result.as_ref())
                 .flatten()
         })
@@ -535,17 +551,17 @@ pub fn report(
         };
         let mut row = ReportRow {
             workload: cell.workload.clone(),
-            lane: cell.lane.clone(),
+            engine: cell.engine.clone(),
             variant: cell.variant.clone(),
             status,
             cpu_accounting: None,
             ingest_cpu_ns_per_sample: None,
-            query_cpu_ms_per_eval: None,
-            engine_counter_cpu_ms_per_eval: None,
+            query_cpu_ms_per_evaluation: None,
+            engine_counter_cpu_ms_per_evaluation: None,
             server_cpu_ms_whole_arm: None,
-            server_memory_before_mib: None,
-            server_memory_after_mib: None,
-            server_lifetime_peak_mib: None,
+            server_memory_before_bytes: None,
+            server_memory_after_bytes: None,
+            server_lifetime_peak_bytes: None,
             installs_held: None,
             stored_bytes_last_install: None,
             no_truth: false,
@@ -557,7 +573,7 @@ pub fn report(
             fill_measurements(&mut row, result);
             if let Some(truth) = truth_of(&cell.workload) {
                 let per_query =
-                    errors_against(result, truth).map_err(BenchExternalError::Report)?;
+                    errors_against(result, truth).map_err(BenchmarkExternalError::Report)?;
                 let (mut all, mut missing, mut extra) = (Vec::new(), 0, 0);
                 for (query, errors) in per_query {
                     all.extend_from_slice(&errors.errors);
@@ -565,7 +581,7 @@ pub fn report(
                     extra += errors.extra_points;
                     accuracy.push(QueryAccuracy {
                         workload: cell.workload.clone(),
-                        lane: cell.lane.clone(),
+                        engine: cell.engine.clone(),
                         variant: cell.variant.clone(),
                         query,
                         errors: point_errors(
@@ -583,13 +599,11 @@ pub fn report(
         rows.push(row);
     }
     Ok(Report {
-        truth: format!("{truth_lane}/{truth_variant}"),
+        truth: format!("{truth_engine}/{truth_variant}"),
         rows,
         accuracy,
     })
 }
-
-const MIB: f64 = 1024.0 * 1024.0;
 
 fn fill_measurements(row: &mut ReportRow, result: &ArmResult) {
     let step_cpu_ns =
@@ -613,8 +627,8 @@ fn fill_measurements(row: &mut ReportRow, result: &ArmResult) {
             .iter()
             .map(|job| step_cpu_ns(&job.median))
             .sum();
-        row.query_cpu_ms_per_eval = Some(query_ns as f64 / 1e6 / evaluations as f64);
-        row.engine_counter_cpu_ms_per_eval = result
+        row.query_cpu_ms_per_evaluation = Some(query_ns as f64 / 1e6 / evaluations as f64);
+        row.engine_counter_cpu_ms_per_evaluation = result
             .evaluate
             .iter()
             .map(|job| job.median.report.engine_reported_cpu_ns)
@@ -622,16 +636,15 @@ fn fill_measurements(row: &mut ReportRow, result: &ArmResult) {
             .map(|ns| ns as f64 / 1e6 / evaluations as f64);
     }
     row.server_cpu_ms_whole_arm = result.server_cpu_ns_whole_arm.map(|ns| ns as f64 / 1e6);
-    row.server_memory_before_mib = result
+    row.server_memory_before_bytes = result
         .server_memory_before
-        .map(|memory| memory.current_bytes as f64 / MIB);
-    row.server_memory_after_mib = result
+        .map(|memory| memory.current_bytes);
+    row.server_memory_after_bytes = result
         .server_memory_after
-        .map(|memory| memory.current_bytes as f64 / MIB);
-    row.server_lifetime_peak_mib = result
+        .map(|memory| memory.current_bytes);
+    row.server_lifetime_peak_bytes = result
         .server_memory_after
-        .and_then(|memory| memory.lifetime_peak_bytes)
-        .map(|bytes| bytes as f64 / MIB);
+        .and_then(|memory| memory.lifetime_peak_bytes);
     row.installs_held = Some(result.installs_held);
     row.stored_bytes_last_install =
         Some(result.footprint.view_bytes + result.footprint.raw_retained_bytes);
@@ -640,11 +653,11 @@ fn fill_measurements(row: &mut ReportRow, result: &ArmResult) {
 }
 
 /// The `summary.csv` header.
-pub const SUMMARY_CSV_HEADER: &str = "workload,lane,variant,status,cpu_accounting,ingest_cpu_ns_per_sample,query_cpu_ms_per_eval,engine_counter_cpu_ms_per_eval,server_cpu_ms_whole_arm,server_memory_before_mib,server_memory_after_mib,server_lifetime_peak_mib,installs_held,stored_bytes_last_install,max_rel_error,median_rel_error,points,missing_points,extra_points,substitutions,sharing_lost";
+pub const SUMMARY_CSV_HEADER: &str = "workload,engine,variant,status,cpu_accounting,ingest_cpu_ns_per_sample,query_cpu_ms_per_evaluation,engine_counter_cpu_ms_per_evaluation,server_cpu_ms_whole_arm,server_memory_before_bytes,server_memory_after_bytes,server_lifetime_peak_bytes,installs_held,stored_bytes_last_install,max_relative_error,median_relative_error,points,missing_points,extra_points,substitutions,sharing_lost";
 
 /// The `accuracy.csv` header.
 pub const ACCURACY_CSV_HEADER: &str =
-    "workload,lane,variant,query,max_rel_error,median_rel_error,points,missing_points,extra_points";
+    "workload,engine,variant,query,max_relative_error,median_relative_error,points,missing_points,extra_points";
 
 fn field<T: std::fmt::Display>(value: Option<T>) -> String {
     value.map(|v| v.to_string()).unwrap_or_default()
@@ -663,8 +676,8 @@ fn error_fields(errors: Option<&PointErrors>) -> String {
     match errors {
         Some(e) => format!(
             "{},{},{},{},{}",
-            field(e.max_rel_error),
-            field(e.median_rel_error),
+            field(e.max_relative_error),
+            field(e.median_relative_error),
             e.points,
             e.missing_points,
             e.extra_points
@@ -681,17 +694,17 @@ impl Report {
             text.push_str(&format!(
                 "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
                 csv_text(&row.workload),
-                csv_text(&row.lane),
+                csv_text(&row.engine),
                 csv_text(&row.variant),
                 csv_text(&row.status),
                 field(row.cpu_accounting),
                 field(row.ingest_cpu_ns_per_sample),
-                field(row.query_cpu_ms_per_eval),
-                field(row.engine_counter_cpu_ms_per_eval),
+                field(row.query_cpu_ms_per_evaluation),
+                field(row.engine_counter_cpu_ms_per_evaluation),
                 field(row.server_cpu_ms_whole_arm),
-                field(row.server_memory_before_mib),
-                field(row.server_memory_after_mib),
-                field(row.server_lifetime_peak_mib),
+                field(row.server_memory_before_bytes),
+                field(row.server_memory_after_bytes),
+                field(row.server_lifetime_peak_bytes),
                 field(row.installs_held),
                 field(row.stored_bytes_last_install),
                 error_fields(row.accuracy.as_ref()),
@@ -709,7 +722,7 @@ impl Report {
             text.push_str(&format!(
                 "{},{},{},{},{}\n",
                 csv_text(&row.workload),
-                csv_text(&row.lane),
+                csv_text(&row.engine),
                 csv_text(&row.variant),
                 csv_text(&row.query),
                 error_fields(Some(&row.errors))
@@ -718,18 +731,18 @@ impl Report {
         text
     }
 
-    /// `summary.md`: rows = workloads, columns = `lane/variant`, sorted.
+    /// `summary.md`: rows = workloads, columns = `engine/variant`, sorted.
     /// A ran cell reads `q 2.000 ms, i 2000.0 ns/sample, err 0.100 [cgroup]`.
     pub fn summary_markdown(&self) -> String {
         let columns: std::collections::BTreeSet<String> = self
             .rows
             .iter()
-            .map(|row| format!("{}/{}", row.lane, row.variant))
+            .map(|row| format!("{}/{}", row.engine, row.variant))
             .collect();
         let workloads: std::collections::BTreeSet<&str> =
             self.rows.iter().map(|row| row.workload.as_str()).collect();
         let mut text = format!(
-            "Absolute CPU per lane: `q` = query CPU per evaluation, `i` = ingest CPU per sample, `err` = max relative error against {}. `[thread]` lanes count the calling thread only; `[cgroup]` lanes count the whole server.\n\n| workload |",
+            "Absolute CPU per engine: `q` = query CPU per evaluation, `i` = ingest CPU per sample, `err` = max relative error against {}. `[thread]` engine runs count the calling thread only; `[cgroup]` engine runs count the whole server.\n\n| workload |",
             self.truth
         );
         for column in &columns {
@@ -742,13 +755,13 @@ impl Report {
             text.push_str(&format!("| {workload} |"));
             for column in &columns {
                 let row = self.rows.iter().find(|row| {
-                    row.workload == workload && format!("{}/{}", row.lane, row.variant) == *column
+                    row.workload == workload && format!("{}/{}", row.engine, row.variant) == *column
                 });
                 let cell = match row {
                     None => String::new(),
                     Some(row) if row.status == "ok" => format!(
                         "q {} ms, i {} ns/sample, err {} [{}]",
-                        row.query_cpu_ms_per_eval
+                        row.query_cpu_ms_per_evaluation
                             .map_or("-".into(), |v| format!("{v:.3}")),
                         row.ingest_cpu_ns_per_sample
                             .map_or("-".into(), |v| format!("{v:.1}")),
@@ -757,7 +770,7 @@ impl Report {
                         } else {
                             row.accuracy
                                 .as_ref()
-                                .and_then(|e| e.max_rel_error)
+                                .and_then(|e| e.max_relative_error)
                                 .map_or("-".into(), |v| format!("{v:.3}"))
                         },
                         row.cpu_accounting.unwrap_or("-"),
@@ -781,23 +794,26 @@ impl Report {
 
 /// Writes `summary.csv`, `summary.md` and `accuracy.csv` in the run
 /// directory, replacing earlier reports (a report is derived, never a result).
-pub fn write_report(run_dir: &RunDir, report: &Report) -> Result<(), BenchExternalError> {
+pub fn write_report(
+    run_directory: &RunDirectory,
+    report: &Report,
+) -> Result<(), BenchmarkExternalError> {
     for (name, text) in [
         ("summary.csv", report.summary_csv()),
         ("summary.md", report.summary_markdown()),
         ("accuracy.csv", report.accuracy_csv()),
     ] {
-        let path = run_dir.path().join(name);
+        let path = run_directory.path().join(name);
         std::fs::write(&path, text).map_err(|e| io(&path, e))?;
     }
     Ok(())
 }
 
-fn cell_path(lane_dir: &Path, workload: &str, variant: &str) -> PathBuf {
-    lane_dir.join(format!("{workload}__{variant}.cell.json"))
+fn cell_path(engine_directory: &Path, workload: &str, variant: &str) -> PathBuf {
+    engine_directory.join(format!("{workload}__{variant}.cell.json"))
 }
 
-fn sorted_entries(dir: &Path) -> Result<Vec<PathBuf>, BenchExternalError> {
+fn sorted_entries(dir: &Path) -> Result<Vec<PathBuf>, BenchmarkExternalError> {
     let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
         .map_err(|e| io(dir, e))?
         .map(|entry| entry.map(|entry| entry.path()).map_err(|e| io(dir, e)))
@@ -806,10 +822,10 @@ fn sorted_entries(dir: &Path) -> Result<Vec<PathBuf>, BenchExternalError> {
     Ok(paths)
 }
 
-fn sorted_files(dir: &Path) -> Result<Vec<PathBuf>, BenchExternalError> {
+fn sorted_files(dir: &Path) -> Result<Vec<PathBuf>, BenchmarkExternalError> {
     let paths = sorted_entries(dir)?;
     if let Some(sub) = paths.iter().find(|path| !path.is_file()) {
-        return Err(BenchExternalError::Layout(format!(
+        return Err(BenchmarkExternalError::Layout(format!(
             "{} is not a file",
             sub.display()
         )));
@@ -823,36 +839,36 @@ fn file_name(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-fn file_stem_with_suffix(path: &Path, suffix: &str) -> Result<String, BenchExternalError> {
+fn file_stem_with_suffix(path: &Path, suffix: &str) -> Result<String, BenchmarkExternalError> {
     file_name(path)
         .strip_suffix(suffix)
         .map(str::to_string)
         .ok_or_else(|| {
-            BenchExternalError::Layout(format!("{} does not end in {suffix}", path.display()))
+            BenchmarkExternalError::Layout(format!("{} does not end in {suffix}", path.display()))
         })
 }
 
-fn absolute(path: &Path) -> Result<PathBuf, BenchExternalError> {
+fn absolute(path: &Path) -> Result<PathBuf, BenchmarkExternalError> {
     std::path::absolute(path).map_err(|e| io(path, e))
 }
 
-fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, BenchExternalError> {
+fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, BenchmarkExternalError> {
     let text = std::fs::read_to_string(path).map_err(|e| io(path, e))?;
-    serde_json::from_str(&text).map_err(|error| BenchExternalError::Json {
+    serde_json::from_str(&text).map_err(|error| BenchmarkExternalError::Json {
         path: path.to_path_buf(),
         message: error.to_string(),
     })
 }
 
-fn io(path: &Path, error: std::io::Error) -> BenchExternalError {
-    BenchExternalError::Io {
+fn io(path: &Path, error: std::io::Error) -> BenchmarkExternalError {
+    BenchmarkExternalError::Io {
         path: path.to_path_buf(),
         message: error.to_string(),
     }
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum BenchExternalError {
+pub enum BenchmarkExternalError {
     /// The run directory does not have the layout of the module docs.
     #[error("{0}")]
     Layout(String),
@@ -864,8 +880,8 @@ pub enum BenchExternalError {
     #[error("{path}: {message}")]
     Json { path: PathBuf, message: String },
     #[error(transparent)]
-    RunDir(#[from] RunDirError),
-    /// Inputs the report cannot join, such as lanes that ingested different data.
+    RunDirectory(#[from] RunDirectoryError),
+    /// Inputs the report cannot join, such as engine runs that ingested different data.
     #[error("{0}")]
     Report(String),
 }

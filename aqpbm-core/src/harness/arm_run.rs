@@ -22,7 +22,7 @@ pub struct ArmSchedule {
 }
 
 impl ArmSchedule {
-    /// The schedule every lane uses for `workload`: refresh every evaluation
+    /// The schedule every engine run uses for `workload`: refresh every evaluation
     /// interval, and evaluate at every multiple of the interval
     /// (`t mod interval = 0`) from the data start plus the longest window
     /// through the data end.

@@ -13,13 +13,13 @@ use crate::harness::records::{ArmResult, RunRecord};
 
 /// A created run directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RunDir {
-    /// Private: only [`RunDir::create`] makes one, so every `RunDir` names a
+pub struct RunDirectory {
+    /// Private: only [`RunDirectory::create`] makes one, so every `RunDirectory` names a
     /// directory this run created.
     path: PathBuf,
 }
 
-impl RunDir {
+impl RunDirectory {
     /// Creates the directory and its subdirectories. Refuses an existing
     /// directory and a label or subcommand outside `[a-z0-9-]`.
     pub fn create(
@@ -28,7 +28,7 @@ impl RunDir {
         utc: DateTime<Utc>,
         subcommand: &str,
         label: &str,
-    ) -> Result<Self, RunDirError> {
+    ) -> Result<Self, RunDirectoryError> {
         check_name("machine key", machine_key, MACHINE_KEY_CHARSET, |c| {
             c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_'
         })?;
@@ -41,20 +41,20 @@ impl RunDir {
             "{}-{subcommand}-{label}",
             utc.format("%Y%m%dT%H%M%SZ")
         ));
-        RunDir::create_at(&path)
+        RunDirectory::create_at(&path)
     }
 
     /// Creates the run directory at `path` and its subdirectories, for a
-    /// run whose lanes run as separate processes over one directory
-    /// (`bench-external --run-dir`). Refuses an existing `path`.
-    pub fn create_at(path: &Path) -> Result<Self, RunDirError> {
+    /// run whose engine runs are separate processes over one directory
+    /// (`benchmark-external --run-directory`). Refuses an existing `path`.
+    pub fn create_at(path: &Path) -> Result<Self, RunDirectoryError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|source| io(parent, source))?;
         }
         match std::fs::create_dir(path) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                return Err(RunDirError::RunDirExists(path.to_path_buf()));
+                return Err(RunDirectoryError::RunDirExists(path.to_path_buf()));
             }
             Err(source) => return Err(io(path, source)),
         }
@@ -62,23 +62,23 @@ impl RunDir {
             let sub = path.join(sub);
             std::fs::create_dir(&sub).map_err(|source| io(&sub, source))?;
         }
-        Ok(RunDir {
+        Ok(RunDirectory {
             path: path.to_path_buf(),
         })
     }
 
     /// Opens a run directory another process created: every subdirectory
     /// must exist.
-    pub fn open(path: &Path) -> Result<Self, RunDirError> {
+    pub fn open(path: &Path) -> Result<Self, RunDirectoryError> {
         for sub in RUN_SUBDIRS {
             if !path.join(sub).is_dir() {
-                return Err(RunDirError::NotARunDir {
+                return Err(RunDirectoryError::NotARunDirectory {
                     path: path.to_path_buf(),
                     missing: sub.into(),
                 });
             }
         }
-        Ok(RunDir {
+        Ok(RunDirectory {
             path: path.to_path_buf(),
         })
     }
@@ -89,12 +89,12 @@ impl RunDir {
     }
 
     /// Writes `run.json`.
-    pub fn write_run(&self, run: &RunRecord) -> Result<(), RunDirError> {
+    pub fn write_run(&self, run: &RunRecord) -> Result<(), RunDirectoryError> {
         write_json(&self.path.join("run.json"), run)
     }
 
     /// Writes `data/<metric>.datagen.json` and returns its path.
-    pub fn write_data(&self, data: &DataRecord) -> Result<PathBuf, RunDirError> {
+    pub fn write_data(&self, data: &DataRecord) -> Result<PathBuf, RunDirectoryError> {
         check_name("metric", &data.metric, METRIC_CHARSET, |c| {
             c.is_ascii_alphanumeric() || c == '_' || c == ':'
         })?;
@@ -109,7 +109,7 @@ impl RunDir {
     /// Writes `results/<engine>/<workload>__<arm>.json` and returns its path.
     /// A workload or arm name containing `__` is refused: the file name would
     /// be ambiguous.
-    pub fn write_arm(&self, result: &ArmResult) -> Result<PathBuf, RunDirError> {
+    pub fn write_arm(&self, result: &ArmResult) -> Result<PathBuf, RunDirectoryError> {
         check_result_name("engine", &result.engine, false)?;
         check_result_name("workload", &result.workload, true)?;
         check_result_name("arm", &result.arm, true)?;
@@ -124,7 +124,7 @@ impl RunDir {
     /// after, load average and marks (such as `busy-after 0.35`).
     /// Example: `ingest-0 core 3 busy-before 0.02 busy-after 0.03 loadavg 0.5 0.75`;
     /// an unreadable load average is written `unknown`.
-    pub fn append_status(&self, job: &str, record: &JobRecord) -> Result<(), RunDirError> {
+    pub fn append_status(&self, job: &str, record: &JobRecord) -> Result<(), RunDirectoryError> {
         let mut line = format!(
             "{job} core {} busy-before {:.2} busy-after {:.2} loadavg {} {}",
             record.core,
@@ -159,19 +159,19 @@ pub(crate) fn check_result_name(
     what: &str,
     name: &str,
     separated: bool,
-) -> Result<(), RunDirError> {
+) -> Result<(), RunDirectoryError> {
     check_name(what, name, FILE_NAME_CHARSET, |c| {
         c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'
     })?;
     if name.starts_with('.') {
-        return Err(RunDirError::BadName {
+        return Err(RunDirectoryError::BadName {
             what: what.into(),
             name: name.into(),
             allowed: FILE_NAME_CHARSET,
         });
     }
     if separated && name.contains("__") {
-        return Err(RunDirError::AmbiguousName {
+        return Err(RunDirectoryError::AmbiguousName {
             what: what.into(),
             name: name.into(),
         });
@@ -201,9 +201,9 @@ fn check_name(
     name: &str,
     allowed: &'static str,
     allowed_char: impl Fn(char) -> bool,
-) -> Result<(), RunDirError> {
+) -> Result<(), RunDirectoryError> {
     if name.is_empty() || !name.chars().all(allowed_char) {
-        return Err(RunDirError::BadName {
+        return Err(RunDirectoryError::BadName {
             what: what.into(),
             name: name.into(),
             allowed,
@@ -212,8 +212,8 @@ fn check_name(
     Ok(())
 }
 
-fn io(path: &Path, source: std::io::Error) -> RunDirError {
-    RunDirError::Io {
+fn io(path: &Path, source: std::io::Error) -> RunDirectoryError {
+    RunDirectoryError::Io {
         path: path.to_path_buf(),
         source,
     }
@@ -221,11 +221,15 @@ fn io(path: &Path, source: std::io::Error) -> RunDirError {
 
 /// Writes `value` as pretty JSON with a final newline to a new file; an
 /// existing file is refused (`create_new`), so a result is never overwritten.
-pub(crate) fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), RunDirError> {
-    let mut text = serde_json::to_string_pretty(value).map_err(|source| RunDirError::Json {
-        path: path.to_path_buf(),
-        source,
-    })?;
+pub(crate) fn write_json<T: serde::Serialize>(
+    path: &Path,
+    value: &T,
+) -> Result<(), RunDirectoryError> {
+    let mut text =
+        serde_json::to_string_pretty(value).map_err(|source| RunDirectoryError::Json {
+            path: path.to_path_buf(),
+            source,
+        })?;
     text.push('\n');
     std::fs::OpenOptions::new()
         .write(true)
@@ -237,7 +241,7 @@ pub(crate) fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<
 
 /// A run directory that cannot be created or written.
 #[derive(Debug, thiserror::Error)]
-pub enum RunDirError {
+pub enum RunDirectoryError {
     /// The directory exists; runs are never overwritten.
     #[error("run directory {0} exists; runs are never overwritten")]
     RunDirExists(PathBuf),
@@ -255,7 +259,7 @@ pub enum RunDirError {
     AmbiguousName { what: String, name: String },
     /// A directory without one of the run subdirectories.
     #[error("{path} is not a run directory: it has no {missing}/")]
-    NotARunDir { path: PathBuf, missing: String },
+    NotARunDirectory { path: PathBuf, missing: String },
     #[error("{path}: {source}")]
     Io {
         path: PathBuf,

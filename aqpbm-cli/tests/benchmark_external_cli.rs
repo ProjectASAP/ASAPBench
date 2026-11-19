@@ -1,11 +1,11 @@
-//! `approxbench bench-external run` and `report` on the fake lane.
+//! `approxbench benchmark-external run` and `report` on the fake engine.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use aqpbm_core::harness::data::DataRecord;
 use aqpbm_core::harness::engine::{QueryLanguage, QueryText, WorkloadQuery, WorkloadSpec};
-use aqpbm_core::harness::rundir::RunDir;
+use aqpbm_core::harness::run_directory::RunDirectory;
 use aqpbm_datagen::{DataDistribution, SeriesLabelSpec, TimeSeriesDescription, UniformParameter};
 
 fn workload(name: &str) -> WorkloadSpec {
@@ -51,11 +51,11 @@ fn write(path: &Path, text: &str) {
 
 fn fixture(test: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!(
-        "approxbench-bench-external-{}-{test}",
+        "approxbench-benchmark-external-{}-{test}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&root);
-    let run = RunDir::create_at(&root.join("run")).unwrap();
+    let run = RunDirectory::create_at(&root.join("run")).unwrap();
     for name in ["w1", "w2"] {
         write(
             &run.path().join(format!("workloads/{name}.json")),
@@ -88,17 +88,17 @@ fn approxbench(args: &[&str]) -> std::process::Output {
         .unwrap()
 }
 
-/// X1: a fake lane runs every cell, and the report has one row per cell.
+/// X1: a fake engine runs every cell, and the report has one row per cell.
 #[test]
-fn a_fake_lane_runs_and_reports() {
+fn a_fake_engine_runs_and_reports() {
     let run = fixture("x1");
-    let run_dir = run.to_str().unwrap();
+    let run_directory = run.to_str().unwrap();
     let out = approxbench(&[
-        "bench-external",
+        "benchmark-external",
         "run",
-        "--run-dir",
-        run_dir,
-        "--lane",
+        "--run-directory",
+        run_directory,
+        "--engine",
         "fake",
         "--warmup",
         "0",
@@ -113,10 +113,10 @@ fn a_fake_lane_runs_and_reports() {
         String::from_utf8_lossy(&out.stderr)
     );
     let out = approxbench(&[
-        "bench-external",
+        "benchmark-external",
         "report",
-        "--run-dir",
-        run_dir,
+        "--run-directory",
+        run_directory,
         "--truth",
         "fake/v2",
     ]);
@@ -142,16 +142,16 @@ fn a_fake_lane_runs_and_reports() {
     let _ = std::fs::remove_dir_all(run.parent().unwrap());
 }
 
-/// X2: an unknown lane names the known ones.
+/// X2: an unknown engine names the known ones.
 #[test]
-fn an_unknown_lane_names_the_known_lanes() {
+fn an_unknown_engine_names_the_known_engines() {
     let run = fixture("x2");
     let out = approxbench(&[
-        "bench-external",
+        "benchmark-external",
         "run",
-        "--run-dir",
+        "--run-directory",
         run.to_str().unwrap(),
-        "--lane",
+        "--engine",
         "clickhouse",
     ]);
     assert!(!out.status.success());

@@ -1,11 +1,11 @@
-//! Lanes over one run directory and the report that joins them.
+//! Engine runs over one run directory and the report that joins them.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use aqpbm_core::harness::bench_external::{
-    read_variants, read_workloads, report, run_lane, write_report, CellOutcome, LaneCell,
-    LaneSetup, SUMMARY_CSV_HEADER,
+use aqpbm_core::harness::benchmark_external::{
+    read_variants, read_workloads, report, run_engine, write_report, CellOutcome, EngineRunCell,
+    EngineRunSetup, SUMMARY_CSV_HEADER,
 };
 use aqpbm_core::harness::cgroup::CgroupMemory;
 use aqpbm_core::harness::data::{DataRecord, SeriesLabels};
@@ -18,7 +18,7 @@ use aqpbm_core::harness::protocol::{
     JobRecord, LoadProbe, MeasurementClocks, Protocol, ProtocolError,
 };
 use aqpbm_core::harness::records::ArmResult;
-use aqpbm_core::harness::rundir::RunDir;
+use aqpbm_core::harness::run_directory::RunDirectory;
 use aqpbm_datagen::{DataDistribution, SeriesLabelSpec, TimeSeriesDescription, UniformParameter};
 
 struct TempDir(PathBuf);
@@ -26,7 +26,7 @@ struct TempDir(PathBuf);
 impl TempDir {
     fn new(test: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "aqpbm-core-harness-bench-external-{}-{test}",
+            "aqpbm-core-harness-benchmark-external-{}-{test}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&path);
@@ -98,8 +98,8 @@ fn write(path: &Path, text: &str) {
 /// Workloads w1 and w2; variant v1 (no substitutions allowed) with a plan
 /// for w1 and none for w2; variant v2 (substitutions allowed) with the
 /// given plan texts for w1 and w2.
-fn fixture(temp: &TempDir, v2_w1: &str, v2_w2: &str) -> RunDir {
-    let run = RunDir::create_at(&temp.0.join("run")).unwrap();
+fn fixture(temp: &TempDir, v2_w1: &str, v2_w2: &str) -> RunDirectory {
+    let run = RunDirectory::create_at(&temp.0.join("run")).unwrap();
     for name in ["w1", "w2"] {
         write(
             &run.path().join("workloads").join(format!("{name}.json")),
@@ -133,15 +133,15 @@ fn protocol() -> Protocol {
     }
 }
 
-fn run_fake(run: &RunDir, only: Option<&[String]>) -> Result<Vec<LaneCell>, String> {
+fn run_fake(run: &RunDirectory, only: Option<&[String]>) -> Result<Vec<EngineRunCell>, String> {
     let engine = FakeEngine::default();
     let clocks = MeasurementClocks::with_calling_thread(&engine.clock);
     let protocol = protocol();
-    run_lane(
+    run_engine(
         run,
         &engine,
         only,
-        LaneSetup {
+        EngineRunSetup {
             protocol: &protocol,
             core: 0,
             probe: &mut IdleProbe,
@@ -152,7 +152,7 @@ fn run_fake(run: &RunDir, only: Option<&[String]>) -> Result<Vec<LaneCell>, Stri
     .map_err(|error| error.to_string())
 }
 
-fn outcomes(cells: &[LaneCell]) -> Vec<(String, String, CellOutcome)> {
+fn outcomes(cells: &[EngineRunCell]) -> Vec<(String, String, CellOutcome)> {
     cells
         .iter()
         .map(|cell| {
@@ -165,7 +165,7 @@ fn outcomes(cells: &[LaneCell]) -> Vec<(String, String, CellOutcome)> {
         .collect()
 }
 
-fn read_result(run: &RunDir, workload: &str, variant: &str) -> ArmResult {
+fn read_result(run: &RunDirectory, workload: &str, variant: &str) -> ArmResult {
     let path = run
         .path()
         .join(format!("results/fake/{workload}__{variant}.json"));
@@ -174,7 +174,7 @@ fn read_result(run: &RunDir, workload: &str, variant: &str) -> ArmResult {
 
 /// L1: every cell is written; ran cells got the absolute plan file path.
 #[test]
-fn a_lane_runs_every_cell_and_passes_the_plan_file() {
+fn an_engine_run_runs_every_cell_and_passes_the_plan_file() {
     let temp = TempDir::new("l1");
     let run = fixture(&temp, "{}", "{}");
     let cells = run_fake(&run, None).unwrap();
@@ -215,22 +215,22 @@ fn a_lane_runs_every_cell_and_passes_the_plan_file() {
             .is_file());
     }
     assert!(!run.path().join("results/fake/w2__v1.json").exists());
-    let lane_records = std::fs::read_dir(run.path().join("results/fake"))
+    let engine_run_records = std::fs::read_dir(run.path().join("results/fake"))
         .unwrap()
         .filter(|e| {
             e.as_ref()
                 .unwrap()
                 .file_name()
                 .to_string_lossy()
-                .starts_with("lane-")
+                .starts_with("engine-run-")
         })
         .count();
-    assert_eq!(lane_records, 1);
+    assert_eq!(engine_run_records, 1);
 }
 
-/// L2 + L5: a lane can run variant by variant; a cell is never rerun.
+/// L2 + L5: an engine run can go variant by variant; a cell is never rerun.
 #[test]
-fn a_lane_runs_variant_by_variant_and_never_reruns_a_cell() {
+fn an_engine_run_goes_variant_by_variant_and_never_reruns_a_cell() {
     let temp = TempDir::new("l5");
     let run = fixture(&temp, "{}", "{}");
     let v2 = run_fake(&run, Some(&["v2".to_string()])).unwrap();
@@ -249,7 +249,7 @@ fn a_lane_runs_variant_by_variant_and_never_reruns_a_cell() {
 /// L3 + L7: an install error, and a substitution under a variant that
 /// allows none, are `NotRun` cells; the other cells still run.
 #[test]
-fn failed_cells_are_written_and_the_lane_goes_on() {
+fn failed_cells_are_written_and_the_engine_run_goes_on() {
     let temp = TempDir::new("l3");
     let run = fixture(
         &temp,
@@ -358,9 +358,9 @@ fn server_job(ns: u64, counter_ns: Option<u64>) -> JobRecord {
     })
 }
 
-fn result(lane: &str, workload: &str, variant: &str, answers: Vec<(i64, Answers)>) -> ArmResult {
+fn result(engine: &str, workload: &str, variant: &str, answers: Vec<(i64, Answers)>) -> ArmResult {
     ArmResult {
-        engine: lane.into(),
+        engine: engine.into(),
         workload: workload.into(),
         arm: variant.into(),
         plan: PlanSummary::default(),
@@ -382,8 +382,8 @@ fn result(lane: &str, workload: &str, variant: &str, answers: Vec<(i64, Answers)
 
 /// Writes a cell, and its result when it ran.
 fn put(
-    run: &RunDir,
-    lane: &str,
+    run: &RunDirectory,
+    engine: &str,
     workload: &str,
     variant: &str,
     outcome: CellOutcome,
@@ -392,15 +392,15 @@ fn put(
     if let Some(arm) = arm {
         run.write_arm(&arm).unwrap();
     }
-    let cell = LaneCell {
-        lane: lane.into(),
+    let cell = EngineRunCell {
+        engine: engine.into(),
         workload: workload.into(),
         variant: variant.into(),
         outcome,
     };
     write(
         &run.path()
-            .join(format!("results/{lane}/{workload}__{variant}.cell.json")),
+            .join(format!("results/{engine}/{workload}__{variant}.cell.json")),
         &serde_json::to_string(&cell).unwrap(),
     );
 }
@@ -412,10 +412,10 @@ fn truth_answers() -> Vec<(i64, Answers)> {
     ]
 }
 
-/// The P1 fixture: truth `a/v1`, `b/v1` a cgroup lane that ran, `b/v2` no
+/// The P1 fixture: truth `a/v1`, `b/v1` a cgroup engine that ran, `b/v2` no
 /// plan, `c/v1` not run, and workload w2 where the truth has no plan.
-fn report_fixture(temp: &TempDir) -> RunDir {
-    let run = RunDir::create_at(&temp.0.join("run")).unwrap();
+fn report_fixture(temp: &TempDir) -> RunDirectory {
+    let run = RunDirectory::create_at(&temp.0.join("run")).unwrap();
     put(
         &run,
         "a",
@@ -514,7 +514,7 @@ fn the_summary_has_absolute_numbers_and_errors_against_the_truth() {
     let expected = [
         "w1,a,v1,ok,thread,250,0.001,,,,,,1,0,0,0,2,0,0,,".to_string(),
         "w2,a,v1,no plan: ExcludedByDeployment".to_string() + &empty_after_status,
-        "w1,b,v1,ok,cgroup,2000,2,2,9,3,3,5,6,120,0.1,0.05,2,0,1,quantileDD for Kll at node 3;x,\"node 4 for nodes 6, 7\"".to_string(),
+        "w1,b,v1,ok,cgroup,2000,2,2,9,3145728,3145728,5242880,6,120,0.1,0.05,2,0,1,quantileDD for Kll at node 3;x,\"node 4 for nodes 6, 7\"".to_string(),
         "w1,b,v2,no plan: ExcludedByDeployment".to_string() + &empty_after_status,
         "w2,b,v1,ok,thread,250,0.001,,,,,,1,0,,,,,,,".to_string(),
         "w1,c,v1,not run: refused: filter@node 3".to_string() + &empty_after_status,
@@ -553,14 +553,14 @@ fn the_summary_has_absolute_numbers_and_errors_against_the_truth() {
     assert!(report_error(&run, "a", "v9").contains("a/v9"));
 }
 
-fn report_error(run: &RunDir, lane: &str, variant: &str) -> String {
-    report(run, lane, variant).unwrap_err().to_string()
+fn report_error(run: &RunDirectory, engine: &str, variant: &str) -> String {
+    report(run, engine, variant).unwrap_err().to_string()
 }
 
 /// P2: the relative-error rules.
 #[test]
 fn relative_errors_follow_the_stated_rules() {
-    use aqpbm_core::harness::bench_external::relative_error;
+    use aqpbm_core::harness::benchmark_external::relative_error;
     assert_eq!(relative_error(11.0, 10.0), 0.1);
     assert_eq!(relative_error(0.0, 0.0), 0.0);
     assert_eq!(relative_error(1.0, 0.0), f64::INFINITY);
@@ -576,12 +576,12 @@ fn relative_errors_follow_the_stated_rules() {
     assert_eq!(relative_error(f64::INFINITY, f64::INFINITY), 0.0);
 }
 
-/// Review items 5 and 7: lanes that read different data, or answered at
+/// Review items 5 and 7: engine runs that read different data, or answered at
 /// other times than the truth, are refused by the report.
 #[test]
-fn the_report_refuses_lanes_that_did_not_run_the_same_data_or_times() {
+fn the_report_refuses_engine_runs_that_did_not_run_the_same_data_or_times() {
     let temp = TempDir::new("p7");
-    let run = RunDir::create_at(&temp.0.join("run")).unwrap();
+    let run = RunDirectory::create_at(&temp.0.join("run")).unwrap();
     put(
         &run,
         "a",
@@ -605,7 +605,7 @@ fn the_report_refuses_lanes_that_did_not_run_the_same_data_or_times() {
     );
 
     let temp = TempDir::new("p8");
-    let run = RunDir::create_at(&temp.0.join("run")).unwrap();
+    let run = RunDirectory::create_at(&temp.0.join("run")).unwrap();
     put(
         &run,
         "a",

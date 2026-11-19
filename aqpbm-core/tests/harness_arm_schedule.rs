@@ -1,4 +1,4 @@
-//! The schedule every lane uses for a workload.
+//! The schedule every engine run uses for a workload.
 
 use aqpbm_core::harness::arm_run::{ArmSchedule, ScheduleError};
 use aqpbm_core::harness::data::DataRecord;

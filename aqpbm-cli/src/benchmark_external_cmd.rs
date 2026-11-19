@@ -1,35 +1,35 @@
-//! `approxbench bench-external`: run one lane over a run directory, or join
-//! every lane's cells into the report.
+//! `approxbench benchmark-external`: run one engine over a run directory, or join
+//! every engine run's cells into the report.
 //!
-//! Example: `approxbench bench-external run --run-dir R --lane fake`, then
-//! `approxbench bench-external report --run-dir R --truth fake/v1`.
+//! Example: `approxbench benchmark-external run --run-directory R --engine fake`, then
+//! `approxbench benchmark-external report --run-directory R --truth fake/v1`.
 
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use aqpbm_core::harness::bench_external::{report, run_lane, write_report, LaneSetup};
+use aqpbm_core::harness::benchmark_external::{report, run_engine, write_report, EngineRunSetup};
 use aqpbm_core::harness::engine::EngineUnderTest;
 use aqpbm_core::harness::fake::FakeEngine;
 use aqpbm_core::harness::protocol::{
     load_probe_for, MeasurementClocks, OsCpuClock, ProcessCpuFiles, Protocol,
 };
-use aqpbm_core::harness::rundir::RunDir;
+use aqpbm_core::harness::run_directory::RunDirectory;
 use clap::{Parser, Subcommand};
 
-/// The lanes this binary can run.
-pub const LANES: [&str; 1] = ["fake"];
+/// The engines this binary can run.
+pub const ENGINES: [&str; 1] = ["fake"];
 
 #[derive(Parser, Debug)]
-pub struct BenchExternalArgs {
+pub struct BenchmarkExternalArgs {
     #[command(subcommand)]
-    pub command: BenchExternalCmd,
+    pub command: BenchmarkExternalCmd,
 }
 
 #[derive(Subcommand, Debug)]
-pub enum BenchExternalCmd {
-    /// Run every (workload, variant) cell of the run directory on one lane.
+pub enum BenchmarkExternalCmd {
+    /// Run every (workload, variant) cell of the run directory on one engine.
     Run(RunArgs),
-    /// Join every lane's cells into summary.csv, summary.md and accuracy.csv.
+    /// Join every engine run's cells into summary.csv, summary.md and accuracy.csv.
     Report(ReportArgs),
 }
 
@@ -37,10 +37,10 @@ pub enum BenchExternalCmd {
 pub struct RunArgs {
     /// The run directory: workloads/, plans/<variant>/, results/.
     #[arg(long)]
-    pub run_dir: PathBuf,
-    /// The lane: `fake` (the harness's own fake engine).
+    pub run_directory: PathBuf,
+    /// The engine: `fake` (the harness's own fake engine).
     #[arg(long)]
-    pub lane: String,
+    pub engine: String,
     /// Only these variants (repeatable); every variant under plans/ by default.
     #[arg(long = "variant")]
     pub variants: Vec<String>,
@@ -61,25 +61,28 @@ pub struct RunArgs {
 #[derive(Parser, Debug)]
 pub struct ReportArgs {
     #[arg(long)]
-    pub run_dir: PathBuf,
-    /// The cells answers are compared with: `<lane>/<variant>`.
+    pub run_directory: PathBuf,
+    /// The cells answers are compared with: `<engine>/<variant>`.
     #[arg(long)]
     pub truth: String,
 }
 
-pub fn run(args: BenchExternalArgs) -> Result<()> {
+pub fn run(args: BenchmarkExternalArgs) -> Result<()> {
     match args.command {
-        BenchExternalCmd::Run(args) => run_lane_cmd(args),
-        BenchExternalCmd::Report(args) => report_cmd(args),
+        BenchmarkExternalCmd::Run(args) => run_engine_cmd(args),
+        BenchmarkExternalCmd::Report(args) => report_cmd(args),
     }
 }
 
-fn run_lane_cmd(args: RunArgs) -> Result<()> {
-    let engine: Box<dyn EngineUnderTest> = match args.lane.as_str() {
+fn run_engine_cmd(args: RunArgs) -> Result<()> {
+    let engine: Box<dyn EngineUnderTest> = match args.engine.as_str() {
         "fake" => Box::new(FakeEngine::default()),
-        other => bail!("unknown lane '{other}'; known lanes: {}", LANES.join(", ")),
+        other => bail!(
+            "unknown engine '{other}'; known engines: {}",
+            ENGINES.join(", ")
+        ),
     };
-    let run_dir = RunDir::open(&args.run_dir)?;
+    let run_directory = RunDirectory::open(&args.run_directory)?;
     let protocol = Protocol {
         warmup_runs: args.warmup,
         measured_runs: args.runs,
@@ -90,11 +93,11 @@ fn run_lane_cmd(args: RunArgs) -> Result<()> {
     // harness core for an in-process engine.
     let mut probe = load_probe_for(&engine.cpu_accounting(), &ProcessCpuFiles::os())?;
     let only = (!args.variants.is_empty()).then_some(args.variants.as_slice());
-    let cells = run_lane(
-        &run_dir,
+    let cells = run_engine(
+        &run_directory,
         engine.as_ref(),
         only,
-        LaneSetup {
+        EngineRunSetup {
             protocol: &protocol,
             core: args.core,
             probe: probe.as_mut(),
@@ -109,13 +112,13 @@ fn run_lane_cmd(args: RunArgs) -> Result<()> {
 }
 
 fn report_cmd(args: ReportArgs) -> Result<()> {
-    let (lane, variant) = args
+    let (engine, variant) = args
         .truth
         .split_once('/')
-        .context("--truth must be <lane>/<variant>")?;
-    let run_dir = RunDir::open(&args.run_dir)?;
-    let report = report(&run_dir, lane, variant)?;
-    write_report(&run_dir, &report)?;
+        .context("--truth must be <engine>/<variant>")?;
+    let run_directory = RunDirectory::open(&args.run_directory)?;
+    let report = report(&run_directory, engine, variant)?;
+    write_report(&run_directory, &report)?;
     print!("{}", report.summary_markdown());
     Ok(())
 }
