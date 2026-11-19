@@ -54,11 +54,11 @@ impl RunDirectory {
         match std::fs::create_dir(path) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                return Err(RunDirectoryError::RunDirExists(path.to_path_buf()));
+                return Err(RunDirectoryError::RunDirectoryExists(path.to_path_buf()));
             }
             Err(source) => return Err(io(path, source)),
         }
-        for sub in RUN_SUBDIRS {
+        for sub in RUN_SUBDIRECTORIES {
             let sub = path.join(sub);
             std::fs::create_dir(&sub).map_err(|source| io(&sub, source))?;
         }
@@ -70,7 +70,7 @@ impl RunDirectory {
     /// Opens a run directory another process created: every subdirectory
     /// must exist.
     pub fn open(path: &Path) -> Result<Self, RunDirectoryError> {
-        for sub in RUN_SUBDIRS {
+        for sub in RUN_SUBDIRECTORIES {
             if !path.join(sub).is_dir() {
                 return Err(RunDirectoryError::NotARunDirectory {
                     path: path.to_path_buf(),
@@ -180,7 +180,7 @@ pub(crate) fn check_result_name(
 }
 
 /// The subdirectories of every run directory.
-const RUN_SUBDIRS: [&str; 4] = ["workloads", "data", "plans", "results"];
+const RUN_SUBDIRECTORIES: [&str; 4] = ["workloads", "data", "plans", "results"];
 
 fn loadavg_text(loadavg: Option<f64>) -> String {
     loadavg.map_or_else(|| "unknown".to_string(), |value| value.to_string())
@@ -244,7 +244,7 @@ pub(crate) fn write_json<T: serde::Serialize>(
 pub enum RunDirectoryError {
     /// The directory exists; runs are never overwritten.
     #[error("run directory {0} exists; runs are never overwritten")]
-    RunDirExists(PathBuf),
+    RunDirectoryExists(PathBuf),
     /// A name outside its character set, such as a label outside `[a-z0-9-]`.
     #[error("{what} '{name}' must match {allowed}+")]
     BadName {

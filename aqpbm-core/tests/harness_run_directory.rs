@@ -156,7 +156,7 @@ fn a_label_outside_the_slug_charset_is_refused() {
     assert!(!root.0.join("runs").exists());
 }
 
-/// Creating the same run directory twice fails with `RunDirExists` naming
+/// Creating the same run directory twice fails with `RunDirectoryExists` naming
 /// it, and the first run's `run.json` stays byte for byte as written.
 #[test]
 fn an_existing_run_dir_is_never_overwritten() {
@@ -168,7 +168,7 @@ fn an_existing_run_dir_is_never_overwritten() {
 
     let error = create(&root.0).unwrap_err();
     assert!(
-        matches!(&error, RunDirectoryError::RunDirExists(path) if *path == first.path()),
+        matches!(&error, RunDirectoryError::RunDirectoryExists(path) if *path == first.path()),
         "{error:?}"
     );
     assert_eq!(std::fs::read(&run_json).unwrap(), before);
@@ -374,7 +374,7 @@ fn create_at_and_open_a_run_directory_shared_by_engine_runs() {
     }
     assert!(matches!(
         RunDirectory::create_at(&path),
-        Err(RunDirectoryError::RunDirExists(existing)) if existing == path
+        Err(RunDirectoryError::RunDirectoryExists(existing)) if existing == path
     ));
     assert_eq!(RunDirectory::open(&path).unwrap().path(), path.as_path());
     std::fs::remove_dir(path.join("plans")).unwrap();

@@ -54,7 +54,7 @@ impl CgroupSource {
     /// host's `/proc/stat` for [`PROC_STAT`].
     pub fn read(&self, file: &str) -> Result<String, CgroupError> {
         if !CGROUP_FILES.contains(&file) && file != PROC_STAT {
-            return Err(CgroupError::NotServed(file.into()));
+            return Err(CgroupError::NotACgroupFile(file.into()));
         }
         match self {
             CgroupSource::Local(dir) => {
@@ -263,5 +263,5 @@ pub enum CgroupError {
     #[error("{0} does not exist")]
     NotFound(String),
     #[error("{0} is not one of the cgroup files the harness reads")]
-    NotServed(String),
+    NotACgroupFile(String),
 }
