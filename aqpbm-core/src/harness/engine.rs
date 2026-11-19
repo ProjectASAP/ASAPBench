@@ -56,8 +56,8 @@ pub enum CpuAccounting {
     /// `schedstat`; see [`crate::harness::protocol::ProcessesCpuClock`]).
     Processes(Vec<u32>),
     /// An external server in its own cgroup v2 group (a container), whose
-    /// `cpu.stat` and memory files the harness reads, on this host or through
-    /// the agent on the server host ([`crate::harness::cgroup::serve_agent`]).
+    /// `cpu.stat` and memory files the harness reads, on this host or over
+    /// SSH on the server host ([`crate::harness::cgroup::CgroupSource`]).
     Cgroup(crate::harness::cgroup::CgroupSource),
 }
 

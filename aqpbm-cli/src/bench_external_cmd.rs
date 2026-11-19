@@ -1,16 +1,13 @@
 //! `approxbench bench-external`: run one lane over a run directory, or join
-//! every lane's cells into the report; and `approxbench cgroup-agent`, which
-//! serves a server's cgroup v2 files to a harness on another host.
+//! every lane's cells into the report.
 //!
 //! Example: `approxbench bench-external run --run-dir R --lane fake`, then
 //! `approxbench bench-external report --run-dir R --truth fake/v1`.
 
-use std::net::TcpListener;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use aqpbm_core::harness::bench_external::{report, run_lane, write_report, LaneSetup};
-use aqpbm_core::harness::cgroup::{agent_in_served_group, serve_agent};
 use aqpbm_core::harness::engine::EngineUnderTest;
 use aqpbm_core::harness::fake::FakeEngine;
 use aqpbm_core::harness::protocol::{
@@ -70,20 +67,6 @@ pub struct ReportArgs {
     pub truth: String,
 }
 
-/// Serve a server's cgroup v2 files (cpu.stat, memory.current, memory.peak,
-/// memory.stat, cpuset.cpus.effective) and the host's /proc/stat over HTTP
-/// to a harness on another host.
-#[derive(Parser, Debug)]
-pub struct CgroupAgentArgs {
-    /// The server's group, such as
-    /// `/sys/fs/cgroup/system.slice/docker-<id>.scope`.
-    #[arg(long)]
-    pub cgroup_dir: PathBuf,
-    /// Address to listen on, such as `0.0.0.0:9101`.
-    #[arg(long)]
-    pub listen: String,
-}
-
 pub fn run(args: BenchExternalArgs) -> Result<()> {
     match args.command {
         BenchExternalCmd::Run(args) => run_lane_cmd(args),
@@ -134,19 +117,5 @@ fn report_cmd(args: ReportArgs) -> Result<()> {
     let report = report(&run_dir, lane, variant)?;
     write_report(&run_dir, &report)?;
     print!("{}", report.summary_markdown());
-    Ok(())
-}
-
-pub fn run_cgroup_agent(args: CgroupAgentArgs) -> Result<()> {
-    let own = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
-    if agent_in_served_group(&own, Path::new("/sys/fs/cgroup"), &args.cgroup_dir) {
-        bail!(
-            "this agent runs inside {}, the group it serves: its reads would be charged to the server",
-            args.cgroup_dir.display()
-        );
-    }
-    let listener =
-        TcpListener::bind(&args.listen).with_context(|| format!("listening on {}", args.listen))?;
-    serve_agent(listener, &args.cgroup_dir, Path::new("/proc/stat"))?;
     Ok(())
 }

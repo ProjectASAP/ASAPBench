@@ -40,8 +40,6 @@ pub enum Cmd {
     Flatten(flatten_cmd::FlattenArgs),
     /// Run one lane of a comparison over a run directory, or report all lanes.
     BenchExternal(bench_external_cmd::BenchExternalArgs),
-    /// Serve a server's cgroup v2 CPU and memory files over HTTP.
-    CgroupAgent(bench_external_cmd::CgroupAgentArgs),
 }
 
 /// One target of the sketch bundle: one variant, one library, one construction

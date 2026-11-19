@@ -32,6 +32,5 @@ fn main() -> Result<()> {
         Cmd::AtomicCosts(args) => atomic_costs_cmd::run(args),
         Cmd::Flatten(args) => flatten_cmd::run(args),
         Cmd::BenchExternal(args) => bench_external_cmd::run(args),
-        Cmd::CgroupAgent(args) => bench_external_cmd::run_cgroup_agent(args),
     }
 }

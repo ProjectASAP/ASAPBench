@@ -171,8 +171,7 @@ impl CpuClock for ProcessesCpuClock {
 }
 
 /// The clock of a [`CpuAccounting::Cgroup`] engine: an external server in
-/// its own cgroup v2 group, read locally or through the agent on the server
-/// host. Process CPU is the group's `cpu.stat` `usage_usec` (µs resolution,
+/// its own cgroup v2 group, read locally or over SSH on the server host. Process CPU is the group's `cpu.stat` `usage_usec` (µs resolution,
 /// every thread and child of the group); thread CPU is 0; wall time is the
 /// OS monotonic clock. A reading whose `nr_throttled` is above the one at
 /// creation is [`ProtocolError::CgroupThrottled`]: a CPU quota stopped the
@@ -436,14 +435,21 @@ impl EngineClock<'_> {
 
     /// Where this clock reads CPU, recorded in every arm result:
     /// `calling-thread`, `cgroup <cpu.stat path>`, `schedstat` or
-    /// `cgroup agent <url>`.
+    /// `cgroup <host>:<cpu.stat path> over SSH`.
     pub fn cpu_source(&self) -> String {
         match self {
             EngineClock::CallingThread(_) => "calling-thread".into(),
             EngineClock::Processes(clock) => clock.cpu_source(),
             EngineClock::Cgroup(clock) => match &clock.source {
                 CgroupSource::Local(dir) => format!("cgroup {}", dir.join("cpu.stat").display()),
-                CgroupSource::Agent { url } => format!("cgroup agent {url}"),
+                CgroupSource::Remote {
+                    host,
+                    cgroup_directory,
+                    ..
+                } => format!(
+                    "cgroup {host}:{} over SSH",
+                    cgroup_directory.join("cpu.stat").display()
+                ),
             },
         }
     }
@@ -733,8 +739,8 @@ enum ServerHost {
     /// This host: its proc root, and the server's pids (their threads'
     /// `schedstat`).
     Local { proc_root: PathBuf, pids: Vec<u32> },
-    /// The server host, through the cgroup agent: `proc-stat` and the
-    /// group's `cpu.stat`.
+    /// The server host's cgroup source: its `/proc/stat` and the group's
+    /// `cpu.stat`.
     Cgroup(CgroupSource),
 }
 
@@ -783,7 +789,7 @@ impl LoadProbe for ServerCoresProbe {
     }
 
     /// The server host's load average on this host; `NaN` (recorded `None`)
-    /// through the agent, which does not serve it.
+    /// for a cgroup source, which does not read it.
     fn loadavg(&mut self) -> f64 {
         match &self.host {
             ServerHost::Local { proc_root, .. } => {

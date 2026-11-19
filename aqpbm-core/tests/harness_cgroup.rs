@@ -1,14 +1,11 @@
-//! A server's cgroup v2 files: CPU from `cpu.stat`, memory, the agent that
-//! serves them from the server host, the clock over them and a whole arm
-//! run on a fake server in its own group.
+//! A server's cgroup v2 files: CPU from `cpu.stat`, memory, reading them
+//! over SSH from the server host, the clock over them and a whole arm run
+//! on a fake server in its own group.
 
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 
 use aqpbm_core::harness::arm_run::{run_arm, ArmSchedule};
-use aqpbm_core::harness::cgroup::{
-    agent_in_served_group, serve_agent, CgroupCpu, CgroupMemory, CgroupSource,
-};
+use aqpbm_core::harness::cgroup::{CgroupCpu, CgroupError, CgroupMemory, CgroupSource};
 use aqpbm_core::harness::data::DataRecord;
 use aqpbm_core::harness::engine::{
     ArmSpec, CpuAccounting, EngineUnderTest, QueryLanguage, QueryText, StepReport, WorkloadQuery,
@@ -96,57 +93,82 @@ fn memory_files_read_current_anon_file_and_lifetime_peak() {
     assert_eq!(source.memory().unwrap().lifetime_peak_bytes, None);
 }
 
-fn start_agent(dir: &Path) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let dir = dir.to_path_buf();
-    let proc_stat = dir.join("host-proc-stat");
-    std::thread::spawn(move || serve_agent(listener, &dir, &proc_stat));
-    url
+/// An executable shell script named `name` in `dir`.
+#[cfg(unix)]
+fn script(dir: &Path, name: &str, body: &str) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path.display().to_string()
 }
 
-/// C3: the agent serves what the directory holds, afresh per request, and
-/// nothing outside the four files.
+/// A stand-in for `ssh`: records its arguments in `ssh-arguments`, drops
+/// the options and the host, and runs the remote command on this host.
+#[cfg(unix)]
+fn fake_ssh(dir: &Path) -> String {
+    script(
+        dir,
+        "fake-ssh",
+        "printf '%s\\n' \"$@\" > \"$(dirname \"$0\")/ssh-arguments\"\nfor last; do :; done\nexec sh -c \"$last\"\n",
+    )
+}
+
+/// A remote source reads the same values as the local directory, afresh
+/// per read, over one shared SSH connection; a path with a quote reaches
+/// `cat` intact; files outside the cgroup set are refused.
+#[cfg(unix)]
 #[test]
-fn agent_serves_the_same_values_as_the_directory_and_nothing_else() {
-    let temp = TempDir::new("agent");
+fn ssh_reads_the_same_values_as_the_directory_and_nothing_else() {
+    let temp = TempDir::new("ssh-'quoted'");
     group(&temp.0, 2500);
-    std::fs::write(temp.0.join("cgroup.procs"), "1\n").unwrap();
     let local = CgroupSource::Local(temp.0.clone());
-    let agent = CgroupSource::Agent {
-        url: start_agent(&temp.0),
+    let remote = CgroupSource::Remote {
+        ssh_program: fake_ssh(&temp.0),
+        host: "bench@192.0.2.1".into(),
+        cgroup_directory: temp.0.clone(),
     };
-    assert_eq!(agent.cpu().unwrap(), local.cpu().unwrap());
-    assert_eq!(agent.memory().unwrap(), local.memory().unwrap());
-    // `proc-stat` is the host's /proc/stat (here a file standing in for it).
-    std::fs::write(temp.0.join("host-proc-stat"), "cpu2 1 0 0 9 0 0 0 0\n").unwrap();
-    assert_eq!(agent.read("proc-stat").unwrap(), "cpu2 1 0 0 9 0 0 0 0\n");
+    assert_eq!(remote.cpu().unwrap(), local.cpu().unwrap());
+    assert_eq!(remote.memory().unwrap(), local.memory().unwrap());
+    let arguments = std::fs::read_to_string(temp.0.join("ssh-arguments")).unwrap();
+    assert!(arguments.contains("ControlMaster=auto"), "{arguments}");
+    assert!(arguments.contains("BatchMode=yes"), "{arguments}");
+    assert!(arguments.contains("bench@192.0.2.1"), "{arguments}");
     std::fs::write(temp.0.join("cpu.stat"), cpu_stat(9000, 0)).unwrap();
-    assert_eq!(agent.cpu().unwrap().usage_ns, 9_000_000);
-    // Without `memory.peak` the agent answers 404, read as an older kernel.
+    assert_eq!(remote.cpu().unwrap().usage_ns, 9_000_000);
+    // Without `memory.peak`, `cat` fails on a missing file: an older kernel.
     std::fs::remove_file(temp.0.join("memory.peak")).unwrap();
-    assert_eq!(agent.memory().unwrap().lifetime_peak_bytes, None);
+    assert_eq!(remote.memory().unwrap().lifetime_peak_bytes, None);
+    if Path::new("/proc/stat").exists() {
+        assert!(remote.read("proc-stat").unwrap().starts_with("cpu"));
+    }
     for file in ["cgroup.procs", "../cpu.stat"] {
-        let error = agent.read(file).unwrap_err();
+        let error = remote.read(file).unwrap_err();
         assert!(error.to_string().contains(file), "{error}");
     }
 }
 
-/// C7: the agent must not run inside the group it serves.
+/// SSH's own failure (exit status 255) names the host and SSH's message.
+#[cfg(unix)]
 #[test]
-fn agent_inside_the_served_group_is_detected() {
-    let root = Path::new("/sys/fs/cgroup");
-    let served = root.join("system.slice/docker-1a2b.scope");
-    assert!(agent_in_served_group(
-        "0::/system.slice/docker-1a2b.scope\n",
-        root,
-        &served
-    ));
-    assert!(!agent_in_served_group(
-        "0::/user.slice/user-1000.slice/session-3.scope\n",
-        root,
-        &served
-    ));
+fn an_unreachable_host_is_an_ssh_error() {
+    let temp = TempDir::new("ssh-unreachable");
+    let remote = CgroupSource::Remote {
+        ssh_program: script(
+            &temp.0,
+            "refused-ssh",
+            "echo 'ssh: connect to host 192.0.2.1 port 22: Connection refused' >&2\nexit 255\n",
+        ),
+        host: "bench@192.0.2.1".into(),
+        cgroup_directory: PathBuf::from("/sys/fs/cgroup/system.slice/docker-1a2b.scope"),
+    };
+    match remote.cpu().unwrap_err() {
+        CgroupError::Remote { host, message } => {
+            assert_eq!(host, "bench@192.0.2.1");
+            assert!(message.contains("Connection refused"), "{message}");
+        }
+        other => panic!("expected an SSH error, got {other:?}"),
+    }
 }
 
 /// C4: the clock reads `usage_usec` around a step; thread CPU 0. An

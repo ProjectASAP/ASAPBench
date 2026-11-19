@@ -3,22 +3,20 @@
 //! `/sys/fs/cgroup/system.slice/docker-<id>.scope`.
 //!
 //! The group's files are read either from a local directory or, when the
-//! server runs on another host than the harness, through a small agent on
-//! the server host ([`serve_agent`]) that answers `GET /<file>` with the
-//! file's current text. Only [`CGROUP_FILES`] and the host's `/proc/stat`
-//! ([`PROC_STAT`]) are served.
+//! server runs on another host than the harness, over SSH with `cat` on the
+//! server host. Only [`CGROUP_FILES`] and the host's `/proc/stat`
+//! ([`PROC_STAT`]) are read.
 //!
 //! Example: `cpu.stat` with `usage_usec 2500` reads 2,500,000 ns; a group
 //! whose `nr_throttled` grows during a step was throttled by a CPU quota,
 //! and that step is not a sample.
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
-/// The group files the agent serves: CPU, current and peak memory, memory
+/// The group files the harness reads: CPU, current and peak memory, memory
 /// breakdown, and the cores the group may run on.
 pub const CGROUP_FILES: [&str; 5] = [
     "cpu.stat",
@@ -28,8 +26,9 @@ pub const CGROUP_FILES: [&str; 5] = [
     "cpuset.cpus.effective",
 ];
 
-/// The name under which the agent serves its host's `/proc/stat`, so the
-/// harness can check the server's cores are idle around a step.
+/// The name under which [`CgroupSource::read`] reads the server host's
+/// `/proc/stat`, so the harness can check the server's cores are idle
+/// around a step.
 pub const PROC_STAT: &str = "proc-stat";
 
 /// Where a server's cgroup v2 files are read.
@@ -37,8 +36,17 @@ pub const PROC_STAT: &str = "proc-stat";
 pub enum CgroupSource {
     /// The group's directory on this host.
     Local(PathBuf),
-    /// An agent on the server host, such as `http://10.0.0.2:9101`.
-    Agent { url: String },
+    /// The group's directory on the server host, read over SSH. Reads to one
+    /// host share one connection, so a read costs one round trip.
+    Remote {
+        /// The SSH client, normally `ssh`.
+        ssh_program: String,
+        /// The SSH destination, such as `bench@10.0.0.2`.
+        host: String,
+        /// The group's directory on that host, such as
+        /// `/sys/fs/cgroup/system.slice/docker-<id>.scope`.
+        cgroup_directory: PathBuf,
+    },
 }
 
 impl CgroupSource {
@@ -66,7 +74,18 @@ impl CgroupSource {
                     }
                 })
             }
-            CgroupSource::Agent { url } => http_get(url, file),
+            CgroupSource::Remote {
+                ssh_program,
+                host,
+                cgroup_directory,
+            } => {
+                let path = if file == PROC_STAT {
+                    PathBuf::from("/proc/stat")
+                } else {
+                    cgroup_directory.join(file)
+                };
+                ssh_read(ssh_program, host, &path)
+            }
         }
     }
 
@@ -156,140 +175,66 @@ fn stat_field(file: &str, text: &str, field: &str) -> Result<u64, CgroupError> {
     parse_number(file, value.trim())
 }
 
-/// `GET <url>/<file>` over HTTP/1.0; the body on status 200.
-fn http_get(url: &str, file: &str) -> Result<String, CgroupError> {
-    let failed = |message: String| CgroupError::Agent {
-        url: format!("{url}/{file}"),
-        message,
-    };
-    let address = url
-        .strip_prefix("http://")
-        .ok_or_else(|| failed("the agent url must start with http://".into()))?
-        .trim_end_matches('/');
-    let socket = address
-        .to_socket_addrs()
-        .map_err(|error| failed(error.to_string()))?
-        .next()
-        .ok_or_else(|| failed("the agent address resolves to nothing".into()))?;
-    let mut stream = TcpStream::connect_timeout(&socket, AGENT_CONNECT_TIMEOUT)
-        .map_err(|error| failed(error.to_string()))?;
-    stream
-        .set_read_timeout(Some(AGENT_IO_TIMEOUT))
-        .and_then(|()| stream.set_write_timeout(Some(AGENT_IO_TIMEOUT)))
-        .map_err(|error| failed(error.to_string()))?;
-    write!(stream, "GET /{file} HTTP/1.0\r\nHost: {address}\r\n\r\n")
-        .map_err(|error| failed(error.to_string()))?;
-    let mut response = String::new();
-    stream
-        .read_to_string(&mut response)
-        .map_err(|error| failed(error.to_string()))?;
-    let (head, body) = response
-        .split_once("\r\n\r\n")
-        .ok_or_else(|| failed("no header end in the response".into()))?;
-    let status = head.lines().next().unwrap_or("");
-    match status.split_whitespace().nth(1) {
-        Some("200") => {}
-        // The client asks only for served names, so a 404 is a missing file,
-        // such as `memory.peak` before Linux 5.19.
-        Some("404") => return Err(CgroupError::NotFound(format!("{url}/{file}"))),
-        _ => return Err(failed(format!("status '{status}'"))),
-    }
-    let content_length = head
-        .lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.eq_ignore_ascii_case("content-length")
-                .then(|| value.trim().parse::<usize>().ok())?
-        })
-        .ok_or_else(|| failed("no Content-Length".into()))?;
-    if body.len() != content_length {
-        return Err(failed(format!(
-            "body of {} bytes, Content-Length {content_length}: truncated",
-            body.len()
-        )));
-    }
-    Ok(body.to_string())
-}
+/// Options of every SSH read: never prompt for a password; share one
+/// connection per host, kept open 60 s after the last read; give up on a
+/// host that does not answer within 5 s, and on a connection that stops
+/// answering within about 15 s. The control socket lives in `/tmp` because
+/// macOS limits a socket path to 104 bytes.
+const SSH_OPTIONS: [&str; 12] = [
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ControlMaster=auto",
+    "-o",
+    "ControlPath=/tmp/aqpbm-ssh-%C",
+    "-o",
+    "ControlPersist=60",
+    "-o",
+    "ConnectTimeout=5",
+    "-o",
+    "ServerAliveInterval=5",
+];
 
-/// Whether a process whose `/proc/self/cgroup` reads `proc_self_cgroup`
-/// runs inside the group at `served_dir` under the cgroup v2 mount
-/// `cgroup_root`. The agent refuses to serve its own group: its reads would
-/// be charged to the server it measures.
-/// Example: `0::/system.slice/docker-1a2b.scope` with root `/sys/fs/cgroup`
-/// is inside `/sys/fs/cgroup/system.slice/docker-1a2b.scope`.
-pub fn agent_in_served_group(
-    proc_self_cgroup: &str,
-    cgroup_root: &Path,
-    served_dir: &Path,
-) -> bool {
-    let Some(own) = proc_self_cgroup
-        .lines()
-        .find_map(|line| line.strip_prefix("0::"))
-    else {
-        return false;
-    };
-    let own_dir = cgroup_root.join(own.trim().trim_start_matches('/'));
-    own_dir.starts_with(served_dir)
-}
-
-/// Serves `GET /<file>` for each of [`CGROUP_FILES`] in `dir`, and
-/// `GET /proc-stat` from `proc_stat` (the host's `/proc/stat`), read afresh
-/// per request; every other path is 404. Runs until the listener fails.
-/// One request per connection (HTTP/1.0), answered on the accepting thread.
-pub fn serve_agent(listener: TcpListener, dir: &Path, proc_stat: &Path) -> std::io::Result<()> {
-    for stream in listener.incoming() {
-        let mut stream = stream?;
-        // A broken client never stops the agent.
-        let _ = answer(&mut stream, dir, proc_stat);
+/// The text of `path` on `host`: `<ssh_program> <SSH_OPTIONS> <host> cat -- '<path>'`.
+/// Exit status 255 is SSH's own failure (no connection, refused key); any
+/// other failure is `cat`'s, and a missing file is [`CgroupError::NotFound`].
+fn ssh_read(ssh_program: &str, host: &str, path: &Path) -> Result<String, CgroupError> {
+    let shown = format!("{host}:{}", path.display());
+    let output = Command::new(ssh_program)
+        .args(SSH_OPTIONS)
+        .arg(host)
+        .arg(format!("cat -- {}", shell_quoted(&path.to_string_lossy())))
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| CgroupError::Remote {
+            host: host.into(),
+            message: format!("cannot start {ssh_program}: {error}"),
+        })?;
+    if output.status.success() {
+        return String::from_utf8(output.stdout).map_err(|_| CgroupError::Parse {
+            file: shown,
+            message: "not UTF-8".into(),
+        });
     }
-    Ok(())
-}
-
-fn answer(stream: &mut TcpStream, dir: &Path, proc_stat: &Path) -> std::io::Result<()> {
-    // A client that connects and sends nothing must not stall the agent,
-    // which answers one connection at a time.
-    stream.set_read_timeout(Some(AGENT_REQUEST_TIMEOUT))?;
-    stream.set_write_timeout(Some(AGENT_IO_TIMEOUT))?;
-    let mut reader = BufReader::new((&*stream).take(MAX_REQUEST_BYTES));
-    let mut request_line = String::new();
-    reader.read_line(&mut request_line)?;
-    // Read the headers up to the blank line: closing a socket with unread
-    // input resets the connection, and the client loses the answer.
-    let mut header = String::new();
-    while reader.read_line(&mut header)? > 0 && header != "\r\n" && header != "\n" {
-        header.clear();
-    }
-    let path = request_line.split_whitespace().nth(1).unwrap_or("");
-    let file = path.strip_prefix('/').unwrap_or("");
-    let body = if CGROUP_FILES.contains(&file) {
-        std::fs::read_to_string(dir.join(file)).ok()
-    } else if file == PROC_STAT {
-        std::fs::read_to_string(proc_stat).ok()
-    } else {
-        None
-    };
-    match body {
-        Some(body) => write!(
-            stream,
-            "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{body}",
-            body.len()
-        ),
-        None => write!(
-            stream,
-            "HTTP/1.0 404 Not Found\r\nContent-Length: 0\r\n\r\n"
-        ),
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    match output.status.code() {
+        Some(255) | None => Err(CgroupError::Remote {
+            host: host.into(),
+            message: stderr,
+        }),
+        // Such as `memory.peak` before Linux 5.19.
+        _ if stderr.contains("No such file or directory") => Err(CgroupError::NotFound(shown)),
+        _ => Err(CgroupError::Read {
+            file: shown,
+            message: stderr,
+        }),
     }
 }
 
-/// How long the client waits to connect to the agent.
-const AGENT_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
-/// How long the agent waits for a request: shorter than the client's wait,
-/// so an idle connection delays a waiting client by at most this long.
-const AGENT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
-/// How long either side waits on one read or write.
-const AGENT_IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-/// The most of a request the agent reads: a request line and a few headers.
-const MAX_REQUEST_BYTES: u64 = 8192;
+/// `text` in single quotes for the server host's shell, each `'` as `'\''`.
+fn shell_quoted(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
 
 /// A cgroup file that cannot be read or parsed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -300,11 +245,11 @@ pub enum CgroupError {
     MissingField { file: String, field: String },
     #[error("cannot parse {file}: {message}")]
     Parse { file: String, message: String },
-    #[error("cgroup agent {url}: {message}")]
-    Agent { url: String, message: String },
+    #[error("SSH to {host}: {message}")]
+    Remote { host: String, message: String },
     /// The file does not exist, such as `memory.peak` before Linux 5.19.
     #[error("{0} does not exist")]
     NotFound(String),
-    #[error("{0} is not one of the served cgroup files")]
+    #[error("{0} is not one of the cgroup files the harness reads")]
     NotServed(String),
 }

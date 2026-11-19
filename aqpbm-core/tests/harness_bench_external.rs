@@ -439,7 +439,9 @@ fn report_fixture(temp: &TempDir) -> RunDir {
         server_job(2_500_000, Some(3_000_000)),
     ];
     b.server_cpu_ns_whole_arm = Some(9_000_000);
-    b.cpu_source = "cgroup agent http://192.0.2.1:9101".into();
+    b.cpu_source =
+        "cgroup bench@192.0.2.1:/sys/fs/cgroup/system.slice/docker-1a2b.scope/cpu.stat over SSH"
+            .into();
     let memory = CgroupMemory {
         current_bytes: 3 * 1_048_576,
         anon_bytes: 0,
