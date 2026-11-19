@@ -1,0 +1,1041 @@
+{
+ "query_workload": {
+  "language": "promql",
+  "query_batch": null,
+  "repeating_queries": [
+   {
+    "query": "sum by (job) (data)",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 1000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile by (job) (0.5, data)",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 1000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile by (job) (0.75, data)",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 1000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile by (job) (0.9, data)",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 1000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile by (job) (0.95, data)",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 1000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile by (job) (0.99, data)",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 1000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "topk(32, sum by (label_0) (sum_over_time(data[15m])))",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "sum_over_time(data[15m])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile_over_time(0.5, data[15m])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile_over_time(0.75, data[15m])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile_over_time(0.9, data[15m])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile_over_time(0.95, data[15m])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile_over_time(0.99, data[15m])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "rate(data[15m])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "sum by (job) (sum_over_time(data[15m]))",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile_over_time(0.9, data[15m]) / quantile_over_time(0.5, data[15m])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "topk(32, sum by (label_0) (sum_over_time(data[1h])))",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "sum_over_time(data[1h])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile_over_time(0.5, data[1h])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile_over_time(0.75, data[1h])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile_over_time(0.9, data[1h])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile_over_time(0.95, data[1h])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile_over_time(0.99, data[1h])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "rate(data[1h])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "sum by (job) (sum_over_time(data[1h]))",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile_over_time(0.9, data[1h]) / quantile_over_time(0.5, data[1h])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "topk(32, sum by (label_0) (sum_over_time(data[6h])))",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "sum_over_time(data[6h])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile_over_time(0.5, data[6h])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile_over_time(0.75, data[6h])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile_over_time(0.9, data[6h])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile_over_time(0.95, data[6h])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile_over_time(0.99, data[6h])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "rate(data[6h])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "sum by (job) (sum_over_time(data[6h]))",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile_over_time(0.9, data[6h]) / quantile_over_time(0.5, data[6h])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "topk(32, sum by (label_0) (sum_over_time(data[24h])))",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "sum_over_time(data[24h])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile_over_time(0.5, data[24h])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile_over_time(0.75, data[24h])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile_over_time(0.9, data[24h])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile_over_time(0.95, data[24h])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile_over_time(0.99, data[24h])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "rate(data[24h])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "sum by (job) (sum_over_time(data[24h]))",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   },
+   {
+    "query": "quantile_over_time(0.9, data[24h]) / quantile_over_time(0.5, data[24h])",
+    "demand": {
+     "fixed_interval_at": {
+      "interval": 60000,
+      "evaluation_phase": 0
+     }
+    },
+    "requirements": {
+     "accuracy": {
+      "max_error": 0.05,
+      "failure_probability": 0.01,
+      "accuracy_scope": "whole_result"
+     },
+     "max_latency_ms": null
+    },
+    "predictability": {
+     "predictable": {
+      "known_at": null
+     }
+    }
+   }
+  ]
+ },
+ "data_workload": {
+  "arrival": {
+   "ingesting": {
+    "rows_per_second": 2000000.0
+   }
+  },
+  "sources": {
+   "data": {
+    "series_count": 10000,
+    "metric_type": "gauge",
+    "column_signs": {
+     "value": "non_negative"
+    },
+    "sample_interval": 5,
+    "distinct_values_per_label": {
+     "label_0": 10000,
+     "job": 10
+    }
+   }
+  }
+ }
+}

@@ -1,0 +1,21 @@
+{
+  "supported_summaries": [],
+  "raw_data_retained": true,
+  "query_time_results_retained": false,
+  "counter_semantics": {
+    "reset_handling": true,
+    "extrapolation": true
+  },
+  "state_not_mergeable_across_windows": [],
+  "excluded_candidates": [
+    {
+      "summary_family": {
+        "exact": "IRate"
+      }
+    },
+    {
+      "operator": "Aggregate",
+      "aggregate_measure": "i_rate"
+    }
+  ]
+}

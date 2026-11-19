@@ -1,0 +1,11 @@
+{
+  "supported_summaries": [],
+  "raw_data_retained": true,
+  "query_time_results_retained": false,
+  "counter_semantics": {
+    "reset_handling": false,
+    "extrapolation": false
+  },
+  "state_not_mergeable_across_windows": [],
+  "excluded_candidates": []
+}

@@ -1,0 +1,42 @@
+Written by ASAPPlanner's `installable_plan_of` (crates/planner/src/installable/mod.rs) at
+ProjectASAP/ASAPPlanner main 5400f93fd007113da4f82b34fc4dcfd11180bb8e, from the public
+synthetic workloads under `../workloads/`, with the production planning stages (Stages 1-2,
+then Stage 3 `select_plan`). `installable_plan_of` validates each plan and runs the executor
+compile check.
+
+Named fixtures (pretty-printed):
+
+  sum_over_time_1h_stored_sum      sum by (job) (sum_over_time(latency[1h])), every 60 s        default capabilities
+                         (workloads/grid/sum_over_time__1h__1hz__60s.json)
+  rate_5m_stored         sum by (job) (rate(requests_total[5m])), every 60 s          default capabilities
+                         (workloads/grid/rate__5m__1hz__60s.json)
+  rate_5m_query_time     same query                                                  capabilities/clickhouse.equivalent-only.json
+  max_5m_label_filter    max_over_time(latency{job="j3"}[5m]), every 300 s           capabilities/clickhouse.equivalent-only.json
+                         (workloads/heldout/series_1000__max_label_filter__5m__10hz__300s.json)
+  count_distinct_5m      count(count by (instance) (count_over_time(latency[5m])))   capabilities/clickhouse.equivalent-only.json
+                         (workloads/grid/count_distinct__5m__1hz__60s.json)
+  joint_5m               five 5m queries over latency and requests_total             capabilities/clickhouse.equivalent-only.json
+                         (workloads/grid/joint__5m__1hz__60s.json)
+
+Public plans (`public/<workload>.<variant>.plan.json`, compact): the workload
+`workloads/<set>/<workload>.json` planned with `capabilities/<variant>.json`. They are
+the eight showcase shapes (1 m windows, 1 Hz, every 10 s), `mixed-03`,
+`range_heavy` and `topk__5m__1hz__60s`, plus a greedy cover of every node shape
+(operator, timing, lifetime, family or measure, reduction, range kind, merge regrouping,
+projection and binary-operator fields, and the children's operators) that the full
+sweep produces. The full sweep plans all 206 public PromQL workloads (showcase, grid,
+heldout, and the paper's mixed and range-heavy sets) with each of the four capability
+files; every ClickHouse plan of it translates, and no equivalent-only one has a
+substitution.
+The sweep ran at #1374's last head, 7834fed4d. Every committed fixture was regenerated at main
+5400f93fd.
+
+How each file was made: the workload was planned with
+`planning_stages::run_stages_until(.., RunUntil::Stage2)` (with
+`PlanningModels::builtin().with_deployment_capabilities(<file above>)`, or the
+defaults), then Stage 3 `select_plan`, then
+`installable_plan_of(plan, &workload.query_workload.entries())`, serialized
+with `serde_json::to_string_pretty` (named) or `serde_json::to_string` (public).
+
+Regenerate with `asap_planner --plan-file` once it exists; never edit these files by hand.
+Edge cases are made in test code by changing one field of a loaded fixture.

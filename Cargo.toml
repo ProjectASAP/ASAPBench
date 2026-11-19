@@ -9,6 +9,7 @@ members = [
     "aqpbm-usecase",
     "aqpbm-planeval",
     "aqpbm-systemeval",
+    "aqpbm-engines-external",
 ]
 
 exclude = ["sketch-runtime"]
