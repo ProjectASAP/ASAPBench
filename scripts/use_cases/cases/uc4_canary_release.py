@@ -25,7 +25,7 @@ DASHBOARD = {"uid": "canary-release", "title": "4 · Canary release", "figure": 
                       "columns": {"version": "Which version served the request: stable or canary",
                                   "request_latency": "Latency of the request, in seconds",
                                   "requests": "HTTP status code of the request (200 or 500)"}},
-             "parts": ("overview", "runs", "rollout", "two_stages")}
+             "parts": ("overview", "runs", "rollout")}
 
 CASE = {
     "spec": "uc4_canary.json",

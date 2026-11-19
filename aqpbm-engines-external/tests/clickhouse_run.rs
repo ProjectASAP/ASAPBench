@@ -7,7 +7,10 @@ mod common;
 
 use aqpbm_engines_external::clickhouse::{translate, ClickHouseDeployment, INSERT_SETTINGS};
 use aqpbm_engines_external::plan_file::PlanFile;
-use common::{fixture, fixture_value_public, lcm, payload_body, public_fixture, run_clickhouse};
+use common::{
+    fixture, fixture_value_public, least_common_multiple, payload_body, public_fixture,
+    run_clickhouse,
+};
 use serde_json::json;
 
 /// The deployment's tables and views, then `setup`, then query `query`.
@@ -83,7 +86,7 @@ fn ten_second_inserts(rows: &str) -> Vec<String> {
         .collect()
 }
 
-/// H2: 2,000 counters, `v(s) = s · m` with `m = 1 + k mod 7` and job
+/// 2,000 counters, `v(s) = s · m` with `m = 1 + k mod 7` and job
 /// `j<k mod 10>`, samples every second for 600 s, 60 inserts. At t = 600 s
 /// over (300 s, 600 s]: n = 300, first 301 s, increase 299 m, sampled 299 s,
 /// average gap 1 s, start gap 1 s (kept, < 1.1; the zero point 301 s is
@@ -144,7 +147,7 @@ fn stored_rate_is_right_under_parallel_reads() {
     );
 }
 
-/// H3: counter resets, each series in its own job, 60 inserts of 10 s,
+/// Counter resets, each series in its own job, 60 inserts of 10 s,
 /// merges stopped, read at t = 600 s over (300 s, 600 s]. In every series
 /// below the start gap is 1 s or less than 1.1 average gaps and the end gap
 /// 0 or half a gap, so the rate is the increase · 300 / 299 / 300 =
@@ -223,11 +226,11 @@ fn overlapping_stored_segments_are_an_error() {
     assert!(error.contains("overlap in time"), "{error}");
 }
 
-/// A2: a stored read at a time that is not a window end fails.
+/// A stored read at a time that is not a window end fails.
 #[test]
 #[ignore = "needs ClickHouse 26.8.39.13 (AQPBM_CLICKHOUSE_LOCAL)"]
 fn unaligned_evaluation_time_is_an_error() {
-    let deployment = translate(&fixture("sot_1h_stored_sum")).unwrap();
+    let deployment = translate(&fixture("sum_over_time_1h_stored_sum")).unwrap();
     let setup = vec![insert(
         "src_latency",
         "ts, value, job, `$promql_series_identity`",
@@ -246,12 +249,12 @@ fn unaligned_evaluation_time_is_an_error() {
     );
 }
 
-/// T3 and L5: the TTL statements are accepted, and a NULL value is refused
+/// The TTL statements are accepted, and a NULL value is refused
 /// under `INSERT_SETTINGS` in both a `VALUES` and an `INSERT … SELECT`.
 #[test]
 #[ignore = "needs ClickHouse 26.8.39.13 (AQPBM_CLICKHOUSE_LOCAL)"]
 fn ttl_statements_apply_and_null_values_are_refused() {
-    for name in ["sot_1h_stored_sum", "rate_5m_query_time"] {
+    for name in ["sum_over_time_1h_stored_sum", "rate_5m_query_time"] {
         let deployment = translate(&fixture(name)).unwrap();
         let mut setup = deployment.ttl_statements();
         assert!(!setup.is_empty());
@@ -275,14 +278,14 @@ fn ttl_statements_apply_and_null_values_are_refused() {
     }
 }
 
-/// G1: q4c at 1 m, `sum by (job) (sum_over_time(latency[1m]))`: job a has
+/// The showcase sum_over_time shape at 1 m, `sum by (job) (sum_over_time(latency[1m]))`: job a has
 /// two series, 1.0 and 0.5 each second, job b one series of 2.0; over
 /// (60 s, 120 s]: a = 60 · 1.5 = 90, b = 120.
 #[test]
 #[ignore = "needs ClickHouse 26.8.39.13 (AQPBM_CLICKHOUSE_LOCAL)"]
 fn grouped_query_time_sum_answers() {
     let deployment = translate(&public_fixture(
-        "q4c_sum_over_time__1m_1hz_10s",
+        "sum_over_time__1m_1hz_10s",
         "clickhouse.equivalent-only",
     ))
     .unwrap();
@@ -298,7 +301,7 @@ fn grouped_query_time_sum_answers() {
     );
 }
 
-/// G5: `topk(k, sum by (instance) (rate(requests_total[5m])))` with
+/// `topk(k, sum by (instance) (rate(requests_total[5m])))` with
 /// instances i1..i5 at rate r (`v = r · s`) and i6 at NaN. k = 2 keeps i5 and
 /// i4; k = 5 keeps i1..i5: NaN ranks below every number, as in PromQL.
 #[test]
@@ -326,7 +329,7 @@ fn top_k_answers() {
     }
 }
 
-/// G6: `sum by (job) (data)` with the plan's 5 ms lookback, at t = 100 s:
+/// `sum by (job) (data)` with the plan's 5 ms lookback, at t = 100 s:
 /// s1 (a) has samples at t − 10 ms (100) and t − 3 ms (1): latest 1; s2 (a)
 /// only at t − 5 ms, outside (t − 5 ms, t]; s3 (a) at t (2); s4 (b) at
 /// t − 1 ms (4). a = 1 + 2 = 3, b = 4.
@@ -334,7 +337,7 @@ fn top_k_answers() {
 #[ignore = "needs ClickHouse 26.8.39.13 (AQPBM_CLICKHOUSE_LOCAL)"]
 fn instant_selector_answers() {
     let deployment =
-        translate(&public_fixture("rangeheavy", "clickhouse.equivalent-only")).unwrap();
+        translate(&public_fixture("range_heavy", "clickhouse.equivalent-only")).unwrap();
     let setup = vec![insert(
         "src_data",
         "ts, value, job, `$promql_series_identity`",
@@ -348,7 +351,7 @@ fn instant_selector_answers() {
     );
 }
 
-/// G2, G4, G7, G8: mixed-03 root 11, `avg by (region, service)
+/// mixed-03 root 11, `avg by (region, service)
 /// (quantile_over_time(0.9, data[100s]))` as sum / count, at t = 100 s:
 /// constant series (j1, r1, s1) = 1, (j2, r1, s1) = 3, (j1, r2, s1) = 5, so
 /// each p90 is the constant: r1/s1 = (1 + 3) / 2 = 2, r2/s1 = 5. With two
@@ -378,7 +381,7 @@ fn average_as_sum_over_count_answers() {
     assert!(error.contains("checked division"), "{error}");
 }
 
-/// P2: every committed public translation runs on ClickHouse, on two series
+/// Every committed public translation runs on ClickHouse, on two series
 /// per metric (every label empty but the series identity) sampled every
 /// second for 2 h, at the first multiple of every query's step from 1 h.
 /// This checks the SQL, not the answers.
@@ -394,7 +397,7 @@ fn public_translations_run() {
         let step = deployment
             .query_time_steps_ms
             .iter()
-            .fold(1, |a, &b| lcm(a, b));
+            .fold(1, |a, &b| least_common_multiple(a, b));
         let t = 3_600_000u64.div_ceil(step) * step;
         let mut script = String::new();
         for statement in deployment

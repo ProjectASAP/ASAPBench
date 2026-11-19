@@ -88,7 +88,7 @@ DASHBOARD = {"uid": "autoscaling", "title": "2 · Autoscaling", "figure": "uc2-r
                                   "dimension": "Always used: the queries read used CPU and memory",
                                   "container_cpu": "CPU used, in cores",
                                   "container_memory": "Memory used, in bytes"}},
-             "parts": ("overview", "runs", "decision", "rules", "rule_error", "cost", "stage1"),
+             "parts": ("overview", "runs", "decision", "rules", "rule_error", "cost"),
              "rule_error": {"metrics": ("relative_error", "rank_error"), "file_var": "entity_in_run"}}
 
 CASE = {

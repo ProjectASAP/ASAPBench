@@ -66,7 +66,7 @@ DASHBOARD = {"uid": "rate-limiting", "title": "5 · Top clients and rate limitin
              "figure": "uc5-rate-limiting.svg",
              "entity": "client",
              "data": {"summary": "One stream of requests; each sample is one request, and its value is the client ID.",
-                      "columns": {"requests": "ID of the client that sent the request"}}, "parts": ("overview", "runs", "topk", "rules", "cost", "stage1")}
+                      "columns": {"requests": "ID of the client that sent the request"}}, "parts": ("overview", "runs", "topk", "rules", "cost")}
 
 CASE = {
     "spec": "uc5_top_clients.json",

@@ -1,4 +1,4 @@
-//! R1–R6: reading an ASAPPlanner `InstallablePlan` file (wire version 15).
+//! Reading an ASAPPlanner `InstallablePlan` file (wire version 15).
 
 mod common;
 
@@ -12,7 +12,7 @@ use serde_json::json;
 
 #[test]
 fn reads_a_wire_15_plan() {
-    let plan = fixture("sot_1h_stored_sum");
+    let plan = fixture("sum_over_time_1h_stored_sum");
     assert_eq!(SUPPORTED_PLAN_WIRE_VERSION, 15);
     assert_eq!(plan.nodes.len(), 6);
     assert_eq!(plan.roots, vec![5]);
@@ -141,7 +141,7 @@ fn predicates_decode_to_label_equals() {
 
 #[test]
 fn only_promql_label_equality_is_label_equals() {
-    // L1: the same comparison with SQL semantics (where `job = ''` does not
+    // The same comparison with SQL semantics (where `job = ''` does not
     // match a series without the label) is kept as is.
     let mut value = fixture_value("max_5m_label_filter");
     payload_body(&mut value, 0)["predicates"][0]["Compare"]["semantics"] = json!("sql");
@@ -155,14 +155,14 @@ fn only_promql_label_equality_is_label_equals() {
 
 #[test]
 fn aggregate_filters_are_one_optional_predicate_per_measure() {
-    // L2: wire `filters` is `Vec<Option<Predicate>>`, one entry per measure.
+    // Wire `filters` is `Vec<Option<Predicate>>`, one entry per measure.
     let filter = json!({"Literal": {"Boolean": true}});
     for (wire, decoded) in [
         (json!([null]), vec![None]),
         (json!([filter.clone()]), vec![Some(filter.clone())]),
         (json!([]), vec![]),
     ] {
-        let mut value = fixture_value("sot_1h_stored_sum");
+        let mut value = fixture_value("sum_over_time_1h_stored_sum");
         payload_body(&mut value, 5)["filters"] = wire;
         let plan = PlanFile::from_value(value).unwrap();
         let PlanOperator::Aggregate {
@@ -174,7 +174,7 @@ fn aggregate_filters_are_one_optional_predicate_per_measure() {
         assert_eq!(measure_filters, &decoded);
     }
     // The planner's serde default: an absent list is no filter.
-    let mut value = fixture_value("sot_1h_stored_sum");
+    let mut value = fixture_value("sum_over_time_1h_stored_sum");
     payload_body(&mut value, 5)
         .as_object_mut()
         .unwrap()
@@ -188,7 +188,7 @@ fn aggregate_filters_are_one_optional_predicate_per_measure() {
 
 #[test]
 fn query_time_scans_carry_their_retention() {
-    // T1: the planner keeps a query-time Scan's rows as long as its readers
+    // The planner keeps a query-time Scan's rows as long as its readers
     // read back (`retention_ms`).
     let plan = fixture("rate_5m_query_time");
     assert_eq!(plan.nodes[0].timing, Timing::QueryTime);
@@ -231,7 +231,7 @@ fn projections_and_binary_operators_decode() {
 fn refuses_another_wire_version() {
     // M1
     // The version is read first: the rest of the file is never parsed.
-    let mut value = fixture_value("sot_1h_stored_sum");
+    let mut value = fixture_value("sum_over_time_1h_stored_sum");
     value["wire_version"] = json!(16);
     value["dag"] = json!(null);
     assert_eq!(
@@ -242,7 +242,7 @@ fn refuses_another_wire_version() {
         })
     );
     // M1'
-    let mut value = fixture_value("sot_1h_stored_sum");
+    let mut value = fixture_value("sum_over_time_1h_stored_sum");
     value.as_object_mut().unwrap().remove("wire_version");
     assert_eq!(
         PlanFile::from_value(value),
@@ -256,7 +256,7 @@ fn refuses_another_wire_version() {
 #[test]
 fn an_unknown_operator_still_decodes() {
     // M2
-    let mut value = fixture_value("sot_1h_stored_sum");
+    let mut value = fixture_value("sum_over_time_1h_stored_sum");
     value["dag"]["nodes"][3]["payload"] = json!({"ASAP": {"FancyNewOp": {"children": [2]}}});
     let plan = PlanFile::from_value(value).unwrap();
     assert_eq!(
@@ -270,7 +270,7 @@ fn an_unknown_operator_still_decodes() {
 #[test]
 fn scalar_queries_are_refused() {
     // M5
-    let mut value = fixture_value("sot_1h_stored_sum");
+    let mut value = fixture_value("sum_over_time_1h_stored_sum");
     value["dag"]["scalar_roots"] = json!([[0, {"Literal": {"Float64": 1.0}}]]);
     assert_eq!(
         PlanFile::from_value(value),
@@ -281,7 +281,7 @@ fn scalar_queries_are_refused() {
 #[test]
 fn ids_outside_the_dag_are_refused() {
     let malformed = |change: &dyn Fn(&mut serde_json::Value)| {
-        let mut value = fixture_value("sot_1h_stored_sum");
+        let mut value = fixture_value("sum_over_time_1h_stored_sum");
         change(&mut value);
         matches!(
             PlanFile::from_value(value),

@@ -1,4 +1,4 @@
-//! X1–X10: translating planner-written plans into ClickHouse tables,
+//! Translating planner-written plans into ClickHouse tables,
 //! materialized views and one SQL query per query root. The goldens under
 //! `tests/golden/clickhouse/` were written by hand before the translator.
 
@@ -30,10 +30,10 @@ fn shape(node: usize, reason: &str) -> TranslationError {
 
 #[test]
 fn stored_sum_worked_example() {
-    let deployment = translated("sot_1h_stored_sum");
+    let deployment = translated("sum_over_time_1h_stored_sum");
     assert_eq!(
         normalized(&deployment.script()),
-        normalized(&golden("f1.sql"))
+        normalized(&golden("sum_over_time_1h_stored_sum.sql"))
     );
     assert_eq!(deployment.tables.len(), 2);
     assert_eq!(deployment.materialized_views.len(), 1);
@@ -47,7 +47,7 @@ fn stored_rate_is_a_recorded_substitute() {
     let deployment = translated("rate_5m_stored");
     assert_eq!(
         normalized(&deployment.script()),
-        normalized(&golden("f2.sql"))
+        normalized(&golden("rate_5m_stored.sql"))
     );
     assert_eq!(
         deployment.substitutions,
@@ -67,7 +67,7 @@ fn query_time_rate_is_equivalent() {
     let deployment = translated("rate_5m_query_time");
     assert_eq!(
         normalized(&deployment.script()),
-        normalized(&golden("f3.sql"))
+        normalized(&golden("rate_5m_query_time.sql"))
     );
     assert_eq!(deployment.tables.len(), 1);
     assert!(deployment.materialized_views.is_empty());
@@ -81,7 +81,7 @@ fn label_equality_becomes_where() {
     let deployment = translated("max_5m_label_filter");
     assert_eq!(
         normalized(&deployment.script()),
-        normalized(&golden("f4.sql"))
+        normalized(&golden("max_5m_label_filter.sql"))
     );
     assert!(deployment.substitutions.is_empty());
     assert!(deployment.sharing_lost.is_empty());
@@ -103,7 +103,7 @@ fn empty_reduce_has_no_group_by_and_no_row_when_empty() {
     let deployment = translated("count_distinct_5m");
     assert_eq!(
         normalized(&deployment.script()),
-        normalized(&golden("f5.sql"))
+        normalized(&golden("count_distinct_5m.sql"))
     );
     assert!(deployment.substitutions.is_empty());
     assert!(deployment.sharing_lost.is_empty());
@@ -167,8 +167,8 @@ fn shared_query_time_node_is_reported() {
              GROUP BY `job`"
         )
     );
-    // Root 13: the query-time rate, the same SQL as F3's query.
-    let f3_query = golden("f3.sql");
+    // Root 13: the query-time rate, the same SQL as the rate_5m_query_time golden's query.
+    let f3_query = golden("rate_5m_query_time.sql");
     let f3_query = &f3_query[f3_query.find("SELECT").unwrap()..];
     assert_eq!(
         normalized(&format!("{};", deployment.queries[4])),
@@ -185,7 +185,7 @@ fn shared_query_time_node_is_reported() {
 
 #[test]
 fn stored_chain_keeps_its_scan_predicates() {
-    let mut value = fixture_value("sot_1h_stored_sum");
+    let mut value = fixture_value("sum_over_time_1h_stored_sum");
     payload_body(&mut value, 0)["predicates"] = json!([{"Compare": {
         "left": {"Column": 2}, "op": "Eq",
         "right": {"Literal": {"Utf8": "a"}}, "semantics": "promql"}}]);
@@ -201,7 +201,7 @@ fn stored_chain_keeps_its_scan_predicates() {
 #[test]
 fn stored_reads_need_whole_windows_and_aligned_times() {
     assert_eq!(
-        translated("sot_1h_stored_sum").query_time_steps_ms,
+        translated("sum_over_time_1h_stored_sum").query_time_steps_ms,
         vec![60_000]
     );
     assert_eq!(
@@ -210,7 +210,7 @@ fn stored_reads_need_whole_windows_and_aligned_times() {
     );
     assert_eq!(translated("joint_5m").query_time_steps_ms, vec![1; 5]);
     // A 90 s range over 60 s windows.
-    let mut value = fixture_value("sot_1h_stored_sum");
+    let mut value = fixture_value("sum_over_time_1h_stored_sum");
     payload_body(&mut value, 2)["range"] = json!({"secs": 90, "nanos": 0});
     assert_eq!(
         refusal(value),
@@ -232,7 +232,7 @@ fn query_time_results_kept_across_evaluations_are_refused() {
 #[test]
 fn unknown_operator_is_refused_at_its_node() {
     // M2
-    let mut value = fixture_value("sot_1h_stored_sum");
+    let mut value = fixture_value("sum_over_time_1h_stored_sum");
     value["dag"]["nodes"][3]["payload"] = json!({"ASAP": {"FancyNewOp": {"children": [2]}}});
     assert_eq!(refusal(value), shape(3, "operator ASAP.FancyNewOp"));
 }
@@ -240,7 +240,7 @@ fn unknown_operator_is_refused_at_its_node() {
 #[test]
 fn answer_changing_fields_are_refused_at_their_node() {
     // M3: a regrouping merge of stored windows.
-    let mut value = fixture_value("sot_1h_stored_sum");
+    let mut value = fixture_value("sum_over_time_1h_stored_sum");
     payload_body(&mut value, 3)["group_by"] = json!([2]);
     assert_eq!(
         refusal(value),
@@ -248,7 +248,7 @@ fn answer_changing_fields_are_refused_at_their_node() {
     );
 
     // M4: `without` grouping.
-    let mut value = fixture_value("sot_1h_stored_sum");
+    let mut value = fixture_value("sum_over_time_1h_stored_sum");
     payload_body(&mut value, 5)["reduction"] = json!({"Reduce": {"without": [2]}});
     assert_eq!(refusal(value), shape(5, "without"));
 
@@ -261,7 +261,7 @@ fn answer_changing_fields_are_refused_at_their_node() {
     let mut value = fixture_value("joint_5m");
     payload_body(&mut value, 2)["filters"] = json!([{"Literal": {"Boolean": true}}]);
     assert_eq!(refusal(value), shape(2, "filter"));
-    // L2: a measure without a filter (`[null]`) is no filter.
+    // A measure without a filter (`[null]`) is no filter.
     let mut value = fixture_value("joint_5m");
     payload_body(&mut value, 2)["filters"] = json!([null]);
     assert_eq!(
@@ -269,7 +269,7 @@ fn answer_changing_fields_are_refused_at_their_node() {
         translated("joint_5m")
     );
 
-    // L1: label equality with SQL semantics.
+    // Label equality with SQL semantics.
     let mut value = fixture_value("max_5m_label_filter");
     payload_body(&mut value, 0)["predicates"][0]["Compare"]["semantics"] = json!("sql");
     assert_eq!(refusal(value), shape(0, "predicate"));
@@ -280,12 +280,12 @@ fn answer_changing_fields_are_refused_at_their_node() {
     assert_eq!(refusal(value), shape(2, "having"));
 
     // M10: a chain filter.
-    let mut value = fixture_value("sot_1h_stored_sum");
+    let mut value = fixture_value("sum_over_time_1h_stored_sum");
     payload_body(&mut value, 1)["filter"] = json!({"Literal": {"Boolean": true}});
     assert_eq!(refusal(value), shape(1, "filter"));
 
     // M11: a summary input that is not the sample value.
-    let mut value = fixture_value("sot_1h_stored_sum");
+    let mut value = fixture_value("sum_over_time_1h_stored_sum");
     payload_body(&mut value, 1)["input"]["weight"] = json!({"Constant": 1.0});
     assert_eq!(refusal(value), shape(1, "summary input"));
 
@@ -298,16 +298,16 @@ fn answer_changing_fields_are_refused_at_their_node() {
 #[test]
 fn irate_state_is_refused() {
     // M7: the family is read from `summary_type` only.
-    let mut value = fixture_value("sot_1h_stored_sum");
+    let mut value = fixture_value("sum_over_time_1h_stored_sum");
     payload_body(&mut value, 1)["summary_type"] = json!({"ExactAggregate": ["IRate", "IRate"]});
     assert_eq!(refusal(value), shape(1, "exact IRate"));
 }
 
 #[test]
 fn retention_is_recorded_and_ttl_is_separate() {
-    // T2: the chain keeps 1 h of windows; its Scan runs at ingestion only, so
+    // The chain keeps 1 h of windows; its Scan runs at ingestion only, so
     // the source table has no raw-data retention.
-    let deployment = translated("sot_1h_stored_sum");
+    let deployment = translated("sum_over_time_1h_stored_sum");
     assert_eq!(
         deployment.table_retention,
         vec![TableRetention {
@@ -334,10 +334,10 @@ fn retention_is_recorded_and_ttl_is_separate() {
 
 #[test]
 fn grouped_query_time_summary_groups_by_its_columns() {
-    // G1: the showcase q4c shape, `sum by (job) (sum_over_time(latency[1m]))`
+    // The showcase sum_over_time shape, `sum by (job) (sum_over_time(latency[1m]))`
     // every 10 s: a query-time SummaryAgg(Sum) reduced to `job`.
     let deployment = translate(&public_fixture(
-        "q4c_sum_over_time__1m_1hz_10s",
+        "sum_over_time__1m_1hz_10s",
         "clickhouse.equivalent-only",
     ))
     .expect("translates");
@@ -358,7 +358,7 @@ fn grouped_query_time_summary_groups_by_its_columns() {
 
 #[test]
 fn top_k_keeps_k_series_per_group() {
-    // G5: `topk(10, sum by (instance) (rate(requests_total[5m])))`.
+    // `topk(10, sum by (instance) (rate(requests_total[5m])))`.
     let deployment = translate(&public_fixture(
         "topk__5m__1hz__60s",
         "clickhouse.equivalent-only",
@@ -386,9 +386,9 @@ fn top_k_keeps_k_series_per_group() {
 
 #[test]
 fn instant_selector_reads_each_series_latest_sample() {
-    // G6: `sum by (job) (data)`; the plan's lookback is 5 ms.
-    let deployment =
-        translate(&public_fixture("rangeheavy", "clickhouse.equivalent-only")).expect("translates");
+    // `sum by (job) (data)`; the plan's lookback is 5 ms.
+    let deployment = translate(&public_fixture("range_heavy", "clickhouse.equivalent-only"))
+        .expect("translates");
     assert_eq!(
         normalized(&deployment.queries[0]),
         normalized(
@@ -403,7 +403,7 @@ fn instant_selector_reads_each_series_latest_sample() {
 
 #[test]
 fn average_as_sum_over_count_translates() {
-    // G2, G4, G7, G8: mixed-03 root 11 is `avg by (region, service)
+    // mixed-03 root 11 is `avg by (region, service)
     // (quantile_over_time(0.9, data[100s]))`, planned as the sum and the
     // count of the per-series p90s by (job, region, service), each regrouped
     // to (region, service), the count cast to Float64, then divided.
@@ -439,13 +439,13 @@ fn average_as_sum_over_count_translates() {
         sum = regrouped("sum(value)"),
     );
     assert_eq!(query, normalized(&expected));
-    // L8: each query's step is the window width of the stored chains it
+    // Each query's step is the window width of the stored chains it
     // reads: roots 33 and 34 read 1 s windows, 40 1 s, 45 30 s.
     assert_eq!(
         deployment.query_time_steps_ms,
         vec![1000, 1000, 1, 1, 1, 1000, 30_000, 1, 1]
     );
-    // G9: root 34 sums column 3 (`sum`) of node 33's output.
+    // Root 34 sums column 3 (`sum`) of node 33's output.
     assert!(normalized(&deployment.queries[1])
         .starts_with("SELECT `region`, `service`, sum(value) AS value FROM ("));
     assert!(deployment.substitutions.is_empty());
@@ -472,7 +472,7 @@ fn unsupported_binary_operators_and_projections_are_refused() {
     let mut value = mixed();
     payload_body(&mut value, 6)["cols"][2]["expr"] = json!({"Literal": {"Float64": 1.0}});
     assert_eq!(refusal(value), shape(6, "projected expression"));
-    // G9: a measure over a label column.
+    // A measure over a label column.
     let mut value = mixed();
     payload_body(&mut value, 34)["measures"][0]["col"] = json!(0);
     assert_eq!(refusal(value), shape(34, "measure over a label column"));
@@ -524,16 +524,16 @@ fn projections_keep_every_label_and_one_value() {
 
 #[test]
 fn a_metric_only_chains_read_keeps_no_rows() {
-    // F1's Scan runs at ingestion only: the source is a Null table whose
-    // inserts reach the view; F3's query-time Scan keeps rows.
-    assert!(translated("sot_1h_stored_sum").tables[0].ends_with("ENGINE = Null"));
+    // The stored sum's Scan runs at ingestion only: the source is a Null table whose
+    // inserts reach the view; the query-time rate's Scan keeps rows.
+    assert!(translated("sum_over_time_1h_stored_sum").tables[0].ends_with("ENGINE = Null"));
     assert!(translated("rate_5m_query_time").tables[0].contains("ENGINE = MergeTree"));
 }
 
 #[test]
 fn grouped_stored_chain_groups_its_view() {
-    // G3: a chain reduced to `job` (output without the series identity).
-    let mut value = fixture_value("sot_1h_stored_sum");
+    // A chain reduced to `job` (output without the series identity).
+    let mut value = fixture_value("sum_over_time_1h_stored_sum");
     payload_body(&mut value, 1)["reduction"] = json!({"Reduce": [2]});
     value["dag"]["nodes"][1]["output_schema"]["fields"]
         .as_array_mut()
@@ -554,13 +554,13 @@ fn grouped_stored_chain_groups_its_view() {
 
 #[test]
 fn a_label_filter_leads_the_source_sorting_key() {
-    // L4 (and F4's golden): `job` is filtered on, so it leads the key.
+    // `job` is filtered on (as in the max_5m_label_filter golden), so it leads the key.
     let deployment = translated("max_5m_label_filter");
     assert!(normalized(&deployment.tables[0])
         .ends_with("ORDER BY (`job`, `$promql_series_identity`, ts)"));
 }
 
-/// X10: the goldens run on ClickHouse 26.8.39.13 (the 26.8 LTS build for CPUs without AVX2) and give the hand-computed
+/// The goldens run on ClickHouse 26.8.39.13 (the 26.8 LTS build for CPUs without AVX2) and give the hand-computed
 /// answers. Needs a `clickhouse local` of that release: set
 /// `AQPBM_CLICKHOUSE_LOCAL` to a shell command that runs it reading SQL on
 /// stdin (e.g. `clickhouse local`, or the same through `docker run -i` or
@@ -569,20 +569,23 @@ fn a_label_filter_leads_the_source_sorting_key() {
 #[ignore = "needs ClickHouse 26.8.39.13 (AQPBM_CLICKHOUSE_LOCAL)"]
 fn goldens_run_on_clickhouse() {
     assert_eq!(version("version()"), "26.8.39.13");
-    // L6: the 26.8 amd64compat build in use (sha256 aae73dc5…fe36ca) reports this git hash.
+    // The 26.8 amd64compat build in use (sha256 aae73dc5…fe36ca) reports this git hash.
     assert_eq!(
         version("(SELECT value FROM system.build_options WHERE name = 'VERSION_GITHASH')"),
         "d5bbb64d525197f84f9dd21489f5f6d6fdb966e5"
     );
-    // F1: series a/1 = 1.0, a/2 = 0.5, b/1 = 2.0 every second for 1 h; at t = 1 h:
+    // sum_over_time_1h_stored_sum: series a/1 = 1.0, a/2 = 0.5, b/1 = 2.0 every second for 1 h; at t = 1 h:
     // a = 3600 · 1.0 + 3600 · 0.5 = 5400, b = 3600 · 2.0 = 7200.
     let latency_three = "INSERT INTO src_latency SELECT \
         fromUnixTimestamp64Milli(toInt64(number + 1) * 1000), v, j, id FROM numbers(3600) \
         ARRAY JOIN [1.0, 0.5, 2.0] AS v, ['a', 'a', 'b'] AS j, \
         ['latency{job=\"a\",i=\"1\"}', 'latency{job=\"a\",i=\"2\"}', 'latency{job=\"b\",i=\"1\"}'] AS id \
         ORDER BY 1";
-    assert_eq!(run("f1.sql", latency_three, 3_600_000), "a\t5400\nb\t7200");
-    // F2/F3: three counters, each in its own job; at t = 600 s the window is
+    assert_eq!(
+        run("sum_over_time_1h_stored_sum.sql", latency_three, 3_600_000),
+        "a\t5400\nb\t7200"
+    );
+    // rate_5m_stored and rate_5m_query_time: three counters, each in its own job; at t = 600 s the window is
     // (300 s, 600 s]; Prometheus extrapolatedRate (v3.15.1) by hand:
     // x: v(s) = s for s <= 450, then s - 450 (a reset at 451 s). Samples 301..600
     //    s: n = 300, first 301, last 150, one drop after 450: increase
@@ -604,30 +607,36 @@ fn goldens_run_on_clickhouse() {
               UNION ALL SELECT number + 301, 'z', 2 * number + 0.5 FROM numbers(300)) \
         ORDER BY 1";
     let expected_query_time = [("x", 1.0), ("y", 290.5 / 300.0), ("z", 598.5 / 300.0)];
-    assert_rates(&run("f3.sql", counters, 600_000), &expected_query_time);
+    assert_rates(
+        &run("rate_5m_query_time.sql", counters, 600_000),
+        &expected_query_time,
+    );
     let expected_stored = [
         ("x", 298.0 / 299.0),
         ("y", 290.5 / 300.0),
         ("z", 598.5 / 300.0),
     ];
-    assert_rates(&run("f2.sql", counters, 600_000), &expected_stored);
-    // F4: j3 = s, j4 = 10 s; max over (300 s, 600 s] of j3 only = 600.
+    assert_rates(
+        &run("rate_5m_stored.sql", counters, 600_000),
+        &expected_stored,
+    );
+    // max_5m_label_filter: j3 = s, j4 = 10 s; max over (300 s, 600 s] of j3 only = 600.
     let latency_two = "INSERT INTO src_latency SELECT \
         fromUnixTimestamp64Milli(toInt64(number + 1) * 1000), (number + 1) * m, j, id \
         FROM numbers(600) ARRAY JOIN [1, 10] AS m, ['j3', 'j4'] AS j, \
         ['latency{job=\"j3\"}', 'latency{job=\"j4\"}'] AS id ORDER BY 1";
     assert_eq!(
-        run("f4.sql", latency_two, 600_000),
+        run("max_5m_label_filter.sql", latency_two, 600_000),
         "j3\tlatency{job=\"j3\"}\t600"
     );
-    // F5: three instances; 3 at 600 s, and no row once the window is empty.
+    // count_distinct_5m: three instances; 3 at 600 s, and no row once the window is empty.
     let instances = "INSERT INTO src_latency SELECT \
         fromUnixTimestamp64Milli(toInt64(number + 1) * 1000), 1.0, i, \
         concat('latency{instance=\"', i, '\"}') FROM numbers(600) \
         ARRAY JOIN ['i1', 'i2', 'i3'] AS i ORDER BY 1";
-    assert_eq!(run("f5.sql", instances, 600_000), "3");
+    assert_eq!(run("count_distinct_5m.sql", instances, 600_000), "3");
     // 9,960,000 ms is a window end (166 windows of 60 s), long after the data.
-    assert_eq!(run("f5.sql", instances, 9_960_000), "");
+    assert_eq!(run("count_distinct_5m.sql", instances, 9_960_000), "");
 }
 
 /// `job<TAB>rate` rows equal `expected` to 1e-9 (relative).

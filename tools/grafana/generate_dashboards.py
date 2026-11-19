@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import base64
 import glob
 import json
 import os
@@ -17,9 +18,13 @@ DATA = "http://localhost:8000/runs/"
 PHASE3_DATA = "http://localhost:8000/phase3/runs/"
 RUN = DATA + "${run}/"
 INDEX = DATA + "index.json"
-FIGURES = "http://localhost:8001/"
+FIGURES = os.path.join(REPO, "docs", "figures", "phase2-use-cases")
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboards")
 REAL_DATA = False
+OPEN_ROWS = ("Query result", "Application", "Query cost")
+SYSTEMS_ROW = "VictoriaMetrics vs ASAPQuery-backend"
+PROBLEM_PERIODS_KEY = ("Light **blue** shading on the time charts marks the problem periods injected into the "
+                       "synthetic data. Colored strips list their states in the legend under each strip.")
 
 
 def synthetic_only():
@@ -107,7 +112,7 @@ STAT = {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": Fals
         "textMode": "value_and_name", "colorMode": "none", "graphMode": "none",
         "orientation": "horizontal", "justifyMode": "auto"}
 TEXT = {"color": {"mode": "fixed", "fixedColor": "text"}}
-OFF = {"color": "transparent", "text": " "}
+OFF = {"color": "transparent", "text": ""}
 ANNOTATION = {"none": OFF, "onset delay": {"color": "#FADE2A"}, "gap": {"color": "#8F3BB8"},
               "end delay": {"color": "#19B5B5"}, "false positive": {"color": "#FF9830"},
               "false negative": {"color": "#D3369E"}, "missed episode": {"color": "#F5A3C7"},
@@ -123,6 +128,10 @@ def value_mappings(states):
             {"type": "regex", "options": {"pattern": ".+, .+", "result": {"color": COMBINED, "index": len(states)}}}]
 
 
+def key_panel(text):
+    return {"type": "text", "title": "", "transparent": True, "options": {"mode": "markdown", "content": text}}
+
+
 def strip_panel(title, rows, states, path="app_state"):
     return {"type": "state-timeline", "title": title,
             "targets": [rows_of(chr(ord("A") + i), path, sel, name, "string",
@@ -133,7 +142,7 @@ def strip_panel(title, rows, states, path="app_state"):
                                          "mappings": value_mappings({**ANNOTATION, **states})},
                             "overrides": named(*[name for _, name in rows])},
             "options": {"mergeValues": False, "showValue": "auto", "rowHeight": 0.8, "alignValue": "center",
-                        **LEGEND, "legend": {"showLegend": False}}}
+                        **LEGEND}}
 
 
 def outcome_stat(title, summary, sel, units=None):
@@ -303,12 +312,17 @@ def runs_part(uid, use_case):
     return part(b, [run_variable([use_case])])
 
 
+def svg_data_uri(figure):
+    with open(os.path.join(FIGURES, figure), "rb") as f:
+        return "data:image/svg+xml;base64," + base64.b64encode(f.read()).decode()
+
+
 def figure_part(figure):
     b = Board()
     b.row("Scenario", 0)
     b.panel({"type": "text", "title": "", "transparent": True,
              "options": {"mode": "html",
-                         "content": f'<img src="{FIGURES}{figure}" style="height: 100%; max-width: 100%">'}},
+                         "content": f'<img src="{svg_data_uri(figure)}" style="height: 100%; max-width: 100%">'}},
             0, 1, 24, 13)
     return part(b)
 
@@ -654,20 +668,20 @@ def about_part(module):
     rules = "\n".join(["Each query runs twice, once with the exact plan and once with the approximate plan. "
                        "A rule reads query results and decides an action; exact and approx decide separately, "
                        "and the dashboard compares their decisions. On the time charts below, shaded areas are "
-                       "the problem periods injected into the synthetic data, and vertical marks are the times "
-                       "when the selected rule decided differently on approx than on exact; a rule that always "
-                       "decides the same has no marks.", "", "**Queries**", ""]
+                       "the problem periods injected into the synthetic data.", "", "**Queries**", ""]
                       + query_lines(spec) + ["", "**Rules**", ""] + rule_lines(module))
     b.row("Queries and rules", 1 + height)
     b.panel({"type": "text", "title": "", "options": {"mode": "markdown", "content": rules}},
             0, 2 + height, 24, markdown_rows(rules))
-    return part(b, annotations=[change_annotation(spec), disagreement_annotation(module)])
+    return part(b, annotations=[change_annotation(spec)])
 
 
 def change_annotation(spec):
     found = []
     for m in spec["metrics"]:
         for start, end, text in events(m, spec["duration_ms"]):
+            if start == 0 and end >= spec["duration_ms"]:
+                continue
             found.append({"time": spec["start_ms"] + start, "timeEnd": spec["start_ms"] + end,
                           "text": f"{m['name']}: {text}"})
     root = (f'( $e := $[run_id="${{run}}" and $not($contains(run_id, "-real"))]; '
@@ -675,15 +689,6 @@ def change_annotation(spec):
     return {"name": "problem periods", "enable": True, "hide": True, "iconColor": "#8AB8FF", "datasource": DS,
             "target": iq("Anno", INDEX, root, [T, col("timeEnd", "timeEnd", "timestamp_epoch"),
                                                 col("text", "text", "string")])}
-
-
-def disagreement_annotation(module):
-    name = rule_variable_name(module)
-    root = (f'$[labels.signal="${{{name}}}"].{{"time": time, "text": "approx ≠ exact: " & $replace(metric, "_", " ")'
-            ' & ( $w := (labels.entity ? labels.entity : (labels.container ? labels.container : labels.client_id)); '
-            '$w ? " on " & $w : "" ) & ", " & $string(value) & " evaluations"}')
-    return {"name": "approx ≠ exact", "enable": True, "hide": True, "iconColor": "#FF9830", "datasource": DS,
-            "target": iq("Anno", RUN + "fidelity_event.json", root, [T, col("text", "text", "string")])}
 
 
 def by_metric_columns(*pairs):
@@ -850,6 +855,10 @@ def decision_dashboard(uid, module):
 
 DECISION_MARKS = {"failed check": ("#FF9830", 5), "rollback": ("red", 14), "promote": ("green", 14)}
 DECISION_LEVEL = {"exact": 101, "approx": 100}
+ROW_LABELS = [{"type": "value", "options": {str(level): {"text": f"{arm} decisions", "index": i}
+                                            for i, (arm, level) in enumerate(DECISION_LEVEL.items())}},
+              *[{"type": "range", "options": {"from": low, "to": high, "result": {"text": ""}}}
+                for low, high in ((-1e9, 99.99), (100.01, 100.99), (101.01, 1e9))]]
 
 
 def rule_descriptions():
@@ -908,7 +917,7 @@ def query_and_decision_panel(app, module):
                                {"id": "custom.scaleDistribution", "value": {"type": "linear"}}]
             overrides.append({"matcher": {"id": "byRegexp", "options": f".*{query} {arm}.*"},
                               "properties": properties})
-    for arm, level in DECISION_LEVEL.items():
+    for arm in DECISION_LEVEL:
         for mark, (color, size) in DECISION_MARKS.items():
             overrides.append({"matcher": {"id": "byRegexp", "options": f".*{arm} {mark}.*"}, "properties": [
                 {"id": "color", "value": {"mode": "fixed", "fixedColor": color}},
@@ -916,12 +925,14 @@ def query_and_decision_panel(app, module):
                 {"id": "custom.showPoints", "value": "always"},
                 {"id": "custom.spanNulls", "value": False},
                 {"id": "custom.pointSize", "value": size},
-                {"id": "custom.axisPlacement", "value": "hidden"},
+                {"id": "custom.axisPlacement", "value": "right"},
+                {"id": "custom.axisGridShow", "value": False},
+                {"id": "custom.axisLabel", "value": ""},
                 {"id": "unit", "value": "none"},
-                {"id": "min", "value": min(DECISION_LEVEL.values()) - 9},
+                {"id": "min", "value": min(DECISION_LEVEL.values()) - 5},
                 {"id": "max", "value": max(DECISION_LEVEL.values()) + 0.5},
                 {"id": "custom.scaleDistribution", "value": {"type": "linear"}},
-                {"id": "mappings", "value": [{"type": "value", "options": {str(level): {"text": mark}}}]}]})
+                {"id": "mappings", "value": ROW_LABELS}]})
     return {"type": "timeseries",
             "title": "Query results of rule ${rule}, exact solid and approx dashed, with each arm's failed checks "
                      "and decisions on the same time axis",
@@ -983,15 +994,6 @@ def rollout_dashboard(module):
         b.panel(cost_panel(module.QUERY_COLORS, *cost), x, y, w, 6)
 
     b.row("Application: rollout controller, rule ${rule}", 29)
-    ratio = 'labels.app="rollout_controller"'
-    b.panel({"type": "timeseries", "title": "Canary p99 over stable p99 (rule ours compares it with the tolerance)",
-             "targets": [rows_of("A", "app_state", f'{ratio} and metric="ratio" and labels.arm="exact"', "exact"),
-                         rows_of("B", "app_state", f'{ratio} and metric="ratio" and labels.arm="approx"', "approx"),
-                         rows_of("C", "app_state", f'{ratio} and metric="tolerance"', "tolerance")],
-             "fieldConfig": {"defaults": LINES,
-                             "overrides": [by_ref("A", "blue", 2), by_ref("B", "orange"), dashed("C", "red")]
-                             + named("exact", "approx", "tolerance")},
-             "options": LEGEND}, 0, 36, 24, 7)
     b.panel(strip_panel("Check result and rollout decision per check, with what differs",
                         [(f'{app} and metric="check" and labels.arm="exact"', "exact check"),
                          (f'{app} and metric="check" and labels.arm="approx"', "approx check"),
@@ -1000,41 +1002,13 @@ def rollout_dashboard(module):
                          (f'{app} and metric="annotation"', "annotation")],
                         {"failed": {"color": "red", "text": "failed"}, "passed": OFF,
                          "rollback": {"color": "red", "text": "rollback"},
-                         "promote": {"color": "green", "text": "promote"}}), 0, 43, 24, 9)
+                         "promote": {"color": "green", "text": "promote"}}), 0, 30, 24, 9)
 
-    b.row("Query result and decision on one time axis, rule ${rule}", 52)
-    b.panel(query_and_decision_panel(app, module), 0, 53, 24, 12)
-
-    b.row("Fidelity over rollouts", 65)
-    b.panel(outcome_stat("Rollouts by outcome (positive: rollback)", summary, app), 0, 66, 6, 8)
-    b.panel({"type": "stat", "title": "Rollouts",
-             "targets": [iq("A", summary, metric_values(app), by_metric_columns(
-                 ("rollouts", "rollouts"), ("agreement", "same decision"),
-                 ("mean_absolute_rollback_delay", "mean absolute rollback delay (evaluations)"),
-                 ("early_rollbacks", "early rollbacks"), ("late_rollbacks", "late rollbacks"),
-                 ("gaps", "gaps in failed checks")))],
-             "transformations": order("rollouts", "same decision", "mean absolute rollback delay (evaluations)",
-                                      "early rollbacks", "late rollbacks", "gaps in failed checks"),
-             "fieldConfig": {"defaults": TEXT, "overrides": [
-                 {"matcher": {"id": "byName", "options": "same decision"},
-                  "properties": [{"id": "unit", "value": "percentunit"}, {"id": "decimals", "value": 1}]}]},
-             "options": STAT}, 6, 66, 6, 8)
-    b.panel({"type": "table", "title": "Rollouts",
-             "targets": [iq("A", RUN + "fidelity_event.json", f'$[{app} and metric="rollout"]',
-                            [T, col("labels.rollout", "rollout", "string"), col("labels.exact", "exact", "string"),
-                             col("labels.approx", "approx", "string"), col("value", "outcome", "string")])],
-             "transformations": order("time", "rollout", "exact", "approx", "outcome"),
-             "fieldConfig": {"defaults": {"custom": {"minWidth": 60}}, "overrides": [
-                 {"matcher": {"id": "byName", "options": "outcome"},
-                  "properties": [{"id": "mappings", "value": [{"type": "value", "options": {
-                      value: {"text": text, "index": i} for i, (value, text) in enumerate(OUTCOMES.items())}}]}]}]},
-             "options": {"showHeader": True}}, 12, 66, 7, 8)
-    b.panel({"type": "table", "title": "Where approx ≠ exact for rule ${rule}",
-             "targets": [iq("A", RUN + "fidelity_event.json", f'$[{app} and metric!="rollout"]',
-                            [T, col("metric", "event", "string"), col("value", "evaluations", "number")])],
-             "transformations": order("time", "event", "evaluations"),
-             "fieldConfig": {"defaults": {"custom": {"minWidth": 60}}, "overrides": []},
-             "options": {"showHeader": True}}, 19, 66, 5, 8)
+    b.row("Query result and decision on one time axis, rule ${rule}", 39)
+    b.panel(key_panel("Each large dot is one rollout's decision: **red** rollback, **green** promote. Each small "
+                      "**orange** dot is one failed check. Upper row of dots: **exact**; lower row: **approx**. "
+                      "Lines are the rule's query results: **solid** exact, **dashed** approx."), 0, 40, 24, 2)
+    b.panel(query_and_decision_panel(app, module), 0, 42, 24, 12)
     return part(b, [variable("rule", summary, '$[metric="rollouts"].labels', "signal")])
 
 
@@ -1186,92 +1160,6 @@ AGREEMENT = ("Defined per application. Threshold alert: evaluations where exact 
              "Rollout controller: rollouts decided the same. "
              "Top clients: mean clients shared by the exact and approx top lists, as a fraction of the list size. "
              "Rule: entity-evaluations where exact and approx agree on whether the rule is active.")
-
-
-STAGE1 = ("run_id", "trial", "query", "error metric", "target", "failure probability", "max error", "mean error",
-          "evaluations over target", "evaluations", "mean query ms", "mean compile ms", "planning ms",
-          "insert samples per second", "peak state bytes", "peak raw sample bytes read at query",
-          "exact mean query ms", "exact mean compile ms", "exact planning ms", "exact mean samples read at query",
-          "exact peak raw sample bytes read at query")
-SAME, FALSE_ROLLBACK, MISSED_ROLLBACK = "same decision", "false rollback", "missed rollback"
-
-
-def rollouts_by_error(ref, use_case, outcomes, name, y):
-    root = (f'$[use_case="{use_case}"{synthetic_only()} and $exists(details.stage2)].details.stage2'
-            f'[rule="${{rule}}" and outcome in {in_list(outcomes)}]'
-            f'.{{"max error": $lookup(`max error`, "${{query}}"), "{name}": {y}}}')
-    return iq(ref, INDEX, root, [col("max error", "max error", "number"), col(name, name, "number")])
-
-
-def stage1_panel(uid, use_case):
-    stage1 = (f'$[use_case="{use_case}"{synthetic_only()} and $exists(details.stage1)].( $e := $; $e.details.stage1.( '
-              '$merge([$, {"run_id": $e.run_id, "trial": $e.details.trial}]) ) )')
-    text = ("run_id", "query", "error metric")
-    return {"type": "table",
-             "title": "Per run and query: measured error against the target, and the cost "
-                      "(failure probability: the share of evaluations allowed over the target)",
-             "targets": [iq("A", INDEX, stage1, [col(k, k, "string") for k in text]
-                            + [col(k, k, "number") for k in STAGE1 if k not in text])],
-             "transformations": order(*STAGE1) + [{"id": "sortBy", "options": {"sort": [{"field": "run_id"}]}}],
-             "fieldConfig": {"defaults": {"custom": {"minWidth": 60, "wrapHeaderText": True,
-                                                     "cellOptions": {"type": "auto", "wrapText": True}}},
-                             "overrides": [
-                 {"matcher": {"id": "byRegexp", "options": "^(target|max error|mean error)$"},
-                  "properties": [{"id": "unit", "value": "percentunit"}, {"id": "decimals", "value": 2}]},
-                 {"matcher": {"id": "byRegexp", "options": "bytes"},
-                  "properties": [{"id": "unit", "value": "bytes"}]},
-                 {"matcher": {"id": "byRegexp", "options": " ms$"},
-                  "properties": [{"id": "decimals", "value": 3}]},
-                 {"matcher": {"id": "byRegexp", "options": "per second|samples read"},
-                  "properties": [{"id": "unit", "value": "short"}]},
-                 {"matcher": {"id": "byName", "options": "run_id"},
-                  "properties": [{"id": "custom.width", "value": 200}, {"id": "links", "value": [{
-                      "title": "Open this run", "url": f"/d/{uid}/{uid}?var-run=${{__data.fields.run_id}}"}]}]}]},
-             "options": {"showHeader": True}}
-
-
-def stage1_dashboard(uid, use_case):
-    b = Board()
-    b.row("Stage 1: sketch configuration to approx query result", 0)
-    b.panel(stage1_panel(uid, use_case), 0, 1, 24, 14)
-    return part(b)
-
-
-def two_stages_dashboard(uid, module):
-    use_case = cases.spec_of(module)["use_case"]
-    b = Board()
-    b.row("Stage 1: sketch configuration to approx query result", 0)
-    b.panel(stage1_panel(uid, use_case), 0, 1, 24, 14)
-
-    b.row("Stage 2: approx query result to rollout decision, rule ${rule}", 15)
-    b.panel({"type": "xychart",
-             "title": "${query}: each rollout's decision against the query's max error over its checks",
-             "description": "Rank error for p99, relative error for success rate.",
-             "repeat": "query", "repeatDirection": "h", "maxPerRow": 2,
-             "targets": [rollouts_by_error("A", use_case, ["true_positive", "true_negative"], SAME, 1),
-                         rollouts_by_error("B", use_case, ["false_positive"], FALSE_ROLLBACK, 0),
-                         rollouts_by_error("C", use_case, ["false_negative"], MISSED_ROLLBACK, 0)],
-             "fieldConfig": {"defaults": {"custom": {"show": "points", "pointSize": {"fixed": 7}},
-                                          "min": -0.2, "max": 1.2},
-                             "overrides": [
-                 {"matcher": {"id": "byName", "options": "max error"},
-                  "properties": [{"id": "unit", "value": "percentunit"}, {"id": "min", "value": 0},
-                                 {"id": "max", "value": None}]},
-                 *[{"matcher": {"id": "byName", "options": n},
-                    "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": c}}]}
-                   for n, c in ((SAME, "green"), (FALSE_ROLLBACK, "orange"), (MISSED_ROLLBACK, "red"))]]},
-             "options": {"mapping": "manual", "series": [
-                 {"frame": {"matcher": {"id": "byIndex", "options": i}},
-                  "x": {"matcher": {"id": "byName", "options": "max error"}},
-                  "y": {"matcher": {"id": "byName", "options": name}}}
-                 for i, name in enumerate((SAME, FALSE_ROLLBACK, MISSED_ROLLBACK))], **LEGEND}},
-            0, 16, 12, 12)
-    stage2 = f'$[use_case="{use_case}"{synthetic_only()} and $exists(details.stage2)].details.stage2'
-    rules = f'$map($distinct({stage2}.rule), function($v) {{ {{"rule": $v}} }})'
-    queries = f'$map($distinct({stage2}[rule="${{rule}}"].$keys(`max error`)), function($v) {{ {{"query": $v}} }})'
-    query = variable("query", INDEX, queries, "query")
-    query.update(multi=True, includeAll=True, current={"text": ["All"], "value": ["$__all"]})
-    return part(b, [variable("rule", INDEX, rules, "rule"), query])
 
 
 def rule_error_dashboard(rule_set, metrics, file_var=None, subpopulation=None):
@@ -1429,7 +1317,7 @@ def systems_dashboard(uid, use_case):
             '"samples dropped": ( $d := $lookup($v, "samples dropped"); $count($keys($d)) > 0 ? $string($d) : "" )'
             '}]) })) }, []) )')
     b = Board()
-    b.row("VictoriaMetrics vs ASAPQuery-backend", 0)
+    b.row(SYSTEMS_ROW, 0)
     b.panel({"type": "table",
              "title": "VictoriaMetrics, which keeps every raw sample, vs ASAPQuery-backend planned to keep none: "
                       "writes, memory, disk and query latency",
@@ -1473,7 +1361,6 @@ def systems_dashboard(uid, use_case):
     return part(b)
 
 
-PHASE3_SKIPS = ("stage1", "two_stages")
 
 
 def parts_of(module, phase3=False, figure=True):
@@ -1485,13 +1372,11 @@ def parts_of(module, phase3=False, figure=True):
             uid, use_case, {r["rule"]: r["name"] for r in rule_catalog(module) if r["name"] != r["rule"]},
             sketch_bounds=not phase3),
         "cost": lambda uid: cost_dashboard(module),
-        "stage1": lambda uid: stage1_dashboard(uid, use_case),
         "runs": lambda uid: runs_part(uid, use_case),
         "rule_note": lambda uid: rule_note_part(module),
         "alert": lambda uid: alert_dashboard(module),
         "decision": lambda uid: decision_dashboard(uid, module),
         "rollout": lambda uid: rollout_dashboard(module),
-        "two_stages": lambda uid: two_stages_dashboard(uid, module),
         "topk": lambda uid: topk_dashboard(uid),
         "rules": lambda uid: rules_dashboard(uid, board.get("entity", "entity")),
         "rule_error": lambda uid: rule_error_dashboard(
@@ -1499,7 +1384,7 @@ def parts_of(module, phase3=False, figure=True):
             rule_error.get("file_var"), rule_error.get("subpopulation")),
     }
     names = [n for name in board["parts"] for n in ((name, "rule_note") if name == "runs" else (name,))]
-    parts = tuple(builders[name] for name in names if not (phase3 and name in PHASE3_SKIPS))
+    parts = tuple(builders[name] for name in names)
     if phase3:
         parts = (lambda uid: systems_dashboard(uid, use_case),) + parts
     parts = (lambda uid: about_part(module),) + parts
@@ -1547,7 +1432,39 @@ def use_case_dashboard(uid, title, parts, spec, module):
         for p in b.panels:
             if p.get("title"):
                 p["title"] = p["title"].replace("${signal}", "${signal:text}")
+    b.panels = collapse_rows(b.panels, (SYSTEMS_ROW, *module.DASHBOARD.get("open_rows", OPEN_ROWS)))
+    add_under_first_open_row(b.panels, key_panel(PROBLEM_PERIODS_KEY), 2)
     return dashboard(uid, title, b, list(variables.values()), annotations, time_range(spec))
+
+
+def add_under_first_open_row(panels, panel, height):
+    i = next(i for i, p in enumerate(panels) if p["type"] == "row" and not p["collapsed"])
+    top = panels[i]["gridPos"]["y"] + 1
+    for p in panels[i + 1:]:
+        for q in [p, *p.get("panels", [])]:
+            q["gridPos"]["y"] += height
+    panel.update(id=1 + max(q["id"] for p in panels for q in [p, *p.get("panels", [])]),
+                 gridPos={"x": 0, "y": top, "w": 24, "h": height}, datasource=DS)
+    panels.insert(i + 1, panel)
+
+
+def collapse_rows(panels, open_rows):
+    out, y, row, row_y = [], 0, None, 0
+    for p in panels:
+        if p["type"] == "row":
+            row, row_y = p, p["gridPos"]["y"]
+            p["collapsed"] = not p["title"].startswith(open_rows)
+            p["gridPos"]["y"] = y
+            out.append(p)
+            y += 1
+            continue
+        p["gridPos"]["y"] += row["gridPos"]["y"] - row_y
+        if row["collapsed"]:
+            row["panels"].append(p)
+        else:
+            out.append(p)
+            y = max(y, p["gridPos"]["y"] + p["gridPos"]["h"])
+    return out
 
 
 def phase_boards(phase, figure):

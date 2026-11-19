@@ -1293,7 +1293,7 @@ impl Translator<'_> {
                 side(&right.sql, "rhs_value", "rhs"),
             ),
             labels,
-            step_ms: lcm(left.step_ms, right.step_ms),
+            step_ms: least_common_multiple(left.step_ms, right.step_ms),
             unfinalized_kind: None,
             source_tables,
         })
@@ -1360,7 +1360,7 @@ fn aggregate_value(id: NodeId, measure: &Measure) -> Result<String, TranslationE
 /// clamp; divided by the range in seconds for a rate.
 fn extrapolated(group: &str, inner: &str, range_ms: u64, kind: ExactKind) -> String {
     let per_second = if kind == ExactKind::Rate {
-        format!(" / {}", ms_as_seconds_literal(range_ms))
+        format!(" / {}", milliseconds_as_seconds_literal(range_ms))
     } else {
         String::new()
     };
@@ -1378,7 +1378,7 @@ fn extrapolated(group: &str, inner: &str, range_ms: u64, kind: ExactKind) -> Str
 }
 
 /// `300000` ms as `300`; a fraction of a second keeps its decimals.
-fn ms_as_seconds_literal(ms: u64) -> String {
+fn milliseconds_as_seconds_literal(ms: u64) -> String {
     if ms.is_multiple_of(1000) {
         (ms / 1000).to_string()
     } else {
@@ -1386,7 +1386,7 @@ fn ms_as_seconds_literal(ms: u64) -> String {
     }
 }
 
-fn lcm(a: u64, b: u64) -> u64 {
+fn least_common_multiple(a: u64, b: u64) -> u64 {
     let (mut x, mut y) = (a, b);
     while y != 0 {
         (x, y) = (y, x % y);
@@ -1430,8 +1430,8 @@ mod tests {
 
     #[test]
     fn seconds_keep_fractions() {
-        assert_eq!(ms_as_seconds_literal(300_000), "300");
-        assert_eq!(ms_as_seconds_literal(1_500), "1.5");
+        assert_eq!(milliseconds_as_seconds_literal(300_000), "300");
+        assert_eq!(milliseconds_as_seconds_literal(1_500), "1.5");
     }
 
     #[test]
@@ -1441,8 +1441,8 @@ mod tests {
     }
 
     #[test]
-    fn lcm_of_window_widths() {
-        assert_eq!(lcm(1, 60_000), 60_000);
-        assert_eq!(lcm(60_000, 90_000), 180_000);
+    fn least_common_multiple_of_window_widths() {
+        assert_eq!(least_common_multiple(1, 60_000), 60_000);
+        assert_eq!(least_common_multiple(60_000, 90_000), 180_000);
     }
 }
