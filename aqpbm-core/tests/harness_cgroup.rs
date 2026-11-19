@@ -133,10 +133,12 @@ fn ssh_reads_the_same_values_as_the_directory_and_nothing_else() {
     let arguments = std::fs::read_to_string(temp.0.join("ssh-arguments")).unwrap();
     assert!(arguments.contains("ControlMaster=auto"), "{arguments}");
     assert!(arguments.contains("BatchMode=yes"), "{arguments}");
-    assert!(arguments.contains("bench@192.0.2.1"), "{arguments}");
+    // `--` ends the options, so a host can never be read as one.
+    assert!(arguments.contains("--\nbench@192.0.2.1\n"), "{arguments}");
     std::fs::write(temp.0.join("cpu.stat"), cpu_stat(9000, 0)).unwrap();
     assert_eq!(remote.cpu().unwrap().usage_ns, 9_000_000);
-    // Without `memory.peak`, `cat` fails on a missing file: an older kernel.
+    // Without `memory.peak` (an older kernel) the remote command exits 3,
+    // whatever language the server host's error messages are in.
     std::fs::remove_file(temp.0.join("memory.peak")).unwrap();
     assert_eq!(remote.memory().unwrap().lifetime_peak_bytes, None);
     if Path::new("/proc/stat").exists() {

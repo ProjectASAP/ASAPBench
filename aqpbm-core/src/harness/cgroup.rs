@@ -178,15 +178,17 @@ fn stat_field(file: &str, text: &str, field: &str) -> Result<u64, CgroupError> {
 /// Options of every SSH read: never prompt for a password; share one
 /// connection per host, kept open 60 s after the last read; give up on a
 /// host that does not answer within 5 s, and on a connection that stops
-/// answering within about 15 s. The control socket lives in `/tmp` because
-/// macOS limits a socket path to 104 bytes.
+/// answering within about 15 s. The control socket is in the user's own
+/// `~/.ssh`, so no other local user can reach or pre-create it; `%C` (a
+/// hash of the hosts, port and remote user) keeps the path under the
+/// 104 bytes macOS allows for a socket.
 const SSH_OPTIONS: [&str; 12] = [
     "-o",
     "BatchMode=yes",
     "-o",
     "ControlMaster=auto",
     "-o",
-    "ControlPath=/tmp/aqpbm-ssh-%C",
+    "ControlPath=~/.ssh/aqpbm-%C",
     "-o",
     "ControlPersist=60",
     "-o",
@@ -195,15 +197,25 @@ const SSH_OPTIONS: [&str; 12] = [
     "ServerAliveInterval=5",
 ];
 
-/// The text of `path` on `host`: `<ssh_program> <SSH_OPTIONS> <host> cat -- '<path>'`.
-/// Exit status 255 is SSH's own failure (no connection, refused key); any
-/// other failure is `cat`'s, and a missing file is [`CgroupError::NotFound`].
+/// The exit status of the remote command when the file does not exist.
+const MISSING_FILE_EXIT_STATUS: i32 = 3;
+
+/// The text of `path` on `host`:
+/// `<ssh_program> <SSH_OPTIONS> -- <host> "test -e '<path>' || exit 3; exec cat -- '<path>'"`.
+/// `--` keeps a host that starts with `-` from being read as an option.
+/// Exit status 255 is SSH's own failure (no connection, refused key); 3 is
+/// a missing file ([`CgroupError::NotFound`]), decided by the status, not by
+/// the server's locale-dependent error text; any other failure is `cat`'s.
 fn ssh_read(ssh_program: &str, host: &str, path: &Path) -> Result<String, CgroupError> {
     let shown = format!("{host}:{}", path.display());
+    let quoted = shell_quoted(&path.to_string_lossy());
     let output = Command::new(ssh_program)
         .args(SSH_OPTIONS)
+        .arg("--")
         .arg(host)
-        .arg(format!("cat -- {}", shell_quoted(&path.to_string_lossy())))
+        .arg(format!(
+            "test -e {quoted} || exit {MISSING_FILE_EXIT_STATUS}; exec cat -- {quoted}"
+        ))
         .stdin(Stdio::null())
         .output()
         .map_err(|error| CgroupError::Remote {
@@ -223,7 +235,7 @@ fn ssh_read(ssh_program: &str, host: &str, path: &Path) -> Result<String, Cgroup
             message: stderr,
         }),
         // Such as `memory.peak` before Linux 5.19.
-        _ if stderr.contains("No such file or directory") => Err(CgroupError::NotFound(shown)),
+        Some(MISSING_FILE_EXIT_STATUS) => Err(CgroupError::NotFound(shown)),
         _ => Err(CgroupError::Read {
             file: shown,
             message: stderr,
