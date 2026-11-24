@@ -64,6 +64,7 @@ aqpbm-datagen = { path = "aqpbm-datagen" }
 aqpbm-core = { path = "aqpbm-core", default-features = false }
 sketch-bench = { path = "sketch-bench" }
 aqpbm-usecase = { path = "aqpbm-usecase" }
+system-bench = { path = "system-bench" }
 # sketch-runtime = { path = "sketch-runtime" }  # parked;
 
 [profile.release]

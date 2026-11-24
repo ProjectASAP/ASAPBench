@@ -152,12 +152,35 @@ fn an_unknown_engine_names_the_known_engines() {
         "--run-directory",
         run.to_str().unwrap(),
         "--engine",
-        "clickhouse",
+        "victoriametrics",
     ]);
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("clickhouse") && stderr.contains("fake"),
+        "{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(run.parent().unwrap());
+}
+
+/// X3: the clickhouse engine needs the server and its cgroup directory.
+#[test]
+fn the_clickhouse_engine_needs_its_server() {
+    let run = fixture("x3");
+    let out = approxbench(&[
+        "benchmark-external",
+        "run",
+        "--run-directory",
+        run.to_str().unwrap(),
+        "--engine",
+        "clickhouse",
+        "--clickhouse-url",
+        "http://10.0.0.2:8123",
+    ]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--clickhouse-url") && stderr.contains("--server-cgroup-directory"),
         "{stderr}"
     );
     let _ = std::fs::remove_dir_all(run.parent().unwrap());

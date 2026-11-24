@@ -42,6 +42,7 @@ asap-frontend-promql = { git = "https://github.com/ProjectASAP/ASAPPlanner", rev
 asap_sketchlib = { workspace = true, optional = true }
 futures = { version = "0.3", optional = true }
 tokio = { version = "1", features = ["rt", "macros"], optional = true }
+aqpbm-core.workspace = true
 aqpbm-usecase.workspace = true
 anyhow.workspace = true
 clap.workspace = true

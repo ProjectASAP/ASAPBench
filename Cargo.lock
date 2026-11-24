@@ -114,6 +114,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sketch-bench",
+ "system-bench",
  "tikv-jemallocator",
 ]
 
@@ -4176,6 +4177,7 @@ name = "system-bench"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aqpbm-core",
  "aqpbm-usecase",
  "asap-executor",
  "asap-frontend-promql",
