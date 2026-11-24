@@ -1,8 +1,3 @@
-mod query;
-mod remote_write;
-mod system;
-mod write;
-
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -15,8 +10,9 @@ use aqpbm_usecase::spec::Spec;
 use clap::builder::PossibleValuesParser;
 use clap::Parser;
 
-use crate::query::{ask, Collected};
-use crate::write::{Options, Writer};
+use system_bench::systemeval::query::{ask, Collected};
+use system_bench::systemeval::system;
+use system_bench::systemeval::write::{Options, Writer};
 
 #[derive(Parser, Debug)]
 #[command(

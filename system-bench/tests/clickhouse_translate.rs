@@ -4,13 +4,13 @@
 
 mod common;
 
-use aqpbm_engines_external::clickhouse::{translate, ClickHouseDeployment, TableRetention};
-use aqpbm_engines_external::plan_file::PlanFile;
-use aqpbm_engines_external::{SharingLost, Substitution, TranslationError};
 use common::{
     fixture, fixture_value, fixture_value_public, golden, normalized, payload_body, public_fixture,
 };
 use serde_json::{json, Value};
+use system_bench::engines_external::clickhouse::{translate, ClickHouseDeployment, TableRetention};
+use system_bench::engines_external::plan_file::PlanFile;
+use system_bench::engines_external::{SharingLost, Substitution, TranslationError};
 
 fn translated(name: &str) -> ClickHouseDeployment {
     translate(&fixture(name)).expect("translates")

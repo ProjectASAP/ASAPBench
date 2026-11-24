@@ -47,7 +47,7 @@ repos:
       - id: cargo-test
         name: cargo test
         description: Run all Rust workspace tests.
-        entry: bash -c 'cargo test --workspace'
+        entry: bash -c 'cargo test --workspace && cargo test -p system-bench --features planeval'
         language: system
         files: \.rs$
         pass_filenames: false

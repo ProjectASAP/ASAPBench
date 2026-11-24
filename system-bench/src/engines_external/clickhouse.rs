@@ -40,11 +40,11 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-use crate::plan_file::{
+use super::plan_file::{
     Lifetime, Measure, PlanFile, PlanNode, PlanOperator, Predicate, RangeKind, Reduction, Source,
     SummaryFamily, Timing,
 };
-use crate::{NodeId, SharingLost, Substitution, TranslationError};
+use super::{NodeId, SharingLost, Substitution, TranslationError};
 
 /// The plan's series identity column, a label column like any other. It has
 /// one value per series, so it is a plain `String`: `LowCardinality` pays

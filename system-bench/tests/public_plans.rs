@@ -11,7 +11,7 @@
 
 mod common;
 
-use aqpbm_engines_external::clickhouse::translate;
+use system_bench::engines_external::clickhouse::translate;
 
 /// `(workload, variant)` of every committed public plan, in name order.
 fn public_plans() -> Vec<(String, String)> {

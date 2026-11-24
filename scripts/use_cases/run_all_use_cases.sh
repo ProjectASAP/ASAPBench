@@ -61,7 +61,7 @@ if [ -z "$cases" ]; then
   cases=$(python3 -c "import sys; sys.path.insert(0, 'scripts/use_cases'); import cases; print(','.join(cases.load()))")
 fi
 
-cargo build --release -p aqpbm-planeval
+cargo build --release -p system-bench --features planeval
 
 for case_id in ${cases//,/ }; do
   arm=()

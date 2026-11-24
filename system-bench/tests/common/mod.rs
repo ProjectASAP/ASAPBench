@@ -4,8 +4,8 @@
 
 use std::path::PathBuf;
 
-use aqpbm_engines_external::plan_file::PlanFile;
 use serde_json::Value;
+use system_bench::engines_external::plan_file::PlanFile;
 
 pub fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

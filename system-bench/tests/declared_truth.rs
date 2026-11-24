@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use aqpbm_planeval::plan::{workload, Arm};
 use aqpbm_usecase::spec::{Spec, Statistic, Truth};
 use asap_types::ir::operator::{AggIntent, Reduction, Source};
 use asap_types::ir::scalar::{CompareOpKind, ScalarValue};
 use asap_types::ir::{NonASAPOp, Operator, OperatorNode, QueryRoot, ScalarExpr, TimeRangeKind};
 use asap_types::workload::PlanningWorkload;
+use system_bench::planeval::plan::{workload, Arm};
 
 fn aggregate(node: &OperatorNode) -> Option<(&Reduction, &AggIntent, &OperatorNode)> {
     let Operator::NonASAP(NonASAPOp::Aggregate {

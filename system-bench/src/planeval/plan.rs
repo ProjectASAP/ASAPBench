@@ -7,7 +7,7 @@ use asap_planner::{
 };
 use serde_json::{json, Value};
 
-use crate::sketch_analytics::{analytics, statistics};
+use super::sketch_analytics::{analytics, statistics};
 use aqpbm_usecase::spec::{QuerySpec, Spec};
 
 #[derive(Debug, Clone, Copy)]

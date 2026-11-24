@@ -156,46 +156,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aqpbm-engines-external"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "aqpbm-planeval"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aqpbm-usecase",
- "asap-executor",
- "asap-frontend-promql",
- "asap-planner",
- "asap-types",
- "asap_sketchlib 0.4.0 (git+https://github.com/ProjectASAP/asap_sketchlib?rev=a05b35ce14e4079eaa6acb29dd8c416bd1a2a3d1)",
- "clap",
- "futures",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "aqpbm-systemeval"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aqpbm-usecase",
- "clap",
- "prost",
- "serde",
- "serde_json",
- "snap",
- "ureq",
-]
-
-[[package]]
 name = "aqpbm-usecase"
 version = "0.1.0"
 dependencies = [
@@ -4209,6 +4169,28 @@ dependencies = [
  "memchr",
  "ntapi",
  "windows",
+]
+
+[[package]]
+name = "system-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aqpbm-usecase",
+ "asap-executor",
+ "asap-frontend-promql",
+ "asap-planner",
+ "asap-types",
+ "asap_sketchlib 0.4.0 (git+https://github.com/ProjectASAP/asap_sketchlib?rev=a05b35ce14e4079eaa6acb29dd8c416bd1a2a3d1)",
+ "clap",
+ "futures",
+ "prost",
+ "serde",
+ "serde_json",
+ "snap",
+ "thiserror 2.0.18",
+ "tokio",
+ "ureq",
 ]
 
 [[package]]

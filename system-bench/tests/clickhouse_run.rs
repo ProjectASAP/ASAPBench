@@ -5,13 +5,15 @@
 
 mod common;
 
-use aqpbm_engines_external::clickhouse::{translate, ClickHouseDeployment, INSERT_SETTINGS};
-use aqpbm_engines_external::plan_file::PlanFile;
 use common::{
     fixture, fixture_value_public, least_common_multiple, payload_body, public_fixture,
     run_clickhouse,
 };
 use serde_json::json;
+use system_bench::engines_external::clickhouse::{
+    translate, ClickHouseDeployment, INSERT_SETTINGS,
+};
+use system_bench::engines_external::plan_file::PlanFile;
 
 /// The deployment's tables and views, then `setup`, then query `query`.
 fn script(deployment: &ClickHouseDeployment, setup: &[String], query: usize) -> String {
