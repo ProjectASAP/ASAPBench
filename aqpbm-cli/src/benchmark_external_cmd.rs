@@ -17,9 +17,12 @@ use aqpbm_core::harness::protocol::{
 use aqpbm_core::harness::run_directory::RunDirectory;
 use clap::{Parser, Subcommand};
 use system_bench::engines_external::clickhouse_server::{ClickHouseEngine, ClickHouseServer};
+use system_bench::engines_external::victoriametrics_server::{
+    VictoriaMetricsEngine, VictoriaMetricsServer,
+};
 
 /// The engines this binary can run.
-pub const ENGINES: [&str; 2] = ["fake", "clickhouse"];
+pub const ENGINES: [&str; 3] = ["fake", "clickhouse", "victoriametrics"];
 
 #[derive(Parser, Debug)]
 pub struct BenchmarkExternalArgs {
@@ -30,7 +33,7 @@ pub struct BenchmarkExternalArgs {
 #[derive(Subcommand, Debug)]
 pub enum BenchmarkExternalCmd {
     /// Run every (workload, variant) cell of the run directory on one engine.
-    Run(RunArgs),
+    Run(Box<RunArgs>),
     /// Join every engine run's cells into summary.csv, summary.md and accuracy.csv.
     Report(ReportArgs),
 }
@@ -40,7 +43,8 @@ pub struct RunArgs {
     /// The run directory: workloads/, plans/<variant>/, results/.
     #[arg(long)]
     pub run_directory: PathBuf,
-    /// The engine: `fake` (the harness's own fake engine) or `clickhouse`.
+    /// The engine: `fake` (the harness's own fake engine), `clickhouse` or
+    /// `victoriametrics`.
     #[arg(long)]
     pub engine: String,
     /// The ClickHouse server's HTTP interface, e.g. `http://10.0.0.1:8123`
@@ -48,7 +52,8 @@ pub struct RunArgs {
     #[arg(long)]
     pub clickhouse_url: Option<String>,
     /// The server's cgroup v2 directory, e.g.
-    /// `/sys/fs/cgroup/system.slice/docker-<id>.scope` (engine `clickhouse`).
+    /// `/sys/fs/cgroup/system.slice/docker-<id>.scope` (engines `clickhouse`
+    /// and `victoriametrics`).
     #[arg(long)]
     pub server_cgroup_directory: Option<PathBuf>,
     /// The SSH destination of the server host, e.g. `bench@10.0.0.2`; the
@@ -64,6 +69,14 @@ pub struct RunArgs {
     /// How long one ClickHouse statement may run, in seconds.
     #[arg(long, default_value_t = 600)]
     pub clickhouse_statement_timeout_seconds: u64,
+    /// The VictoriaMetrics server's HTTP interface, e.g. `http://10.0.0.1:8428`
+    /// (engine `victoriametrics`).
+    #[arg(long)]
+    pub victoriametrics_url: Option<String>,
+    /// The server's `-streamAggr.config` file on the server host, replaced
+    /// for each arm (engine `victoriametrics`).
+    #[arg(long)]
+    pub victoriametrics_stream_aggregation_config: Option<PathBuf>,
     /// Only these variants (repeatable); every variant under plans/ by default.
     #[arg(long = "variant")]
     pub variants: Vec<String>,
@@ -92,7 +105,7 @@ pub struct ReportArgs {
 
 pub fn run(args: BenchmarkExternalArgs) -> Result<()> {
     match args.command {
-        BenchmarkExternalCmd::Run(args) => run_engine_cmd(args),
+        BenchmarkExternalCmd::Run(args) => run_engine_cmd(*args),
         BenchmarkExternalCmd::Report(args) => report_cmd(args),
     }
 }
@@ -101,29 +114,21 @@ fn run_engine_cmd(args: RunArgs) -> Result<()> {
     let engine: Box<dyn EngineUnderTest> = match args.engine.as_str() {
         "fake" => {
             if args.clickhouse_url.is_some()
+                || args.victoriametrics_url.is_some()
+                || args.victoriametrics_stream_aggregation_config.is_some()
                 || args.server_cgroup_directory.is_some()
                 || args.server_ssh_host.is_some()
             {
                 bail!(
-                    "--clickhouse-url, --server-cgroup-directory and --server-ssh-host are for engine clickhouse only"
+                    "--clickhouse-url, --victoriametrics-url, --victoriametrics-stream-aggregation-config, --server-cgroup-directory and --server-ssh-host are for engines clickhouse and victoriametrics only"
                 );
             }
             Box::new(FakeEngine::default())
         }
         "clickhouse" => {
-            let (Some(url), Some(cgroup_directory)) = (
-                args.clickhouse_url.clone(),
-                args.server_cgroup_directory.clone(),
-            ) else {
+            let (Some(url), Some(cgroup)) = (args.clickhouse_url.clone(), server_cgroup(&args))
+            else {
                 bail!("engine clickhouse needs --clickhouse-url and --server-cgroup-directory");
-            };
-            let cgroup = match args.server_ssh_host.clone() {
-                Some(host) => CgroupSource::Remote {
-                    ssh_program: args.ssh_program.clone(),
-                    host,
-                    cgroup_directory,
-                },
-                None => CgroupSource::Local(cgroup_directory),
             };
             Box::new(ClickHouseEngine::new(ClickHouseServer {
                 url,
@@ -132,6 +137,27 @@ fn run_engine_cmd(args: RunArgs) -> Result<()> {
                 statement_timeout: std::time::Duration::from_secs(
                     args.clickhouse_statement_timeout_seconds,
                 ),
+            })?)
+        }
+        "victoriametrics" => {
+            let (Some(url), Some(cgroup), Some(stream_aggregation_config)) = (
+                args.victoriametrics_url.clone(),
+                server_cgroup(&args),
+                args.victoriametrics_stream_aggregation_config.clone(),
+            ) else {
+                bail!(
+                    "engine victoriametrics needs --victoriametrics-url, --server-cgroup-directory and --victoriametrics-stream-aggregation-config"
+                );
+            };
+            // Wall-clock data runs one arm at a time.
+            if args.warmup != 0 || args.runs != 1 {
+                bail!("engine victoriametrics runs one arm at a time: pass --warmup 0 --runs 1");
+            }
+            Box::new(VictoriaMetricsEngine::new(VictoriaMetricsServer {
+                url,
+                cgroup,
+                stream_aggregation_config,
+                request_timeout: std::time::Duration::from_secs(600),
             })?)
         }
         other => bail!(
@@ -166,6 +192,18 @@ fn run_engine_cmd(args: RunArgs) -> Result<()> {
         println!("{} {} {:?}", cell.workload, cell.variant, cell.outcome);
     }
     Ok(())
+}
+
+fn server_cgroup(args: &RunArgs) -> Option<CgroupSource> {
+    let cgroup_directory = args.server_cgroup_directory.clone()?;
+    Some(match args.server_ssh_host.clone() {
+        Some(host) => CgroupSource::Remote {
+            ssh_program: args.ssh_program.clone(),
+            host,
+            cgroup_directory,
+        },
+        None => CgroupSource::Local(cgroup_directory),
+    })
 }
 
 fn report_cmd(args: ReportArgs) -> Result<()> {

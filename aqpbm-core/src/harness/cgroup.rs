@@ -89,6 +89,15 @@ impl CgroupSource {
         }
     }
 
+    pub fn replace_file_on_server_host(&self, path: &Path, text: &str) -> Result<(), CgroupError> {
+        match self {
+            CgroupSource::Local(_) => replace_local_file(path, text),
+            CgroupSource::Remote {
+                ssh_program, host, ..
+            } => ssh_replace(ssh_program, host, path, text),
+        }
+    }
+
     /// `cpu.stat` read once.
     pub fn cpu(&self) -> Result<CgroupCpu, CgroupError> {
         CgroupCpu::parse(&self.read("cpu.stat")?)
@@ -243,6 +252,87 @@ fn ssh_read(ssh_program: &str, host: &str, path: &Path) -> Result<String, Cgroup
     }
 }
 
+fn temporary_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".tmp");
+    PathBuf::from(name)
+}
+
+fn replace_local_file(path: &Path, text: &str) -> Result<(), CgroupError> {
+    use std::io::Write;
+    let temporary = temporary_path(path);
+    let written = std::fs::remove_file(&temporary)
+        .or_else(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => Ok(()),
+            _ => Err(error),
+        })
+        .and_then(|()| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+        })
+        .and_then(|mut file| file.write_all(text.as_bytes()))
+        .and_then(|()| std::fs::rename(&temporary, path));
+    written.map_err(|error| {
+        let _ = std::fs::remove_file(&temporary);
+        CgroupError::Write {
+            file: path.display().to_string(),
+            message: error.to_string(),
+        }
+    })
+}
+
+fn ssh_replace(ssh_program: &str, host: &str, path: &Path, text: &str) -> Result<(), CgroupError> {
+    use std::io::Write;
+    let quoted = shell_quoted(&path.to_string_lossy());
+    let temporary = shell_quoted(&temporary_path(path).to_string_lossy());
+    let length = text.len();
+    let mut child = Command::new(ssh_program)
+        .args(SSH_OPTIONS)
+        .arg("--")
+        .arg(host)
+        .arg(format!(
+            "rm -f -- {temporary} && set -C && cat > {temporary} && \
+             [ \"$(wc -c < {temporary})\" -eq {length} ] && exec mv -f -- {temporary} {quoted}; \
+             status=$?; rm -f -- {temporary}; exit $status"
+        ))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| CgroupError::Remote {
+            host: host.into(),
+            message: format!("cannot start {ssh_program}: {error}"),
+        })?;
+    let written = child
+        .stdin
+        .take()
+        .expect("stdin is piped")
+        .write_all(text.as_bytes());
+    let output = child
+        .wait_with_output()
+        .map_err(|error| CgroupError::Remote {
+            host: host.into(),
+            message: error.to_string(),
+        })?;
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    match (output.status.code(), written) {
+        (Some(0), Ok(())) => Ok(()),
+        (Some(255) | None, _) => Err(CgroupError::Remote {
+            host: host.into(),
+            message: stderr,
+        }),
+        (_, written) => Err(CgroupError::Write {
+            file: format!("{host}:{}", path.display()),
+            message: match written {
+                Err(error) if stderr.is_empty() => error.to_string(),
+                _ => stderr,
+            },
+        }),
+    }
+}
+
 /// `text` in single quotes for the server host's shell, each `'` as `'\''`.
 fn shell_quoted(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
@@ -255,6 +345,8 @@ pub enum CgroupError {
     Read { file: String, message: String },
     #[error("{file} has no '{field}' line")]
     MissingField { file: String, field: String },
+    #[error("cannot write {file}: {message}")]
+    Write { file: String, message: String },
     #[error("cannot parse {file}: {message}")]
     Parse { file: String, message: String },
     #[error("SSH to {host}: {message}")]

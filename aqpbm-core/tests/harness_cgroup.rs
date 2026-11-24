@@ -447,3 +447,56 @@ fn a_group_with_a_foreign_process_is_not_the_server_cpu() {
         .unwrap();
     assert_eq!(shared.cpu_source(), "schedstat");
 }
+
+#[cfg(unix)]
+#[test]
+fn a_file_on_the_server_host_is_replaced_locally_and_over_ssh() {
+    let temp = TempDir::new("replace-'quoted'");
+    let config = temp.0.join("stream-aggregation.yaml");
+    std::fs::write(&config, "[]\n").unwrap();
+    let local = CgroupSource::Local(temp.0.clone());
+    local
+        .replace_file_on_server_host(&config, "- interval: 10s\n")
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&config).unwrap(),
+        "- interval: 10s\n"
+    );
+    let remote = CgroupSource::Remote {
+        ssh_program: fake_ssh(&temp.0),
+        host: "bench@192.0.2.1".into(),
+        cgroup_directory: temp.0.clone(),
+    };
+    remote
+        .replace_file_on_server_host(&config, "- interval: 20s\n")
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&config).unwrap(),
+        "- interval: 20s\n"
+    );
+    assert!(!temp.0.join("stream-aggregation.yaml.tmp").exists());
+    #[cfg(unix)]
+    {
+        let target = temp.0.join("not-the-config");
+        std::fs::write(&target, "kept").unwrap();
+        std::os::unix::fs::symlink(&target, temp.0.join("stream-aggregation.yaml.tmp")).unwrap();
+        local
+            .replace_file_on_server_host(&config, "- interval: 30s\n")
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "kept");
+        std::os::unix::fs::symlink(&target, temp.0.join("stream-aggregation.yaml.tmp")).unwrap();
+        remote
+            .replace_file_on_server_host(&config, "- interval: 40s\n")
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "kept");
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            "- interval: 40s\n"
+        );
+    }
+    let missing = temp.0.join("no-such-directory").join("config.yaml");
+    assert!(matches!(
+        remote.replace_file_on_server_host(&missing, "x"),
+        Err(CgroupError::Write { .. })
+    ));
+}
