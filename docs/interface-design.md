@@ -61,9 +61,9 @@ The registry entry:
 
 ```rust
 pub struct SketchId {
-    pub algorithm: &'static str,          // algorithm family, e.g. "cms"; entries in one family take the same parameters
-    pub variant: &'static str,            // e.g. "cms-fastpath-vector2d"
-    pub library: &'static str,            // e.g. "oxide", "datasketches", "lib"
+    pub algorithm: &'static str,          // algorithm family, e.g. "count-min"; entries in one family take the same parameters
+    pub variant: &'static str,            // e.g. "count-min-fast-path-vector-2d"
+    pub library: &'static str,            // e.g. "sketch_oxide", "datasketches", "asap_sketchlib"
     pub description: &'static str,
     pub capability: Capability,           // the statistic it answers: frequency, quantile, cardinality, ...
     pub comparator: Option<&'static str>, // the accuracy scorer for this entry, e.g. "frequency"; `--comparator` must name it
@@ -332,7 +332,7 @@ approxbench benchmark-external report --run-directory <dir> --truth <system>/<ar
 
 ```sh
 approxbench sketchbench \
-    --variant cms-fastpath-vector2d --library lib \
+    --variant count-min-fast-path-vector-2d --library asap_sketchlib \
     --config 'rows=5 cols=2048' \
     --dataset uniform --size 1000000 --cardinality 100000 \
     --dtype i64 \
