@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 
-use aqpbm_planeval::plan::{plan, Arm};
-use aqpbm_planeval::run::Driver;
 use aqpbm_usecase::data::generate;
 use aqpbm_usecase::spec::Spec;
+use system_bench::planeval::plan::{plan, Arm};
+use system_bench::planeval::run::Driver;
 
 fn small_spec() -> Spec {
     let spec: Spec = serde_json::from_value(serde_json::json!({

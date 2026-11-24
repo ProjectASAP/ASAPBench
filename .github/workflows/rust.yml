@@ -84,3 +84,8 @@ jobs:
       run: cargo test --workspace --locked
       env:
         RUSTC_WRAPPER: sccache
+
+    - name: Run system-bench tests with planeval
+      run: cargo test -p system-bench --features planeval --locked
+      env:
+        RUSTC_WRAPPER: sccache

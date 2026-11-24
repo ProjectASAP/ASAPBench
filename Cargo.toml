@@ -1,4 +1,4 @@
-# Workspace manifest for sketch-bench.
+# Workspace manifest for ASAPBench.
 [workspace]
 resolver = "2"
 members = [
@@ -7,9 +7,7 @@ members = [
     "sketch-bench",
     "aqpbm-cli",
     "aqpbm-usecase",
-    "aqpbm-planeval",
-    "aqpbm-systemeval",
-    "aqpbm-engines-external",
+    "system-bench",
 ]
 
 exclude = ["sketch-runtime"]
@@ -18,7 +16,7 @@ exclude = ["sketch-runtime"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/ProjectASAP/sketch-bench"
+repository = "https://github.com/ProjectASAP/ASAPBench"
 
 [workspace.dependencies]
 # Serde + JSON for the report schema (`aqpbm_core::report`).

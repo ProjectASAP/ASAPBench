@@ -12,7 +12,7 @@
 
 use serde_json::{Map, Value};
 
-use crate::{NodeId, TranslationError};
+use super::{NodeId, TranslationError};
 
 /// The `InstallablePlan` wire version this decoder reads (ASAPPlanner
 /// `INSTALLABLE_PLAN_WIRE_VERSION`).

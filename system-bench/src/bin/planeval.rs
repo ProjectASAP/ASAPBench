@@ -4,8 +4,6 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use aqpbm_planeval::plan::{plan, summary, Arm};
-use aqpbm_planeval::run::Driver;
 use aqpbm_usecase::accuracy::AnswerAt;
 use aqpbm_usecase::data::generate;
 use aqpbm_usecase::output::{
@@ -14,6 +12,8 @@ use aqpbm_usecase::output::{
 };
 use aqpbm_usecase::score::{read_answers, score};
 use aqpbm_usecase::spec::Spec;
+use system_bench::planeval::plan::{plan, summary, Arm};
+use system_bench::planeval::run::Driver;
 
 #[derive(Parser, Debug)]
 #[command(

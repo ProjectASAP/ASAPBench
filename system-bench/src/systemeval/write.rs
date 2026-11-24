@@ -5,8 +5,8 @@ use anyhow::Result;
 use aqpbm_usecase::data::Series;
 use aqpbm_usecase::output::WriteSummary;
 
-use crate::remote_write::{encode, Label, Sample, TimeSeries, WriteRequest};
-use crate::system::{Sent, System};
+use super::remote_write::{encode, Label, Sample, TimeSeries, WriteRequest};
+use super::system::{Sent, System};
 
 pub struct Options {
     pub batch_samples: usize,

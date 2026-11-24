@@ -1,0 +1,53 @@
+[package]
+name = "system-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "System level: runs ASAPPlanner's plans on its executor (feature planeval), translates ASAPPlanner plan files for external engines, and writes a spec's samples to time series systems and asks them its queries."
+
+[features]
+planeval = [
+    "dep:asap-planner",
+    "dep:asap-executor",
+    "dep:asap-types",
+    "dep:asap-frontend-promql",
+    "dep:asap_sketchlib",
+    "dep:futures",
+    "dep:tokio",
+]
+
+[[bin]]
+name = "planeval"
+path = "src/bin/planeval.rs"
+required-features = ["planeval"]
+
+[[bin]]
+name = "systemeval"
+path = "src/bin/systemeval.rs"
+
+[[test]]
+name = "uc1"
+required-features = ["planeval"]
+
+[[test]]
+name = "declared_truth"
+required-features = ["planeval"]
+
+[dependencies]
+asap-planner = { git = "https://github.com/ProjectASAP/ASAPPlanner", rev = "b822553f1ea7e5fc60940dd23536d1f6c99c5334", default-features = false, features = ["test-support"], optional = true }
+asap-executor = { git = "https://github.com/ProjectASAP/ASAPPlanner", rev = "b822553f1ea7e5fc60940dd23536d1f6c99c5334", optional = true }
+asap-types = { git = "https://github.com/ProjectASAP/ASAPPlanner", rev = "b822553f1ea7e5fc60940dd23536d1f6c99c5334", optional = true }
+asap-frontend-promql = { git = "https://github.com/ProjectASAP/ASAPPlanner", rev = "b822553f1ea7e5fc60940dd23536d1f6c99c5334", optional = true }
+asap_sketchlib = { workspace = true, optional = true }
+futures = { version = "0.3", optional = true }
+tokio = { version = "1", features = ["rt", "macros"], optional = true }
+aqpbm-usecase.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+prost = "0.13"
+snap = "1.1"
+ureq = { version = "2", default-features = false }
