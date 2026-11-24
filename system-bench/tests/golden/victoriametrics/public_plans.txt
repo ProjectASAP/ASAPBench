@@ -1,4 +1,16 @@
-== cdist__5m__10hz__60s.victoriametrics.with-substitutes
+== avg_quantile__1m_1hz_10s.victoriametrics.equivalent-only
+[]
+avg by (job) (quantile_over_time(0.9, latency[60s])) | step 1 | per series None
+== avg_quantile__1m_1hz_10s.victoriametrics.with-substitutes
+[]
+avg by (job) (quantile_over_time(0.9, latency[60s])) | step 1 | per series None
+== count__1m_1hz_10s.victoriametrics.equivalent-only
+[]
+sum by (job) (count_over_time(latency[60s])) | step 1 | per series None
+== count__1m_1hz_10s.victoriametrics.with-substitutes
+[]
+sum by (job) (count_over_time(latency[60s])) | step 1 | per series None
+== count_distinct__5m__10hz__60s.victoriametrics.with-substitutes
 - match: 'latency'
   interval: 60s
   outputs: [count_samples]
@@ -6,9 +18,23 @@
   ignore_first_intervals: 0
   flush_on_shutdown: false
 count(count by (instance) (sum_over_time(latency:60s_count_samples[300s] offset -29500ms))) | step 60000 | per series None
-== cdist__5m__1hz__300s.victoriametrics.equivalent-only
+== count_distinct__5m__1hz__300s.victoriametrics.equivalent-only
 []
 count(count by (instance) (count_over_time(latency[300s]))) | step 1 | per series None
+== joint__1m_1hz_10s.victoriametrics.with-substitutes
+[]
+quantile_over_time(0.99, latency[60s]) | step 1 | per series Some("latency")
+quantile_over_time(0.5, latency[60s]) | step 1 | per series Some("latency")
+avg by (job) (quantile_over_time(0.9, latency[60s])) | step 1 | per series None
+max_over_time(latency[60s]) | step 1 | per series Some("latency")
+sum by (job) (rate(requests_total[60s])) | step 1 | per series None
+substitution victoriametrics.rate_increase.no_extrapolation at node 11
+== max__1m_1hz_10s.victoriametrics.equivalent-only
+[]
+max_over_time(latency[60s]) | step 1 | per series Some("latency")
+== max__1m_1hz_10s.victoriametrics.with-substitutes
+[]
+max_over_time(latency[60s]) | step 1 | per series Some("latency")
 == mixed-04.victoriametrics.with-substitutes
 - match: 'data'
   interval: 10s
@@ -105,55 +131,19 @@ topk by (region, service) (8, increase(data_total[600s])) | step 1 | per series 
 topk by (region, service) (4, rate(data_total[1200s])) | step 1 | per series Some("data_total")
 substitution victoriametrics.rate_increase.no_extrapolation at node 2
 substitution victoriametrics.rate_increase.no_extrapolation at node 17
-== q1_quantile__1m_1hz_10s.victoriametrics.equivalent-only
+== quantile__1m_1hz_10s.victoriametrics.equivalent-only
 []
 quantile_over_time(0.99, latency[60s]) | step 1 | per series Some("latency")
-== q1_quantile__1m_1hz_10s.victoriametrics.with-substitutes
+== quantile__1m_1hz_10s.victoriametrics.with-substitutes
 []
 quantile_over_time(0.99, latency[60s]) | step 1 | per series Some("latency")
-== q1r_quantile_rank__1m_1hz_10s.victoriametrics.equivalent-only
+== quantile_rank__1m_1hz_10s.victoriametrics.equivalent-only
 []
 quantile_over_time(0.99, latency[60s]) | step 1 | per series Some("latency")
-== q1r_quantile_rank__1m_1hz_10s.victoriametrics.with-substitutes
+== quantile_rank__1m_1hz_10s.victoriametrics.with-substitutes
 []
 quantile_over_time(0.99, latency[60s]) | step 1 | per series Some("latency")
-== q2_sum_rate__1m_1hz_10s.victoriametrics.with-substitutes
-[]
-sum by (job) (rate(requests_total[60s])) | step 1 | per series None
-substitution victoriametrics.rate_increase.no_extrapolation at node 2
-== q3_avg_quantile__1m_1hz_10s.victoriametrics.equivalent-only
-[]
-avg by (job) (quantile_over_time(0.9, latency[60s])) | step 1 | per series None
-== q3_avg_quantile__1m_1hz_10s.victoriametrics.with-substitutes
-[]
-avg by (job) (quantile_over_time(0.9, latency[60s])) | step 1 | per series None
-== q4_count__1m_1hz_10s.victoriametrics.equivalent-only
-[]
-sum by (job) (count_over_time(latency[60s])) | step 1 | per series None
-== q4_count__1m_1hz_10s.victoriametrics.with-substitutes
-[]
-sum by (job) (count_over_time(latency[60s])) | step 1 | per series None
-== q4b_max__1m_1hz_10s.victoriametrics.equivalent-only
-[]
-max_over_time(latency[60s]) | step 1 | per series Some("latency")
-== q4b_max__1m_1hz_10s.victoriametrics.with-substitutes
-[]
-max_over_time(latency[60s]) | step 1 | per series Some("latency")
-== q4c_sum_over_time__1m_1hz_10s.victoriametrics.equivalent-only
-[]
-sum by (job) (sum_over_time(latency[60s])) | step 1 | per series None
-== q4c_sum_over_time__1m_1hz_10s.victoriametrics.with-substitutes
-[]
-sum by (job) (sum_over_time(latency[60s])) | step 1 | per series None
-== q5_joint__1m_1hz_10s.victoriametrics.with-substitutes
-[]
-quantile_over_time(0.99, latency[60s]) | step 1 | per series Some("latency")
-quantile_over_time(0.5, latency[60s]) | step 1 | per series Some("latency")
-avg by (job) (quantile_over_time(0.9, latency[60s])) | step 1 | per series None
-max_over_time(latency[60s]) | step 1 | per series Some("latency")
-sum by (job) (rate(requests_total[60s])) | step 1 | per series None
-substitution victoriametrics.rate_increase.no_extrapolation at node 11
-== rangeheavy.victoriametrics.with-substitutes
+== range_heavy.victoriametrics.with-substitutes
 - match: 'data'
   interval: 60s
   outputs: [sum_samples, count_samples]
@@ -214,10 +204,10 @@ substitution victoriametrics.rate_increase.no_extrapolation at node 82
 substitution victoriametrics.division.nan_dropped at node 89
 substitution victoriametrics.rate_increase.no_extrapolation at node 91
 substitution victoriametrics.division.nan_dropped at node 98
-== s1000__maxf__5m__10hz__300s.victoriametrics.with-substitutes
+== series_1000__max_label_filter__5m__10hz__300s.victoriametrics.with-substitutes
 []
 max_over_time(latency{job="j3"}[300s]) | step 1 | per series Some("latency")
-== s1000__maxf__5m__1hz__60s.victoriametrics.with-substitutes
+== series_1000__max_label_filter__5m__1hz__60s.victoriametrics.with-substitutes
 - match: 'latency{job="j3"}'
   interval: 60s
   outputs: [max]
@@ -225,7 +215,7 @@ max_over_time(latency{job="j3"}[300s]) | step 1 | per series Some("latency")
   ignore_first_intervals: 0
   flush_on_shutdown: false
 max_over_time(latency:60s_max[300s] offset -29500ms) | step 60000 | per series Some("latency")
-== sot__1h__1hz__60s.victoriametrics.equivalent-only
+== sum_over_time__1h__1hz__60s.victoriametrics.equivalent-only
 - match: 'latency'
   interval: 60s
   outputs: [sum_samples, count_samples]
@@ -233,3 +223,13 @@ max_over_time(latency:60s_max[300s] offset -29500ms) | step 60000 | per series S
   ignore_first_intervals: 0
   flush_on_shutdown: false
 sum by (job) (sum_over_time(latency:60s_sum_samples[3600s] offset -29500ms) and count_over_time(latency:60s_count_samples[3600s] offset -29500ms)) | step 60000 | per series None
+== sum_over_time__1m_1hz_10s.victoriametrics.equivalent-only
+[]
+sum by (job) (sum_over_time(latency[60s])) | step 1 | per series None
+== sum_over_time__1m_1hz_10s.victoriametrics.with-substitutes
+[]
+sum by (job) (sum_over_time(latency[60s])) | step 1 | per series None
+== sum_rate__1m_1hz_10s.victoriametrics.with-substitutes
+[]
+sum by (job) (rate(requests_total[60s])) | step 1 | per series None
+substitution victoriametrics.rate_increase.no_extrapolation at node 2

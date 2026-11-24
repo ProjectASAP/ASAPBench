@@ -13,8 +13,8 @@ use system_bench::engines_external::victoriametrics::{
 };
 use system_bench::engines_external::{SharingLost, TranslationError};
 
-const EQ: &str = "victoriametrics.equivalent-only";
-const WS: &str = "victoriametrics.with-substitutes";
+const EQUIVALENT_ONLY: &str = "victoriametrics.equivalent-only";
+const WITH_SUBSTITUTES: &str = "victoriametrics.with-substitutes";
 
 fn translated(workload: &str, variant: &str) -> VictoriaMetricsDeployment {
     translate(&public_fixture(workload, variant)).expect("translates")
@@ -51,24 +51,24 @@ fn exprs(deployment: &VictoriaMetricsDeployment) -> Vec<String> {
     deployment.queries.iter().map(|q| q.expr.clone()).collect()
 }
 
-/// `sot__1h__1hz__60s` (equivalent-only) with the chain's reduction set to `reduction`.
-fn sot_with_reduction(reduction: Value) -> Value {
-    let mut value = fixture_value_public("sot__1h__1hz__60s", EQ);
+/// `sum_over_time__1h__1hz__60s` (equivalent-only) with the chain's reduction set to `reduction`.
+fn sum_over_time_with_reduction(reduction: Value) -> Value {
+    let mut value = fixture_value_public("sum_over_time__1h__1hz__60s", EQUIVALENT_ONLY);
     payload_body(&mut value, 1)["reduction"] = reduction;
     value
 }
 
-/// `sot__1h__1hz__60s` with the chain's family set to the exact `kind`.
-fn sot_with_family(value: &mut Value, kind: &str) {
+/// `sum_over_time__1h__1hz__60s` with the chain's family set to the exact `kind`.
+fn sum_over_time_with_family(value: &mut Value, kind: &str) {
     payload_body(value, 1)["summary_type"] = json!({"ExactAggregate": [kind, kind]});
 }
 
 #[test]
 fn stored_sum_per_series_has_no_by() {
-    let deployment = translated("sot__1h__1hz__60s", EQ);
+    let deployment = translated("sum_over_time__1h__1hz__60s", EQUIVALENT_ONLY);
     assert_eq!(
         deployment.stream_aggregation_config(),
-        golden("sot_1h.yaml")
+        golden("sum_over_time_1h.yaml")
     );
     assert!(!deployment.stream_aggregation_config().contains("by:"));
     assert_eq!(
@@ -84,7 +84,7 @@ fn stored_sum_per_series_has_no_by() {
     assert_eq!(
         deployment.queries,
         vec![MetricsQlQuery {
-            expr: golden_queries("sot_1h.metricsql")[0].clone(),
+            expr: golden_queries("sum_over_time_1h.metricsql")[0].clone(),
             time_step_ms: 60_000,
             per_series_of: None,
         }]
@@ -95,15 +95,18 @@ fn stored_sum_per_series_has_no_by() {
 
 #[test]
 fn stored_max_with_label_filter() {
-    let deployment = translated("s1000__maxf__5m__1hz__60s", WS);
+    let deployment = translated(
+        "series_1000__max_label_filter__5m__1hz__60s",
+        WITH_SUBSTITUTES,
+    );
     assert_eq!(
         deployment.stream_aggregation_config(),
-        golden("maxf_5m.yaml")
+        golden("max_5m_label_filter.yaml")
     );
     assert_eq!(
         deployment.queries,
         vec![MetricsQlQuery {
-            expr: golden_queries("maxf_5m.metricsql")[0].clone(),
+            expr: golden_queries("max_5m_label_filter.metricsql")[0].clone(),
             time_step_ms: 60_000,
             per_series_of: Some("latency".into()),
         }]
@@ -112,7 +115,10 @@ fn stored_max_with_label_filter() {
 
     // A label value with a quote, a backslash and a single quote is escaped
     // in the selector, and the YAML single-quoted string doubles the quote.
-    let mut value = fixture_value_public("s1000__maxf__5m__1hz__60s", WS);
+    let mut value = fixture_value_public(
+        "series_1000__max_label_filter__5m__1hz__60s",
+        WITH_SUBSTITUTES,
+    );
     payload_body(&mut value, 0)["predicates"][0]["Compare"]["right"] =
         json!({"Literal": {"Utf8": "j\"3\\'"}});
     let deployment = from_value(value).unwrap();
@@ -131,16 +137,19 @@ fn stored_max_with_label_filter() {
 
 #[test]
 fn nested_counts_over_raw_samples() {
-    let deployment = translated("cdist__5m__1hz__300s", EQ);
+    let deployment = translated("count_distinct__5m__1hz__300s", EQUIVALENT_ONLY);
     assert!(deployment.stream_aggregations.is_empty());
-    assert_eq!(exprs(&deployment), golden_queries("cdist_5m.metricsql"));
+    assert_eq!(
+        exprs(&deployment),
+        golden_queries("count_distinct_5m.metricsql")
+    );
     assert_eq!(deployment.queries[0].time_step_ms, 1);
     assert_eq!(deployment.queries[0].per_series_of, None);
 }
 
 #[test]
 fn grouped_chain_uses_by() {
-    let deployment = from_value(sot_with_reduction(json!({"Reduce": [2]}))).unwrap();
+    let deployment = from_value(sum_over_time_with_reduction(json!({"Reduce": [2]}))).unwrap();
     let config = deployment.stream_aggregation_config();
     assert!(config.contains("  by: ['job']\n"), "{config}");
     assert_eq!(
@@ -157,12 +166,15 @@ fn grouped_chain_uses_by() {
 
     // Grouping by the series identity is per series, which `by` cannot say.
     assert_eq!(
-        from_value(sot_with_reduction(json!({"Reduce": [3]}))).unwrap_err(),
+        from_value(sum_over_time_with_reduction(json!({"Reduce": [3]}))).unwrap_err(),
         shape(1, "group by the series identity")
     );
     // `without` is refused on the node that carries it.
     assert_eq!(
-        from_value(sot_with_reduction(json!({"Reduce": {"without": [2]}}))).unwrap_err(),
+        from_value(sum_over_time_with_reduction(
+            json!({"Reduce": {"without": [2]}})
+        ))
+        .unwrap_err(),
         shape(1, "without")
     );
 }
@@ -192,8 +204,8 @@ fn empty_reduce_chain_is_per_series_plus_outer_aggregate() {
             "max(max_over_time(latency:60s_max[3600s] offset -29500ms))",
         ),
     ] {
-        let mut value = sot_with_reduction(json!({"Reduce": []}));
-        sot_with_family(&mut value, kind);
+        let mut value = sum_over_time_with_reduction(json!({"Reduce": []}));
+        sum_over_time_with_family(&mut value, kind);
         // The root reads the chain's single group directly: drop the outer
         // `sum by (job)` so the query is the chain read itself.
         value["dag"]["roots"] = json!([4]);
@@ -208,19 +220,19 @@ fn empty_reduce_chain_is_per_series_plus_outer_aggregate() {
 
 #[test]
 fn query_time_shapes() {
-    let expected = golden_queries("showcase_eq.metricsql");
+    let expected = golden_queries("showcase_equivalent_only.metricsql");
     let per_series = [None, Some("latency"), None, None, Some("latency")];
     for (i, workload) in [
-        "q4c_sum_over_time__1m_1hz_10s",
-        "q1_quantile__1m_1hz_10s",
-        "q3_avg_quantile__1m_1hz_10s",
-        "q4_count__1m_1hz_10s",
-        "q4b_max__1m_1hz_10s",
+        "sum_over_time__1m_1hz_10s",
+        "quantile__1m_1hz_10s",
+        "avg_quantile__1m_1hz_10s",
+        "count__1m_1hz_10s",
+        "max__1m_1hz_10s",
     ]
     .into_iter()
     .enumerate()
     {
-        let deployment = translated(workload, EQ);
+        let deployment = translated(workload, EQUIVALENT_ONLY);
         assert!(deployment.stream_aggregations.is_empty(), "{workload}");
         assert!(deployment.substitutions.is_empty(), "{workload}");
         assert_eq!(
@@ -238,7 +250,7 @@ fn query_time_shapes() {
 
 #[test]
 fn rate_is_a_recorded_substitute() {
-    let deployment = translated("q2_sum_rate__1m_1hz_10s", WS);
+    let deployment = translated("sum_rate__1m_1hz_10s", WITH_SUBSTITUTES);
     assert_eq!(
         exprs(&deployment),
         vec!["sum by (job) (rate(requests_total[60s]))"]
@@ -265,7 +277,7 @@ fn rate_is_a_recorded_substitute() {
     }
 
     // Increase is the same rule.
-    let mut value = fixture_value_public("q2_sum_rate__1m_1hz_10s", WS);
+    let mut value = fixture_value_public("sum_rate__1m_1hz_10s", WITH_SUBSTITUTES);
     payload_body(&mut value, 2)["summary_type"] =
         json!({"ExactAggregate": ["Increase", "Increase"]});
     assert_eq!(
@@ -276,7 +288,7 @@ fn rate_is_a_recorded_substitute() {
 
 #[test]
 fn shared_query_time_node_is_reported() {
-    let plan = public_fixture("q5_joint__1m_1hz_10s", WS);
+    let plan = public_fixture("joint__1m_1hz_10s", WITH_SUBSTITUTES);
     let deployment = translate(&plan).unwrap();
     assert_eq!(
         exprs(&deployment),
@@ -300,56 +312,61 @@ fn shared_query_time_node_is_reported() {
 
 #[test]
 fn refusals() {
-    let maxf = || fixture_value_public("s1000__maxf__5m__1hz__60s", WS);
-    let q4c = || fixture_value_public("q4c_sum_over_time__1m_1hz_10s", EQ);
+    let max_label_filter = || {
+        fixture_value_public(
+            "series_1000__max_label_filter__5m__1hz__60s",
+            WITH_SUBSTITUTES,
+        )
+    };
+    let sum_over_time_1m = || fixture_value_public("sum_over_time__1m_1hz_10s", EQUIVALENT_ONLY);
 
-    let mut v = q4c();
+    let mut v = sum_over_time_1m();
     payload_body(&mut v, 0)["source"] = json!({"Table": {"table_ref": "t"}});
     assert_eq!(from_value(v).unwrap_err(), shape(0, "table source"));
 
-    let mut v = maxf();
+    let mut v = max_label_filter();
     payload_body(&mut v, 0)["predicates"][0]["Compare"]["semantics"] = json!("sql");
     assert_eq!(from_value(v).unwrap_err(), shape(0, "predicate"));
 
-    let mut v = maxf();
+    let mut v = max_label_filter();
     payload_body(&mut v, 1)["filter"] = json!({"Literal": {"Bool": true}});
     assert_eq!(from_value(v).unwrap_err(), shape(1, "filter"));
 
-    let mut v = maxf();
+    let mut v = max_label_filter();
     payload_body(&mut v, 1)["input"] = json!({"item": {"Column": 2}, "weight": null});
     assert_eq!(from_value(v).unwrap_err(), shape(1, "summary input"));
 
-    let mut v = maxf();
+    let mut v = max_label_filter();
     payload_body(&mut v, 1)["summary_type"] = json!({"Sketch": "Kll"});
     assert_eq!(from_value(v).unwrap_err(), shape(1, "sketch Kll"));
 
-    let mut v = maxf();
+    let mut v = max_label_filter();
     payload_body(&mut v, 1)["summary_type"] = json!({"ExactAggregate": ["Rate", "Rate"]});
     assert_eq!(
         from_value(v).unwrap_err(),
         shape(1, "stored counter window chain")
     );
 
-    let mut v = maxf();
+    let mut v = max_label_filter();
     payload_body(&mut v, 2)["range"] = json!({"secs": 90, "nanos": 0});
     assert_eq!(
         from_value(v).unwrap_err(),
         shape(2, "a range that is not a whole number of windows")
     );
 
-    let mut v = q4c();
+    let mut v = sum_over_time_1m();
     v["dag"]["nodes"][2]["payload"] = json!({"ASAP": {"FancyNewOp": {}}});
     assert_eq!(
         from_value(v).unwrap_err(),
         shape(2, "operator ASAP.FancyNewOp")
     );
 
-    let mut v = q4c();
+    let mut v = sum_over_time_1m();
     payload_body(&mut v, 2)["reduction"] = json!({"Reduce": {"without": [2]}});
     assert_eq!(from_value(v).unwrap_err(), shape(2, "without"));
 
     // A label name MetricsQL cannot write.
-    let mut v = q4c();
+    let mut v = sum_over_time_1m();
     v["dag"]["nodes"][0]["output_schema"]["fields"][2]["name"] = json!("a-b");
     v["dag"]["nodes"][1]["output_schema"]["fields"][2]["name"] = json!("a-b");
     v["dag"]["nodes"][2]["output_schema"]["fields"][0]["name"] = json!("a-b");
@@ -358,41 +375,41 @@ fn refusals() {
 
 #[test]
 fn aggregate_and_binary_refusals() {
-    let q4 = || fixture_value_public("q4_count__1m_1hz_10s", EQ);
-    let mut v = q4();
+    let count_1m = || fixture_value_public("count__1m_1hz_10s", EQUIVALENT_ONLY);
+    let mut v = count_1m();
     payload_body(&mut v, 3)["having"] = json!({"Literal": {"Bool": true}});
     assert_eq!(from_value(v).unwrap_err(), shape(3, "having"));
 
-    let mut v = q4();
+    let mut v = count_1m();
     payload_body(&mut v, 3)["filters"] = json!([{"Literal": {"Bool": true}}]);
     assert_eq!(from_value(v).unwrap_err(), shape(3, "filter"));
 
-    let mut v = q4();
+    let mut v = count_1m();
     payload_body(&mut v, 3)["measures"] = json!([{"kind": "stddev", "col": null}]);
     assert_eq!(from_value(v).unwrap_err(), shape(3, "measure stddev"));
 
     // A grouped aggregate straight over raw samples has no MetricsQL form.
-    let mut v = q4();
+    let mut v = count_1m();
     payload_body(&mut v, 2)["reduction"] = json!({"Reduce": [2]});
     assert_eq!(
         from_value(v).unwrap_err(),
         shape(2, "grouped aggregate over raw samples")
     );
 
-    let rangeheavy = || fixture_value_public("rangeheavy", WS);
-    let binary = rangeheavy()["dag"]["nodes"]
+    let range_heavy = || fixture_value_public("range_heavy", WITH_SUBSTITUTES);
+    let binary = range_heavy()["dag"]["nodes"]
         .as_array()
         .unwrap()
         .iter()
         .position(|n| n["payload"]["NonASAP"].get("BinaryOp").is_some())
-        .expect("rangeheavy has a BinaryOp");
-    let mut v = rangeheavy();
+        .expect("range_heavy has a BinaryOp");
+    let mut v = range_heavy();
     payload_body(&mut v, binary)["operator"]["vector_match"] = json!({"card": "OneToOne"});
     assert_eq!(from_value(v).unwrap_err(), shape(binary, "vector matching"));
-    let mut v = rangeheavy();
+    let mut v = range_heavy();
     payload_body(&mut v, binary)["return_bool"] = json!(true);
     assert_eq!(from_value(v).unwrap_err(), shape(binary, "bool comparison"));
-    let mut v = rangeheavy();
+    let mut v = range_heavy();
     payload_body(&mut v, binary)["operator"]["checked_relative_division"] = json!(true);
     assert_eq!(
         from_value(v).unwrap_err(),
@@ -402,7 +419,7 @@ fn aggregate_and_binary_refusals() {
 
 #[test]
 fn instant_selector_needs_a_lookback() {
-    let value = fixture_value_public("rangeheavy", WS);
+    let value = fixture_value_public("range_heavy", WITH_SUBSTITUTES);
     let plan = PlanFile::from_value(value.clone()).unwrap();
     let instant = plan
         .nodes
@@ -416,7 +433,7 @@ fn instant_selector_needs_a_lookback() {
                 }
             )
         })
-        .expect("rangeheavy has an instant selector");
+        .expect("range_heavy has an instant selector");
     let mut v = value.clone();
     payload_body(&mut v, instant)["range"] = json!({"secs": 0, "nanos": 0});
     assert_eq!(
@@ -446,7 +463,10 @@ fn interval_must_divide_a_day() {
         (1_500, false),
         (1_000, false),
     ] {
-        let mut value = fixture_value_public("s1000__maxf__5m__1hz__60s", WS);
+        let mut value = fixture_value_public(
+            "series_1000__max_label_filter__5m__1hz__60s",
+            WITH_SUBSTITUTES,
+        );
         payload_body(&mut value, 1)["tumbling_window_width_ms"] = json!(width_ms);
         // Keep the range a whole number of windows.
         let range_ms = width_ms * 5;
@@ -468,7 +488,7 @@ fn interval_must_divide_a_day() {
 
 #[test]
 fn recording_rules_mirror_stream_outputs() {
-    let deployment = translated("sot__1h__1hz__60s", EQ);
+    let deployment = translated("sum_over_time__1h__1hz__60s", EQUIVALENT_ONLY);
     assert_eq!(
         deployment.recording_rules(),
         "groups:\n\
@@ -482,12 +502,12 @@ fn recording_rules_mirror_stream_outputs() {
          \x20     - record: latency:60s_count_samples\n\
          \x20       expr: 'count_over_time(latency[60s])'\n"
     );
-    let deployment = from_value(sot_with_reduction(json!({"Reduce": [2]}))).unwrap();
+    let deployment = from_value(sum_over_time_with_reduction(json!({"Reduce": [2]}))).unwrap();
     assert!(deployment
         .recording_rules()
         .contains("- record: latency:60s_by_job_sum_samples\n        expr: 'sum by (job) (sum_over_time(latency[60s]))'\n"));
-    let mut value = sot_with_reduction(json!({"Reduce": [2]}));
-    sot_with_family(&mut value, "Count");
+    let mut value = sum_over_time_with_reduction(json!({"Reduce": [2]}));
+    sum_over_time_with_family(&mut value, "Count");
     assert!(from_value(value)
         .unwrap()
         .recording_rules()
@@ -497,7 +517,7 @@ fn recording_rules_mirror_stream_outputs() {
 #[test]
 fn outputs_merge_per_aggregation() {
     // A second chain, Max, over the same Scan and width, read by a second root.
-    let mut value = fixture_value_public("sot__1h__1hz__60s", EQ);
+    let mut value = fixture_value_public("sum_over_time__1h__1hz__60s", EQUIVALENT_ONLY);
     let nodes = value["dag"]["nodes"].as_array_mut().unwrap();
     let copies: Vec<Value> = (1..=4).map(|id| nodes[id].clone()).collect();
     for (offset, mut node) in copies.into_iter().enumerate() {
@@ -547,26 +567,29 @@ fn outputs_merge_per_aggregation() {
 
 #[test]
 fn stored_count_reads_count_samples() {
-    let mut value = fixture_value_public("sot__1h__1hz__60s", EQ);
-    sot_with_family(&mut value, "Count");
+    let mut value = fixture_value_public("sum_over_time__1h__1hz__60s", EQUIVALENT_ONLY);
+    sum_over_time_with_family(&mut value, "Count");
     let deployment = from_value(value).unwrap();
     assert!(deployment
         .stream_aggregation_config()
         .contains("outputs: [count_samples]\n"));
-    assert_eq!(exprs(&deployment), golden_queries("sot_1h_count.metricsql"));
+    assert_eq!(
+        exprs(&deployment),
+        golden_queries("sum_over_time_1h_count.metricsql")
+    );
 }
 
 #[test]
 fn chain_reads_other_than_merge_and_finalize_are_refused() {
     // A regrouping merge of stored windows.
-    let mut value = fixture_value_public("sot__1h__1hz__60s", EQ);
+    let mut value = fixture_value_public("sum_over_time__1h__1hz__60s", EQUIVALENT_ONLY);
     payload_body(&mut value, 3)["group_by"] = json!([2]);
     assert_eq!(
         from_value(value).unwrap_err(),
         shape(3, "regrouping merge of stored windows")
     );
     // An instant selector over a chain.
-    let mut value = fixture_value_public("sot__1h__1hz__60s", EQ);
+    let mut value = fixture_value_public("sum_over_time__1h__1hz__60s", EQUIVALENT_ONLY);
     payload_body(&mut value, 2)["kind"] = json!("instant");
     value["dag"]["roots"] = json!([2]);
     assert_eq!(
@@ -577,7 +600,7 @@ fn chain_reads_other_than_merge_and_finalize_are_refused() {
 
 #[test]
 fn grouped_shapes_of_a_mixed_workload() {
-    let deployment = translated("mixed-04", WS);
+    let deployment = translated("mixed-04", WITH_SUBSTITUTES);
     let exprs = exprs(&deployment);
     // Root 4: top 4 per (region, service) of the per-series increase.
     assert_eq!(
@@ -612,7 +635,7 @@ fn grouped_shapes_of_a_mixed_workload() {
 
 #[test]
 fn project_keeps_labels_under_their_names() {
-    let value = fixture_value_public("mixed-04", WS);
+    let value = fixture_value_public("mixed-04", WITH_SUBSTITUTES);
     // Node 16 aliases the value column to `avg`: allowed.
     assert!(from_value(value.clone()).is_ok());
     // Renaming a label is refused.
@@ -627,7 +650,7 @@ fn project_keeps_labels_under_their_names() {
 #[test]
 fn output_names_that_collide_are_refused() {
     // `by [a_b]` and `by [a, b]` both name their output `..._by_a_b_...`.
-    let mut value = fixture_value_public("sot__1h__1hz__60s", EQ);
+    let mut value = fixture_value_public("sum_over_time__1h__1hz__60s", EQUIVALENT_ONLY);
     for node in [0, 1, 2, 3, 4] {
         let fields = value["dag"]["nodes"][node]["output_schema"]["fields"]
             .as_array_mut()
@@ -665,7 +688,10 @@ fn output_names_that_collide_are_refused() {
 
 #[test]
 fn label_values_and_names_are_quoted() {
-    let mut value = fixture_value_public("s1000__maxf__5m__1hz__60s", WS);
+    let mut value = fixture_value_public(
+        "series_1000__max_label_filter__5m__1hz__60s",
+        WITH_SUBSTITUTES,
+    );
     payload_body(&mut value, 0)["predicates"][0]["Compare"]["right"] =
         json!({"Literal": {"Utf8": "a\tb\rc"}});
     let deployment = from_value(value).unwrap();
@@ -674,7 +700,7 @@ fn label_values_and_names_are_quoted() {
         r#"latency{job="a\tb\rc"}"#
     );
     // A label named like a YAML keyword stays a string in `by`.
-    let mut value = sot_with_reduction(json!({"Reduce": [2]}));
+    let mut value = sum_over_time_with_reduction(json!({"Reduce": [2]}));
     for node in 0..=4 {
         value["dag"]["nodes"][node]["output_schema"]["fields"][2]["name"] = json!("on");
     }
@@ -686,7 +712,10 @@ fn label_values_and_names_are_quoted() {
 fn matchers_are_in_label_order() {
     // Predicates `job="j3"` then `a="x"` (a new label column 4 of the Scan):
     // the selector lists `a` first, so equal selectors compare equal.
-    let mut value = fixture_value_public("s1000__maxf__5m__1hz__60s", WS);
+    let mut value = fixture_value_public(
+        "series_1000__max_label_filter__5m__1hz__60s",
+        WITH_SUBSTITUTES,
+    );
     let fields = value["dag"]["nodes"][0]["output_schema"]["fields"]
         .as_array_mut()
         .unwrap();
@@ -709,8 +738,8 @@ fn matchers_are_in_label_order() {
 
 #[test]
 fn division_records_that_nan_series_are_dropped() {
-    let deployment = translated("rangeheavy", WS);
-    let plan = public_fixture("rangeheavy", WS);
+    let deployment = translated("range_heavy", WITH_SUBSTITUTES);
+    let plan = public_fixture("range_heavy", WITH_SUBSTITUTES);
     let divisions: Vec<usize> = plan
         .nodes
         .iter()

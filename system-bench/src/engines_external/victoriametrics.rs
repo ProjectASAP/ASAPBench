@@ -1228,7 +1228,7 @@ impl Translator<'_> {
         Ok(Relation {
             expr: format!("({}) {symbol} ({})", left.expr, right.expr),
             labels: left.labels,
-            step_ms: lcm(left.step_ms, right.step_ms),
+            step_ms: least_common_multiple(left.step_ms, right.step_ms),
             unfinalized_kind: None,
             per_series_of: left.per_series_of,
         })
@@ -1328,7 +1328,7 @@ fn is_metric_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
 }
 
-fn lcm(a: u64, b: u64) -> u64 {
+fn least_common_multiple(a: u64, b: u64) -> u64 {
     let (mut x, mut y) = (a, b);
     while y != 0 {
         (x, y) = (y, x % y);
