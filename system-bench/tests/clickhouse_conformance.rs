@@ -57,7 +57,7 @@ fn engine(max_threads: u32) -> ClickHouseEngine {
 
 /// `plan` written to a temporary file, for an arm's `plan_file`.
 fn plan_file(name: &str, plan: &Value) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("ch-conformance-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("clickhouse-conformance-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("{name}.plan.json"));
     std::fs::write(&path, plan.to_string()).unwrap();
@@ -73,7 +73,7 @@ fn arm(path: &std::path::Path) -> ArmSpec {
 }
 
 /// A workload of `plan`'s query texts (ids `q0`, `q1`, …), evaluated every
-/// `interval_ms` (the lcm of the plan's stored steps unless given), with
+/// `interval_ms` (the least common multiple of the plan's stored steps unless given), with
 /// data from 0 ms.
 fn workload(plan: &Value, interval_ms: Option<u64>) -> WorkloadSpec {
     let texts: Vec<String> = serde_json::from_value(plan["query_texts"].clone()).unwrap();
@@ -679,7 +679,7 @@ fn suite_sized_workload() {
     let CpuAccounting::Cgroup(source) = engine.cpu_accounting() else {
         panic!("cgroup accounting");
     };
-    let cpu_before = source.cpu().expect("the agent answers");
+    let cpu_before = source.cpu().expect("the server's cgroup reads");
     let mut last_minute: BTreeMap<String, f64> = BTreeMap::new();
     let end_ms = start_ms + 600_000;
     let ingest_started = std::time::Instant::now();

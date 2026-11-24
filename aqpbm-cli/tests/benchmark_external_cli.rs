@@ -152,7 +152,7 @@ fn an_unknown_engine_names_the_known_engines() {
         "--run-directory",
         run.to_str().unwrap(),
         "--engine",
-        "victoriametrics",
+        "no-such-engine",
     ]);
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);

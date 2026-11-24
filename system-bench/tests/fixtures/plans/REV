@@ -34,7 +34,7 @@ heldout, and the paper's mixed and range-heavy sets) with each of the four capab
 files; every ClickHouse plan of it translates, and no equivalent-only one has a
 substitution.
 The sweep ran at #1374's last head, 7834fed4d. Every committed fixture was regenerated at main
-5400f93fd.
+5400f93fd, except the two probe plans, written at main bc725bda8.
 
 How each file was made: the workload was planned with
 `planning_stages::run_stages_until(.., RunUntil::Stage2)` (with

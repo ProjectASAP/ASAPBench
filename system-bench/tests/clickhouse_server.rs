@@ -363,7 +363,7 @@ fn install_refuses_missing_unreadable_and_untranslatable_plans() {
         .contains("/nonexistent"));
     let mut value = fixture_value("sum_over_time_1h_stored_sum");
     payload_body(&mut value, 1)["summary_type"] = json!({"ExactAggregate": ["IRate", "IRate"]});
-    let dir = std::env::temp_dir().join(format!("ch-server-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("clickhouse-server-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("irate.plan.json");
     std::fs::write(&path, value.to_string()).unwrap();
@@ -708,7 +708,7 @@ fn a_failed_install_drops_its_database() {
 
 #[test]
 fn only_a_bare_selector_keeps_the_metric_name() {
-    // rangeheavy node 1 is the instant selector `data` (5 ms lookback): a
+    // range_heavy node 1 is the instant selector `data` (5 ms lookback): a
     // root that is only that selector keeps `__name__`, as PromQL does.
     let identity = r#"{"__name__":"data","job":"a"}"#;
     let answer = format!("job\t$promql_series_identity\tvalue\na\t{identity}\t3\n");
@@ -721,7 +721,8 @@ fn only_a_bare_selector_keeps_the_metric_name() {
     let mut plan = common::fixture_value_public("range_heavy", "clickhouse.equivalent-only");
     plan["dag"]["roots"] = json!([1]);
     plan["query_texts"] = json!(["data"]);
-    let dir = std::env::temp_dir().join(format!("ch-server-selector-{}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("clickhouse-server-selector-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("selector.plan.json");
     std::fs::write(&path, plan.to_string()).unwrap();
