@@ -5,13 +5,13 @@
 
 mod common;
 
-use aqpbm_engines_external::plan_file::PlanFile;
-use aqpbm_engines_external::victoriametrics::{
-    translate, MetricsQlQuery, StreamAggregation, StreamOutput, VictoriaMetricsDeployment,
-};
-use aqpbm_engines_external::{SharingLost, TranslationError};
 use common::{fixture_value_public, payload_body, public_fixture};
 use serde_json::{json, Value};
+use system_bench::engines_external::plan_file::PlanFile;
+use system_bench::engines_external::victoriametrics::{
+    translate, MetricsQlQuery, StreamAggregation, StreamOutput, VictoriaMetricsDeployment,
+};
+use system_bench::engines_external::{SharingLost, TranslationError};
 
 const EQ: &str = "victoriametrics.equivalent-only";
 const WS: &str = "victoriametrics.with-substitutes";
@@ -410,8 +410,8 @@ fn instant_selector_needs_a_lookback() {
         .position(|n| {
             matches!(
                 n.operator,
-                aqpbm_engines_external::plan_file::PlanOperator::TimeRange {
-                    kind: aqpbm_engines_external::plan_file::RangeKind::Instant,
+                system_bench::engines_external::plan_file::PlanOperator::TimeRange {
+                    kind: system_bench::engines_external::plan_file::RangeKind::Instant,
                     ..
                 }
             )
@@ -715,7 +715,7 @@ fn division_records_that_nan_series_are_dropped() {
         .nodes
         .iter()
         .filter(|n| {
-            matches!(&n.operator, aqpbm_engines_external::plan_file::PlanOperator::BinaryOp { operator, .. }
+            matches!(&n.operator, system_bench::engines_external::plan_file::PlanOperator::BinaryOp { operator, .. }
                 if operator["kind"] == json!({"Arithmetic": "Div"}))
         })
         .map(|n| n.id)

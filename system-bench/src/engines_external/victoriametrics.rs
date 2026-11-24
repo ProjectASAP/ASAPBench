@@ -50,11 +50,11 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-use crate::plan_file::{
+use super::plan_file::{
     Lifetime, Measure, PlanFile, PlanNode, PlanOperator, Predicate, RangeKind, Reduction, Source,
     SummaryFamily, Timing,
 };
-use crate::{NodeId, SharingLost, Substitution, TranslationError};
+use super::{NodeId, SharingLost, Substitution, TranslationError};
 
 /// The plan's series identity column: a label of the plan, but on
 /// VictoriaMetrics a series is identified by its whole label set.
