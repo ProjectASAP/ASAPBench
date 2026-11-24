@@ -1,7 +1,7 @@
-//! Every committed bench-external suite: each workload parses as a harness
+//! Every committed benchmark-external suite: each workload parses as a harness
 //! `WorkloadSpec`, has a schedule, and lists the same queries, in the same
 //! order, as the ASAPPlanner planning workload beside it (the planner
-//! numbers them q1..qN in that order, and lanes map plan roots to queries
+//! numbers them q1..qN in that order, and engine runs map plan roots to queries
 //! by that index).
 
 use std::path::Path;

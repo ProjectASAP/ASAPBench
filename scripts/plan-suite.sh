@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Prepare a bench-external run directory from a suite: copy each workload and
+# Prepare a benchmark-external run directory from a suite: copy each workload and
 # plan it once per variant with ASAPPlanner's `asap_planner --plan-file`.
 #
-#   scripts/plan-suite.sh <suite-dir> <run-dir>
+#   scripts/plan-suite.sh <suite-dir> <run-directory>
 #
 # Environment: ASAP_PLANNER, the `asap_planner` binary (needs --plan-file
 # and --executor-check, and deployment exclusions in capability files).
@@ -25,7 +25,7 @@ set -euo pipefail
 suite=${1:?suite dir}; run=${2:?run dir}
 : "${ASAP_PLANNER:?set ASAP_PLANNER to the asap_planner binary}"
 repo=$(cd "$(dirname "$0")/.." && pwd)
-caps="$repo/aqpbm-engines-external/capabilities"
+caps="$repo/system-bench/capabilities"
 
 [ -e "$run" ] && { echo "$run exists; runs are never overwritten" >&2; exit 1; }
 compgen -G "$suite/*.workload.json" >/dev/null || { echo "$suite has no *.workload.json" >&2; exit 1; }
