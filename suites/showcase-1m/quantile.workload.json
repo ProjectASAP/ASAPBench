@@ -1,5 +1,5 @@
 {
- "name": "q1r_quantile_rank",
+ "name": "quantile",
  "queries": [
   {
    "id": "q1",

@@ -1,12 +1,12 @@
 {
- "name": "q2_sum_rate",
+ "name": "quantile_rank",
  "queries": [
   {
    "id": "q1",
    "texts": [
     {
      "language": "PromQl",
-     "text": "sum by (job) (rate(requests_total[1h]))"
+     "text": "quantile_over_time(0.99, latency[1h])"
     }
    ],
    "window_ms": 3600000,
@@ -15,7 +15,7 @@
  ],
  "data": [
   {
-   "metric": "requests_total",
+   "metric": "latency",
    "description": {
     "labels": [
      {
@@ -36,11 +36,11 @@
     "value_distribution": {
      "kind": "uniform",
      "lower_bound": 0.0,
-     "upper_bound": 10.0,
+     "upper_bound": 1000.0,
      "seed": 7
     },
-    "counter": true,
-    "seed": 11
+    "counter": false,
+    "seed": 13
    }
   }
  ]

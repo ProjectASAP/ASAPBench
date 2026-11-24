@@ -1,12 +1,12 @@
 {
- "name": "q1_quantile",
+ "name": "count",
  "queries": [
   {
    "id": "q1",
    "texts": [
     {
      "language": "PromQl",
-     "text": "quantile_over_time(0.99, latency[1m])"
+     "text": "sum by (job) (count_over_time(latency[1m]))"
     }
    ],
    "window_ms": 60000,

@@ -1,12 +1,12 @@
 {
- "name": "q3_avg_quantile",
+ "name": "max",
  "queries": [
   {
    "id": "q1",
    "texts": [
     {
      "language": "PromQl",
-     "text": "avg by (job) (quantile_over_time(0.9, latency[1h]))"
+     "text": "max_over_time(latency[1h])"
     }
    ],
    "window_ms": 3600000,

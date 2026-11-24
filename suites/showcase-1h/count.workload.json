@@ -1,12 +1,12 @@
 {
- "name": "q4c_sum_over_time",
+ "name": "count",
  "queries": [
   {
    "id": "q1",
    "texts": [
     {
      "language": "PromQl",
-     "text": "sum by (job) (sum_over_time(latency[1h]))"
+     "text": "sum by (job) (count_over_time(latency[1h]))"
     }
    ],
    "window_ms": 3600000,
