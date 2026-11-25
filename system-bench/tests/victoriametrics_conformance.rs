@@ -50,9 +50,11 @@ fn engine() -> VictoriaMetricsEngine {
                 Err(_) => CgroupSource::Local(cgroup_directory),
             }
         },
-        stream_aggregation_config: std::env::var("AQPBM_VICTORIAMETRICS_STREAM_AGGREGATION_CONFIG")
-            .expect("AQPBM_VICTORIAMETRICS_STREAM_AGGREGATION_CONFIG")
-            .into(),
+        stream_aggregation_config: Some(
+            std::env::var("AQPBM_VICTORIAMETRICS_STREAM_AGGREGATION_CONFIG")
+                .expect("AQPBM_VICTORIAMETRICS_STREAM_AGGREGATION_CONFIG")
+                .into(),
+        ),
         request_timeout: Duration::from_secs(60),
     })
     .expect("the server answers")

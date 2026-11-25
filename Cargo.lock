@@ -4178,6 +4178,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aqpbm-core",
+ "aqpbm-datagen",
  "aqpbm-usecase",
  "asap-executor",
  "asap-frontend-promql",

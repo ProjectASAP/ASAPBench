@@ -10,7 +10,8 @@ use aqpbm_usecase::spec::Spec;
 use clap::builder::PossibleValuesParser;
 use clap::Parser;
 
-use system_bench::systemeval::query::{ask, Collected};
+use system_bench::prometheus_api::query::ask;
+use system_bench::systemeval::query::Collected;
 use system_bench::systemeval::system;
 use system_bench::systemeval::write::{Options, Writer};
 

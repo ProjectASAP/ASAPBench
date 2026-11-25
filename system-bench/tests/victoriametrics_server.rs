@@ -311,7 +311,7 @@ fn one_arm_at_a_time_and_its_config_reaches_the_server() {
     let engine = VictoriaMetricsEngine::new(VictoriaMetricsServer {
         url: fake_server(dir.join("stream-aggregation.yaml")),
         cgroup: fake_cgroup(&dir),
-        stream_aggregation_config: dir.join("stream-aggregation.yaml"),
+        stream_aggregation_config: Some(dir.join("stream-aggregation.yaml")),
         request_timeout: Duration::from_secs(10),
     })
     .unwrap();
@@ -360,7 +360,7 @@ fn plans_are_checked_against_the_workload_before_anything_loads() {
     let engine = VictoriaMetricsEngine::new(VictoriaMetricsServer {
         url: fake_server(dir.join("stream-aggregation.yaml")),
         cgroup: fake_cgroup(&dir),
-        stream_aggregation_config: dir.join("stream-aggregation.yaml"),
+        stream_aggregation_config: Some(dir.join("stream-aggregation.yaml")),
         request_timeout: Duration::from_secs(10),
     })
     .unwrap();
@@ -401,7 +401,7 @@ fn a_query_time_arm_ingests_then_evaluates() {
     let engine = VictoriaMetricsEngine::new(VictoriaMetricsServer {
         url: fake_server(dir.join("stream-aggregation.yaml")),
         cgroup: fake_cgroup(&dir),
-        stream_aggregation_config: dir.join("stream-aggregation.yaml"),
+        stream_aggregation_config: Some(dir.join("stream-aggregation.yaml")),
         request_timeout: Duration::from_secs(10),
     })
     .unwrap();

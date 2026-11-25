@@ -220,3 +220,51 @@ fn the_victoriametrics_engine_needs_its_server_and_one_run() {
     assert!(stderr.contains("--warmup 0 --runs 1"), "{stderr}");
     let _ = std::fs::remove_dir_all(run.parent().unwrap());
 }
+
+#[test]
+fn the_asapquery_backend_engine_needs_its_server_and_one_run() {
+    let run = fixture("x5");
+    let base = [
+        "benchmark-external",
+        "run",
+        "--run-directory",
+        run.to_str().unwrap(),
+        "--engine",
+        "asapquery-backend",
+    ];
+    let out = approxbench(&base);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--asapquery-backend-url"), "{stderr}");
+    let mut with_server = base.to_vec();
+    with_server.extend([
+        "--asapquery-backend-url",
+        "http://127.0.0.1:1",
+        "--server-cgroup-directory",
+        "/sys/fs/cgroup/system.slice/docker-1.scope",
+    ]);
+    let out = approxbench(&with_server);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--warmup 0 --runs 1"), "{stderr}");
+    let _ = std::fs::remove_dir_all(run.parent().unwrap());
+}
+
+#[test]
+fn the_fake_engine_refuses_server_flags() {
+    let run = fixture("x6");
+    let out = approxbench(&[
+        "benchmark-external",
+        "run",
+        "--run-directory",
+        run.to_str().unwrap(),
+        "--engine",
+        "fake",
+        "--asapquery-backend-url",
+        "http://127.0.0.1:1",
+    ]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--asapquery-backend-url"), "{stderr}");
+    let _ = std::fs::remove_dir_all(run.parent().unwrap());
+}

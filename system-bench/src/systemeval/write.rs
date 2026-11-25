@@ -5,8 +5,8 @@ use anyhow::Result;
 use aqpbm_usecase::data::Series;
 use aqpbm_usecase::output::WriteSummary;
 
-use super::remote_write::{encode, Label, Sample, TimeSeries, WriteRequest};
 use super::system::{Sent, System};
+use crate::prometheus_api::remote_write::{encode, Label, Sample, TimeSeries, WriteRequest};
 
 pub struct Options {
     pub batch_samples: usize,

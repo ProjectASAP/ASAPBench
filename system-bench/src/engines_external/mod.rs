@@ -13,6 +13,7 @@
 //! The deployment-capabilities files under `capabilities/` tell the planner
 //! what each engine can run; their README gives the evidence per entry.
 
+pub mod asapquery_backend_server;
 pub mod clickhouse;
 pub mod clickhouse_server;
 pub mod plan_file;
