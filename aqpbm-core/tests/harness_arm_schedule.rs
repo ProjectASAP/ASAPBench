@@ -14,6 +14,7 @@ fn query(id: &str, window_ms: u64, evaluation_interval_ms: u64) -> WorkloadQuery
         }],
         window_ms,
         evaluation_interval_ms,
+        truth: None,
     }
 }
 

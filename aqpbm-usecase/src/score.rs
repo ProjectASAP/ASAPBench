@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use aqpbm_core::accuracy::scalar_error;
 use serde_json::Value;
 
-use crate::accuracy::{keyed, without_name, AnswerAt, Labels, QueryTruth, Scores};
+use crate::accuracy::{keyed, without_name, AnswerAt, Labels, Scores};
 use crate::data::Series;
 use crate::output::{Answer, TruthCell};
 use crate::spec::QuerySpec;
@@ -49,7 +49,7 @@ pub fn score(
     answered: &[AnswerAt],
     exact: Option<&BTreeMap<String, Vec<AnswerAt>>>,
 ) -> Result<Scored> {
-    let truth = QueryTruth::of(query);
+    let truth = query.declared_truth();
     let computed_truth = truth
         .as_ref()
         .map(|truth| truth.score(series, times, answered))

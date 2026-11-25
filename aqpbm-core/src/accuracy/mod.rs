@@ -14,6 +14,7 @@ use crate::error::RunError;
 pub mod aggregate;
 pub mod cardinality;
 pub(crate) mod curve;
+pub mod declared_truth;
 pub mod frequency;
 pub mod heavy_hitter;
 pub mod keyed;

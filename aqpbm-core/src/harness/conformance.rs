@@ -453,6 +453,7 @@ pub fn probe_workloads() -> Vec<WorkloadSpec> {
             ],
             window_ms: PROBE_STEP_MS,
             evaluation_interval_ms: PROBE_STEP_MS,
+            truth: None,
         }],
         data: vec![data.clone()],
     })

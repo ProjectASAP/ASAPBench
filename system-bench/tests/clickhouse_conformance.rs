@@ -98,6 +98,7 @@ fn workload(plan: &Value, interval_ms: Option<u64>) -> WorkloadSpec {
                 }],
                 window_ms: 60_000,
                 evaluation_interval_ms: interval_ms,
+                truth: None,
             })
             .collect(),
         data: vec![],
@@ -734,7 +735,9 @@ fn suite_sized_workload() {
 #[test]
 #[ignore = "needs a ClickHouse server"]
 fn the_clickhouse_engine_matches_the_fake_engine() {
-    use aqpbm_core::harness::benchmark_external::{report, run_engine, EngineRunSetup};
+    use aqpbm_core::harness::benchmark_external::{
+        report, run_engine, EngineRunSetup, ReportTruth,
+    };
     use aqpbm_core::harness::fake::FakeEngine;
     use aqpbm_core::harness::protocol::{
         load_probe_for, MeasurementClocks, OsCpuClock, ProcessCpuFiles, Protocol,
@@ -798,7 +801,14 @@ fn the_clickhouse_engine_matches_the_fake_engine() {
         .unwrap();
         println!("{} cells: {cells:?}", engine.description().id);
     }
-    let report = report(&run_directory, "fake", "equivalent-only").unwrap();
+    let report = report(
+        &run_directory,
+        &ReportTruth::Cells {
+            engine: "fake".into(),
+            variant: "equivalent-only".into(),
+        },
+    )
+    .unwrap();
     println!("{}", report.summary_markdown());
     let csv = report.summary_csv();
     let clickhouse_rows: Vec<&str> = csv.lines().filter(|l| l.contains(",clickhouse,")).collect();

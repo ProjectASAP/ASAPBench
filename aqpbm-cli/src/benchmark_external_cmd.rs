@@ -6,8 +6,10 @@
 
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
-use aqpbm_core::harness::benchmark_external::{report, run_engine, write_report, EngineRunSetup};
+use anyhow::{bail, Result};
+use aqpbm_core::harness::benchmark_external::{
+    report, run_engine, write_report, EngineRunSetup, ReportTruth,
+};
 use aqpbm_core::harness::cgroup::CgroupSource;
 use aqpbm_core::harness::engine::EngineUnderTest;
 use aqpbm_core::harness::fake::FakeEngine;
@@ -98,7 +100,9 @@ pub struct RunArgs {
 pub struct ReportArgs {
     #[arg(long)]
     pub run_directory: PathBuf,
-    /// The cells answers are compared with: `<engine>/<variant>`.
+    /// What answers are compared with: `declared` (each query's declared
+    /// statistic, computed from the workload's data) or the cells of
+    /// `<engine>/<variant>`.
     #[arg(long)]
     pub truth: String,
 }
@@ -207,12 +211,9 @@ fn server_cgroup(args: &RunArgs) -> Option<CgroupSource> {
 }
 
 fn report_cmd(args: ReportArgs) -> Result<()> {
-    let (engine, variant) = args
-        .truth
-        .split_once('/')
-        .context("--truth must be <engine>/<variant>")?;
+    let truth = ReportTruth::parse(&args.truth).map_err(anyhow::Error::msg)?;
     let run_directory = RunDirectory::open(&args.run_directory)?;
-    let report = report(&run_directory, engine, variant)?;
+    let report = report(&run_directory, &truth)?;
     write_report(&run_directory, &report)?;
     print!("{}", report.summary_markdown());
     Ok(())

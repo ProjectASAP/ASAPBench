@@ -5,6 +5,9 @@ use anyhow::{bail, Context, Result};
 use aqpbm_datagen::DataDistribution;
 use serde::Deserialize;
 
+use aqpbm_core::accuracy::declared_truth::QueryTruth;
+pub use aqpbm_core::accuracy::declared_truth::{Statistic, Truth};
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Spec {
@@ -111,22 +114,10 @@ pub struct QuerySpec {
     pub truth: Option<Truth>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Truth {
-    pub statistic: Statistic,
-    pub metric: String,
-    #[serde(default)]
-    pub matchers: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "snake_case")]
-pub enum Statistic {
-    Quantile(f64),
-    Entropy,
-    Distinct,
-    TopK { k: usize, by: String },
+impl QuerySpec {
+    pub fn declared_truth(&self) -> Option<QueryTruth> {
+        Some(QueryTruth::new(self.truth.as_ref()?, self.window_ms))
+    }
 }
 
 impl MetricSpec {
