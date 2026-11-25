@@ -37,7 +37,7 @@ const WITH_SUBSTITUTES: &str = "victoriametrics.with-substitutes";
 fn engine() -> VictoriaMetricsEngine {
     VictoriaMetricsEngine::new(VictoriaMetricsServer {
         url: std::env::var("AQPBM_VICTORIAMETRICS_URL").expect("AQPBM_VICTORIAMETRICS_URL"),
-        cgroup: Some({
+        cgroup: {
             let cgroup_directory = std::env::var("AQPBM_SERVER_CGROUP_DIRECTORY")
                 .expect("AQPBM_SERVER_CGROUP_DIRECTORY")
                 .into();
@@ -49,7 +49,7 @@ fn engine() -> VictoriaMetricsEngine {
                 },
                 Err(_) => CgroupSource::Local(cgroup_directory),
             }
-        }),
+        },
         stream_aggregation_config: Some(
             std::env::var("AQPBM_VICTORIAMETRICS_STREAM_AGGREGATION_CONFIG")
                 .expect("AQPBM_VICTORIAMETRICS_STREAM_AGGREGATION_CONFIG")

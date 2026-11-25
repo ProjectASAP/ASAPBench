@@ -18,12 +18,12 @@ use aqpbm_core::harness::protocol::{
 };
 use aqpbm_core::harness::run_directory::RunDirectory;
 use clap::{Parser, Subcommand};
+use system_bench::engines_external::asapquery_backend_server::{
+    AsapqueryBackendEngine, AsapqueryBackendServer,
+};
 use system_bench::engines_external::clickhouse_server::{ClickHouseEngine, ClickHouseServer};
 use system_bench::engines_external::victoriametrics_server::{
     VictoriaMetricsEngine, VictoriaMetricsServer,
-};
-use system_bench::systemeval::asapquery_backend_server::{
-    AsapqueryBackendEngine, AsapqueryBackendServer,
 };
 
 /// The engines this binary can run.
@@ -79,7 +79,7 @@ pub struct RunArgs {
     #[arg(long)]
     pub victoriametrics_url: Option<String>,
     /// The server's `-streamAggr.config` file on the server host, replaced
-    /// for each arm (engine `victoriametrics`).
+    /// for each arm with a plan file (engine `victoriametrics`).
     #[arg(long)]
     pub victoriametrics_stream_aggregation_config: Option<PathBuf>,
     /// The ASAPQuery-backend server's HTTP interface, e.g.
@@ -152,14 +152,10 @@ fn run_engine_cmd(args: RunArgs) -> Result<()> {
             })?)
         }
         "victoriametrics" => {
-            let (Some(url), Some(cgroup), Some(stream_aggregation_config)) = (
-                args.victoriametrics_url.clone(),
-                server_cgroup(&args),
-                args.victoriametrics_stream_aggregation_config.clone(),
-            ) else {
-                bail!(
-                    "engine victoriametrics needs --victoriametrics-url, --server-cgroup-directory and --victoriametrics-stream-aggregation-config"
-                );
+            let (Some(url), Some(cgroup)) =
+                (args.victoriametrics_url.clone(), server_cgroup(&args))
+            else {
+                bail!("engine victoriametrics needs --victoriametrics-url and --server-cgroup-directory");
             };
             // Wall-clock data runs one arm at a time.
             if args.warmup != 0 || args.runs != 1 {
@@ -167,8 +163,8 @@ fn run_engine_cmd(args: RunArgs) -> Result<()> {
             }
             Box::new(VictoriaMetricsEngine::new(VictoriaMetricsServer {
                 url,
-                cgroup: Some(cgroup),
-                stream_aggregation_config: Some(stream_aggregation_config),
+                cgroup,
+                stream_aggregation_config: args.victoriametrics_stream_aggregation_config.clone(),
                 request_timeout: std::time::Duration::from_secs(600),
             })?)
         }
@@ -185,7 +181,7 @@ fn run_engine_cmd(args: RunArgs) -> Result<()> {
             }
             Box::new(AsapqueryBackendEngine::new(AsapqueryBackendServer {
                 url,
-                cgroup: Some(cgroup),
+                cgroup,
                 request_timeout: std::time::Duration::from_secs(600),
             })?)
         }

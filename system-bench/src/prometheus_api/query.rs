@@ -34,10 +34,10 @@ fn vector(body: &Value) -> Result<Vec<(Labels, f64)>> {
 }
 
 pub fn ask(agent: &ureq::Agent, base: &str, promql: &str, time_ms: i64) -> Asked {
-    ask_with(agent, base, promql, time_ms, &[])
+    ask_with_parameters(agent, base, promql, time_ms, &[])
 }
 
-pub fn ask_with(
+pub fn ask_with_parameters(
     agent: &ureq::Agent,
     base: &str,
     promql: &str,

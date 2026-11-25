@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -9,15 +8,14 @@ use aqpbm_core::harness::engine::{
     InstalledArm, PlanSummary, QueryLanguage, StepReport, WorkloadSpec,
 };
 
-use crate::prometheus_api::query::ask;
-use crate::prometheus_api::remote_write::{encode, request_of, send_until_accepted};
-
-pub const BATCH_SAMPLES: usize = 10_000;
+use crate::prometheus_api::query_text_arm::{
+    ask_every_query, queries_to_ask, write_chunk, QueryToAsk,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AsapqueryBackendServer {
     pub url: String,
-    pub cgroup: Option<CgroupSource>,
+    pub cgroup: CgroupSource,
     pub request_timeout: Duration,
 }
 
@@ -65,6 +63,28 @@ impl AsapqueryBackendConnection {
                 .into_string()?,
         )?)
     }
+
+    pub fn held_bytes(&self) -> anyhow::Result<Footprint> {
+        let text = self
+            .agent
+            .get(&format!("{}/metrics", self.base))
+            .call()?
+            .into_string()?;
+        let gauge = |name: &str| -> anyhow::Result<u64> {
+            text.lines()
+                .find_map(|line| {
+                    let (metric, value) = line.split_once(' ')?;
+                    (metric == name).then(|| value.trim().parse::<f64>().ok())?
+                })
+                .map(|value| value as u64)
+                .ok_or_else(|| anyhow::anyhow!("the server's /metrics has no {name}"))
+        };
+        Ok(Footprint {
+            view_bytes: gauge("asap_view_bytes")?,
+            raw_retained_bytes: gauge("asap_raw_data_bytes")?,
+            peak_bytes: None,
+        })
+    }
 }
 
 impl AsapqueryBackendEngine {
@@ -92,10 +112,7 @@ impl EngineUnderTest for AsapqueryBackendEngine {
     }
 
     fn cpu_accounting(&self) -> CpuAccounting {
-        match &self.server.cgroup {
-            Some(cgroup) => CpuAccounting::Cgroup(cgroup.clone()),
-            None => CpuAccounting::CallingThread,
-        }
+        CpuAccounting::Cgroup(self.server.cgroup.clone())
     }
 
     fn install(
@@ -105,21 +122,12 @@ impl EngineUnderTest for AsapqueryBackendEngine {
     ) -> Result<Box<dyn InstalledArm>, EngineError> {
         if arm.engine_options.get("plan_file").is_some() {
             return Err(EngineError(
-                "ASAPQuery-backend plans its queries itself and takes no plan file".into(),
+                "ASAPQuery-backend runs the plan it was started with; this adapter installs no \
+                 plan file, so give it a variant with plans: false"
+                    .into(),
             ));
         }
-        let queries = workload
-            .queries
-            .iter()
-            .map(|query| {
-                query
-                    .texts
-                    .iter()
-                    .find(|text| text.language == QueryLanguage::PromQl)
-                    .map(|text| (query.id.clone(), text.text.clone()))
-                    .ok_or_else(|| EngineError(format!("query {} has no PromQL text", query.id)))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let queries = queries_to_ask(workload, &[QueryLanguage::PromQl])?;
         if self.installed_once.swap(true, Ordering::SeqCst) {
             return Err(EngineError(
                 "ASAPQuery-backend keeps every sample written to it: restart the server before \
@@ -136,7 +144,7 @@ impl EngineUnderTest for AsapqueryBackendEngine {
 
 struct AsapqueryBackendArm {
     connection: AsapqueryBackendConnection,
-    queries: Vec<(String, String)>,
+    queries: Vec<QueryToAsk>,
 }
 
 impl InstalledArm for AsapqueryBackendArm {
@@ -145,14 +153,7 @@ impl InstalledArm for AsapqueryBackendArm {
     }
 
     fn ingest(&mut self, chunk: &SampleChunk) -> Result<StepReport, EngineError> {
-        for batch in chunk.samples.chunks(BATCH_SAMPLES) {
-            send_until_accepted(
-                &self.connection.agent,
-                &self.connection.base,
-                &encode(&request_of(batch)),
-            )
-            .map_err(|error| EngineError(format!("{error:#}")))?;
-        }
+        write_chunk(&self.connection.agent, &self.connection.base, chunk)?;
         self.connection
             .make_visible(chunk.end_ms)
             .map_err(|error| EngineError(format!("{error:#}")))?;
@@ -160,24 +161,19 @@ impl InstalledArm for AsapqueryBackendArm {
     }
 
     fn evaluate(&mut self, at_ms: i64) -> Result<(Answers, StepReport), EngineError> {
-        let mut answers = BTreeMap::new();
-        for (id, promql) in &self.queries {
-            let asked = ask(&self.connection.agent, &self.connection.base, promql, at_ms);
-            let samples = asked
-                .outcome
-                .map_err(|error| EngineError(format!("query {id}: {error}")))?;
-            answers.insert(
-                id.clone(),
-                samples
-                    .into_iter()
-                    .filter(|(_, value)| value.is_finite())
-                    .collect(),
-            );
-        }
-        Ok((Answers(answers), StepReport::default()))
+        let answers = ask_every_query(
+            &self.connection.agent,
+            &self.connection.base,
+            &self.queries,
+            at_ms,
+            &[],
+        )?;
+        Ok((answers, StepReport::default()))
     }
 
     fn footprint(&self) -> Result<Footprint, EngineError> {
-        Ok(Footprint::default())
+        self.connection
+            .held_bytes()
+            .map_err(|error| EngineError(format!("{error:#}")))
     }
 }

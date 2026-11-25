@@ -1,7 +1,12 @@
-//! A single-node VictoriaMetrics server as an engine under test: each arm is
-//! a plan file translated by [`super::victoriametrics::translate`], its
+//! A single-node VictoriaMetrics server as an engine under test. An arm with
+//! a plan file is translated by [`super::victoriametrics::translate`], its
 //! stream aggregation loaded into the server, its data fed in real time with
-//! wall-clock timestamps, and its queries run over HTTP.
+//! wall-clock timestamps, and its queries run over HTTP. An arm without one
+//! is the server used the normal way: its data written by Remote Write with
+//! the data's own timestamps, as fast as the server accepts, and each
+//! query's MetricsQL or PromQL text asked as written; the workload's
+//! metrics are deleted when it installs and when it is dropped. The rest of
+//! these notes are about arms with a plan file.
 //!
 //! Stream aggregation runs on wall-clock time (see the capability README's
 //! run contract), so an arm maps data time to wall time by an offset: a
@@ -62,8 +67,9 @@ use super::victoriametrics::{
     translate, MetricsQlQuery, StreamAggregation, VictoriaMetricsDeployment,
 };
 use super::NodeId;
-use crate::prometheus_api::query::ask_with;
-use crate::prometheus_api::remote_write::{encode, request_of, send_until_accepted};
+use crate::prometheus_api::query_text_arm::{
+    ask_every_query, queries_to_ask, write_chunk, QueryToAsk,
+};
 
 /// How to reach the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,9 +77,10 @@ pub struct VictoriaMetricsServer {
     /// The HTTP interface, e.g. `http://10.0.0.1:8428`.
     pub url: String,
     /// Where the server's cgroup is read, e.g. over SSH from `bench@10.0.0.1`.
-    pub cgroup: Option<CgroupSource>,
+    pub cgroup: CgroupSource,
     /// The server's `-streamAggr.config` file on the server host, replaced
-    /// for each arm through `cgroup`'s host access.
+    /// for each arm with a plan file through `cgroup`'s host access; such an
+    /// arm is refused without it.
     pub stream_aggregation_config: Option<PathBuf>,
     /// How long one request may take, e.g. 600 s.
     pub request_timeout: Duration,
@@ -82,7 +89,7 @@ pub struct VictoriaMetricsServer {
 /// A VictoriaMetrics server; see the module docs.
 pub struct VictoriaMetricsEngine {
     server: VictoriaMetricsServer,
-    http: Http,
+    http: VictoriaMetricsConnection,
     description: EngineDescription,
     /// Set while an arm is installed.
     arm_installed: Arc<AtomicBool>,
@@ -114,7 +121,7 @@ const START_MARGIN_MS: i64 = 2_000;
 impl VictoriaMetricsEngine {
     /// Connects to the server and reads its version.
     pub fn new(server: VictoriaMetricsServer) -> Result<VictoriaMetricsEngine, EngineError> {
-        let http = Http::new(&server.url, server.request_timeout);
+        let http = VictoriaMetricsConnection::new(&server.url, server.request_timeout);
         let metrics = ServerMetrics::parse(&http.get("/metrics", &[])?, "");
         let version = metrics
             .app_version
@@ -137,22 +144,7 @@ impl VictoriaMetricsEngine {
         &self,
         workload: &WorkloadSpec,
     ) -> Result<Box<dyn InstalledArm>, EngineError> {
-        let queries = workload
-            .queries
-            .iter()
-            .map(|query| {
-                [QueryLanguage::MetricsQl, QueryLanguage::PromQl]
-                    .iter()
-                    .find_map(|language| query.texts.iter().find(|text| &text.language == language))
-                    .map(|text| (query.id.clone(), text.text.clone()))
-                    .ok_or_else(|| {
-                        EngineError(format!(
-                            "query {} has no MetricsQL or PromQL text",
-                            query.id
-                        ))
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let queries = queries_to_ask(workload, &[QueryLanguage::MetricsQl, QueryLanguage::PromQl])?;
         if self
             .arm_installed
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -176,7 +168,7 @@ impl VictoriaMetricsEngine {
             data_bytes_at_install: 0,
         };
         installed.delete_series()?;
-        installed.http.get("/internal/force_flush", &[])?;
+        installed.http.force_flush()?;
         installed.data_bytes_at_install =
             ServerMetrics::parse(&installed.http.get("/metrics", &[])?, "").data_size_bytes;
         Ok(Box::new(installed))
@@ -189,10 +181,7 @@ impl EngineUnderTest for VictoriaMetricsEngine {
     }
 
     fn cpu_accounting(&self) -> CpuAccounting {
-        match &self.server.cgroup {
-            Some(cgroup) => CpuAccounting::Cgroup(cgroup.clone()),
-            None => CpuAccounting::CallingThread,
-        }
+        CpuAccounting::Cgroup(self.server.cgroup.clone())
     }
 
     fn install(
@@ -203,13 +192,11 @@ impl EngineUnderTest for VictoriaMetricsEngine {
         let Some(path) = arm.engine_options.get("plan_file").and_then(|p| p.as_str()) else {
             return self.install_query_text(workload);
         };
-        let (Some(cgroup), Some(stream_aggregation_config)) = (
-            self.server.cgroup.clone(),
-            self.server.stream_aggregation_config.clone(),
-        ) else {
+        let cgroup = self.server.cgroup.clone();
+        let Some(stream_aggregation_config) = self.server.stream_aggregation_config.clone() else {
             return Err(EngineError(
-                "a plan arm replaces the server's stream-aggregation config: it needs the \
-                 server's cgroup directory and config file"
+                "an arm with a plan file replaces the server's stream-aggregation config: it \
+                 needs the config file (--victoriametrics-stream-aggregation-config)"
                     .into(),
             ));
         };
@@ -269,7 +256,7 @@ impl EngineUnderTest for VictoriaMetricsEngine {
         );
         let config = deployment.stream_aggregation_config_named(&installed.aggregation_name);
         installed.load_config(&config, deployment.stream_aggregations.len())?;
-        installed.http.get("/internal/force_flush", &[])?;
+        installed.http.force_flush()?;
         let metrics = installed.metrics()?;
         installed.too_old_at_install = metrics.too_old_samples;
         installed.data_bytes_at_install = metrics.data_size_bytes;
@@ -702,7 +689,7 @@ pub fn answer_metric_name(plan: &PlanFile, root: NodeId, query: &MetricsQlQuery)
 
 /// The installed arm: its stream aggregations, queries and wall offset.
 struct VictoriaMetricsArm {
-    http: Http,
+    http: VictoriaMetricsConnection,
     cgroup: CgroupSource,
     stream_aggregation_config: PathBuf,
     arm_installed: Arc<AtomicBool>,
@@ -882,7 +869,7 @@ impl InstalledArm for VictoriaMetricsArm {
         sleep_until_wall_ms(tick);
         self.wait_for_flushes(tick)?;
         // Make the new rows and stream outputs searchable.
-        self.http.get("/internal/force_flush", &[])?;
+        self.http.force_flush()?;
         Ok(StepReport::default())
     }
 
@@ -915,7 +902,7 @@ impl InstalledArm for VictoriaMetricsArm {
     fn footprint(&self) -> Result<Footprint, EngineError> {
         // The server's data growth since this arm's install: raw series and
         // stream outputs together (VictoriaMetrics does not split them).
-        self.http.get("/internal/force_flush", &[])?;
+        self.http.force_flush()?;
         Ok(Footprint {
             view_bytes: 0,
             raw_retained_bytes: self
@@ -928,9 +915,9 @@ impl InstalledArm for VictoriaMetricsArm {
 }
 
 struct VictoriaMetricsQueryTextArm {
-    http: Http,
+    http: VictoriaMetricsConnection,
     arm_installed: Arc<AtomicBool>,
-    queries: Vec<(String, String)>,
+    queries: Vec<QueryToAsk>,
     metrics: Vec<String>,
     data_bytes_at_install: u64,
 }
@@ -938,7 +925,7 @@ struct VictoriaMetricsQueryTextArm {
 impl VictoriaMetricsQueryTextArm {
     fn delete_series(&self) -> Result<(), EngineError> {
         for metric in &self.metrics {
-            Http::text(
+            VictoriaMetricsConnection::text(
                 self.http
                     .agent
                     .post(&format!(
@@ -967,44 +954,24 @@ impl InstalledArm for VictoriaMetricsQueryTextArm {
     }
 
     fn ingest(&mut self, chunk: &SampleChunk) -> Result<StepReport, EngineError> {
-        for batch in chunk.samples.chunks(REMOTE_WRITE_BATCH_SAMPLES) {
-            send_until_accepted(
-                &self.http.agent,
-                &self.http.url,
-                &encode(&request_of(batch)),
-            )
-            .map_err(|error| EngineError(format!("{error:#}")))?;
-        }
-        self.http.get("/internal/force_flush", &[])?;
+        write_chunk(&self.http.agent, &self.http.url, chunk)?;
+        self.http.force_flush()?;
         Ok(StepReport::default())
     }
 
     fn evaluate(&mut self, at_ms: i64) -> Result<(Answers, StepReport), EngineError> {
-        let mut answers = BTreeMap::new();
-        for (id, text) in &self.queries {
-            let asked = ask_with(
-                &self.http.agent,
-                &self.http.url,
-                text,
-                at_ms,
-                &[("nocache", "1")],
-            );
-            let samples = asked
-                .outcome
-                .map_err(|error| EngineError(format!("query {id}: {error}")))?;
-            answers.insert(
-                id.clone(),
-                samples
-                    .into_iter()
-                    .filter(|(_, value)| value.is_finite())
-                    .collect(),
-            );
-        }
-        Ok((Answers(answers), StepReport::default()))
+        let answers = ask_every_query(
+            &self.http.agent,
+            &self.http.url,
+            &self.queries,
+            at_ms,
+            &[("nocache", "1")],
+        )?;
+        Ok((answers, StepReport::default()))
     }
 
     fn footprint(&self) -> Result<Footprint, EngineError> {
-        self.http.get("/internal/force_flush", &[])?;
+        self.http.force_flush()?;
         Ok(Footprint {
             view_bytes: 0,
             raw_retained_bytes: ServerMetrics::parse(&self.http.get("/metrics", &[])?, "")
@@ -1014,8 +981,6 @@ impl InstalledArm for VictoriaMetricsQueryTextArm {
         })
     }
 }
-
-pub const REMOTE_WRITE_BATCH_SAMPLES: usize = 10_000;
 
 fn now_ms() -> i64 {
     SystemTime::now()
@@ -1041,14 +1006,18 @@ fn least_common_multiple(a: u64, b: u64) -> u64 {
 
 /// The server's HTTP interface.
 #[derive(Clone)]
-struct Http {
-    agent: ureq::Agent,
-    url: String,
+pub struct VictoriaMetricsConnection {
+    pub agent: ureq::Agent,
+    pub url: String,
 }
 
-impl Http {
-    fn new(url: &str, timeout: Duration) -> Http {
-        Http {
+impl VictoriaMetricsConnection {
+    pub fn force_flush(&self) -> Result<String, EngineError> {
+        self.get("/internal/force_flush", &[])
+    }
+
+    pub fn new(url: &str, timeout: Duration) -> VictoriaMetricsConnection {
+        VictoriaMetricsConnection {
             agent: ureq::AgentBuilder::new()
                 .timeout_connect(Duration::from_secs(5))
                 .timeout(timeout)
