@@ -185,3 +185,37 @@ fn the_clickhouse_engine_needs_its_server() {
     );
     let _ = std::fs::remove_dir_all(run.parent().unwrap());
 }
+
+/// X4: engine `victoriametrics` needs its server, cgroup directory and
+/// config file, and runs one arm at a time (wall-clock data): only with
+/// `--warmup 0 --runs 1`.
+#[test]
+fn the_victoriametrics_engine_needs_its_server_and_one_run() {
+    let run = fixture("x4");
+    let base = [
+        "benchmark-external",
+        "run",
+        "--run-directory",
+        run.to_str().unwrap(),
+        "--engine",
+        "victoriametrics",
+    ];
+    let out = approxbench(&base);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--victoriametrics-url"), "{stderr}");
+    let mut with_server = base.to_vec();
+    with_server.extend([
+        "--victoriametrics-url",
+        "http://127.0.0.1:1",
+        "--server-cgroup-directory",
+        "/sys/fs/cgroup/system.slice/docker-1.scope",
+        "--victoriametrics-stream-aggregation-config",
+        "/data/victoriametrics/config/stream-aggregation.yaml",
+    ]);
+    let out = approxbench(&with_server);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--warmup 0 --runs 1"), "{stderr}");
+    let _ = std::fs::remove_dir_all(run.parent().unwrap());
+}
