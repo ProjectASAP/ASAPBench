@@ -53,7 +53,7 @@ use aqpbm_core::harness::cgroup::CgroupSource;
 use aqpbm_core::harness::data::Sample;
 use aqpbm_core::harness::engine::{
     Answers, ArmSpec, CpuAccounting, EngineDescription, EngineError, EngineUnderTest, Footprint,
-    InstalledArm, PlanSummary, SampleChunk, SeriesLabels, StepReport, WorkloadSpec,
+    InstalledArm, PlanSummary, QueryLanguage, SampleChunk, SeriesLabels, StepReport, WorkloadSpec,
 };
 use serde_json::Value;
 
@@ -62,6 +62,8 @@ use super::victoriametrics::{
     translate, MetricsQlQuery, StreamAggregation, VictoriaMetricsDeployment,
 };
 use super::NodeId;
+use crate::prometheus_api::query::ask_with;
+use crate::prometheus_api::remote_write::{encode, request_of, send_until_accepted};
 
 /// How to reach the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,10 +71,10 @@ pub struct VictoriaMetricsServer {
     /// The HTTP interface, e.g. `http://10.0.0.1:8428`.
     pub url: String,
     /// Where the server's cgroup is read, e.g. over SSH from `bench@10.0.0.1`.
-    pub cgroup: CgroupSource,
+    pub cgroup: Option<CgroupSource>,
     /// The server's `-streamAggr.config` file on the server host, replaced
     /// for each arm through `cgroup`'s host access.
-    pub stream_aggregation_config: PathBuf,
+    pub stream_aggregation_config: Option<PathBuf>,
     /// How long one request may take, e.g. 600 s.
     pub request_timeout: Duration,
 }
@@ -130,6 +132,55 @@ impl VictoriaMetricsEngine {
             newest_sample_wall_ms: Arc::new(AtomicI64::new(0)),
         })
     }
+
+    fn install_query_text(
+        &self,
+        workload: &WorkloadSpec,
+    ) -> Result<Box<dyn InstalledArm>, EngineError> {
+        let queries = workload
+            .queries
+            .iter()
+            .map(|query| {
+                [QueryLanguage::MetricsQl, QueryLanguage::PromQl]
+                    .iter()
+                    .find_map(|language| query.texts.iter().find(|text| &text.language == language))
+                    .map(|text| (query.id.clone(), text.text.clone()))
+                    .ok_or_else(|| {
+                        EngineError(format!(
+                            "query {} has no MetricsQL or PromQL text",
+                            query.id
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if self
+            .arm_installed
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err(EngineError(
+                "a VictoriaMetrics arm is already installed: run this engine with --warmup 0 \
+                 --runs 1"
+                    .into(),
+            ));
+        }
+        let mut installed = VictoriaMetricsQueryTextArm {
+            http: self.http.clone(),
+            arm_installed: Arc::clone(&self.arm_installed),
+            queries,
+            metrics: workload
+                .data
+                .iter()
+                .map(|record| record.metric.clone())
+                .collect(),
+            data_bytes_at_install: 0,
+        };
+        installed.delete_series()?;
+        installed.http.get("/internal/force_flush", &[])?;
+        installed.data_bytes_at_install =
+            ServerMetrics::parse(&installed.http.get("/metrics", &[])?, "").data_size_bytes;
+        Ok(Box::new(installed))
+    }
 }
 
 impl EngineUnderTest for VictoriaMetricsEngine {
@@ -138,7 +189,10 @@ impl EngineUnderTest for VictoriaMetricsEngine {
     }
 
     fn cpu_accounting(&self) -> CpuAccounting {
-        CpuAccounting::Cgroup(self.server.cgroup.clone())
+        match &self.server.cgroup {
+            Some(cgroup) => CpuAccounting::Cgroup(cgroup.clone()),
+            None => CpuAccounting::CallingThread,
+        }
     }
 
     fn install(
@@ -146,11 +200,19 @@ impl EngineUnderTest for VictoriaMetricsEngine {
         workload: &WorkloadSpec,
         arm: &ArmSpec,
     ) -> Result<Box<dyn InstalledArm>, EngineError> {
-        let path = arm
-            .engine_options
-            .get("plan_file")
-            .and_then(|p| p.as_str())
-            .ok_or_else(|| EngineError("engine_options has no plan_file".into()))?;
+        let Some(path) = arm.engine_options.get("plan_file").and_then(|p| p.as_str()) else {
+            return self.install_query_text(workload);
+        };
+        let (Some(cgroup), Some(stream_aggregation_config)) = (
+            self.server.cgroup.clone(),
+            self.server.stream_aggregation_config.clone(),
+        ) else {
+            return Err(EngineError(
+                "a plan arm replaces the server's stream-aggregation config: it needs the \
+                 server's cgroup directory and config file"
+                    .into(),
+            ));
+        };
         let text = std::fs::read_to_string(path)
             .map_err(|error| EngineError(format!("plan file {path}: {error}")))?;
         let plan = PlanFile::from_json(&text)
@@ -174,8 +236,8 @@ impl EngineUnderTest for VictoriaMetricsEngine {
         // From here on, dropping the arm unloads its config and frees the engine.
         let mut installed = VictoriaMetricsArm {
             http: self.http.clone(),
-            cgroup: self.server.cgroup.clone(),
-            stream_aggregation_config: self.server.stream_aggregation_config.clone(),
+            cgroup,
+            stream_aggregation_config,
             arm_installed: Arc::clone(&self.arm_installed),
             newest_sample_wall_ms: Arc::clone(&self.newest_sample_wall_ms),
             aggregation_name: String::new(),
@@ -215,7 +277,9 @@ impl EngineUnderTest for VictoriaMetricsEngine {
         let step_ms = deployment
             .stream_aggregations
             .iter()
-            .fold(lcm(1000, interval_ms), |step, a| lcm(step, a.interval_ms));
+            .fold(least_common_multiple(1000, interval_ms), |step, a| {
+                least_common_multiple(step, a.interval_ms)
+            });
         let data_start = data_start_ms(workload);
         let earliest_start = now_ms()
             .max(self.newest_sample_wall_ms.load(Ordering::SeqCst) + previous_arm_gap_ms(&plan));
@@ -863,6 +927,96 @@ impl InstalledArm for VictoriaMetricsArm {
     }
 }
 
+struct VictoriaMetricsQueryTextArm {
+    http: Http,
+    arm_installed: Arc<AtomicBool>,
+    queries: Vec<(String, String)>,
+    metrics: Vec<String>,
+    data_bytes_at_install: u64,
+}
+
+impl VictoriaMetricsQueryTextArm {
+    fn delete_series(&self) -> Result<(), EngineError> {
+        for metric in &self.metrics {
+            Http::text(
+                self.http
+                    .agent
+                    .post(&format!(
+                        "{}/api/v1/admin/tsdb/delete_series",
+                        self.http.url
+                    ))
+                    .query("match[]", &format!("{{__name__={metric:?}}}"))
+                    .call(),
+                &self.http.url,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for VictoriaMetricsQueryTextArm {
+    fn drop(&mut self) {
+        let _ = self.delete_series();
+        self.arm_installed.store(false, Ordering::SeqCst);
+    }
+}
+
+impl InstalledArm for VictoriaMetricsQueryTextArm {
+    fn plan_summary(&self) -> PlanSummary {
+        PlanSummary::default()
+    }
+
+    fn ingest(&mut self, chunk: &SampleChunk) -> Result<StepReport, EngineError> {
+        for batch in chunk.samples.chunks(REMOTE_WRITE_BATCH_SAMPLES) {
+            send_until_accepted(
+                &self.http.agent,
+                &self.http.url,
+                &encode(&request_of(batch)),
+            )
+            .map_err(|error| EngineError(format!("{error:#}")))?;
+        }
+        self.http.get("/internal/force_flush", &[])?;
+        Ok(StepReport::default())
+    }
+
+    fn evaluate(&mut self, at_ms: i64) -> Result<(Answers, StepReport), EngineError> {
+        let mut answers = BTreeMap::new();
+        for (id, text) in &self.queries {
+            let asked = ask_with(
+                &self.http.agent,
+                &self.http.url,
+                text,
+                at_ms,
+                &[("nocache", "1")],
+            );
+            let samples = asked
+                .outcome
+                .map_err(|error| EngineError(format!("query {id}: {error}")))?;
+            answers.insert(
+                id.clone(),
+                samples
+                    .into_iter()
+                    .filter(|(_, value)| value.is_finite())
+                    .collect(),
+            );
+        }
+        Ok((Answers(answers), StepReport::default()))
+    }
+
+    fn footprint(&self) -> Result<Footprint, EngineError> {
+        self.http.get("/internal/force_flush", &[])?;
+        Ok(Footprint {
+            view_bytes: 0,
+            raw_retained_bytes: ServerMetrics::parse(&self.http.get("/metrics", &[])?, "")
+                .data_size_bytes
+                .saturating_sub(self.data_bytes_at_install),
+            peak_bytes: None,
+        })
+    }
+}
+
+pub const REMOTE_WRITE_BATCH_SAMPLES: usize = 10_000;
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -877,7 +1031,7 @@ fn sleep_until_wall_ms(wall_ms: i64) {
     }
 }
 
-fn lcm(a: u64, b: u64) -> u64 {
+fn least_common_multiple(a: u64, b: u64) -> u64 {
     let (mut x, mut y) = (a, b);
     while y != 0 {
         (x, y) = (y, x % y);

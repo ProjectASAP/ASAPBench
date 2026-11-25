@@ -22,9 +22,12 @@ use system_bench::engines_external::clickhouse_server::{ClickHouseEngine, ClickH
 use system_bench::engines_external::victoriametrics_server::{
     VictoriaMetricsEngine, VictoriaMetricsServer,
 };
+use system_bench::systemeval::asapquery_backend_server::{
+    AsapqueryBackendEngine, AsapqueryBackendServer,
+};
 
 /// The engines this binary can run.
-pub const ENGINES: [&str; 3] = ["fake", "clickhouse", "victoriametrics"];
+pub const ENGINES: [&str; 4] = ["fake", "clickhouse", "victoriametrics", "asapquery-backend"];
 
 #[derive(Parser, Debug)]
 pub struct BenchmarkExternalArgs {
@@ -45,8 +48,8 @@ pub struct RunArgs {
     /// The run directory: workloads/, plans/<variant>/, results/.
     #[arg(long)]
     pub run_directory: PathBuf,
-    /// The engine: `fake` (the harness's own fake engine), `clickhouse` or
-    /// `victoriametrics`.
+    /// The engine: `fake` (the harness's own fake engine), `clickhouse`,
+    /// `victoriametrics` or `asapquery-backend`.
     #[arg(long)]
     pub engine: String,
     /// The ClickHouse server's HTTP interface, e.g. `http://10.0.0.1:8123`
@@ -79,6 +82,10 @@ pub struct RunArgs {
     /// for each arm (engine `victoriametrics`).
     #[arg(long)]
     pub victoriametrics_stream_aggregation_config: Option<PathBuf>,
+    /// The ASAPQuery-backend server's HTTP interface, e.g.
+    /// `http://10.0.0.1:8080` (engine `asapquery-backend`).
+    #[arg(long)]
+    pub asapquery_backend_url: Option<String>,
     /// Only these variants (repeatable); every variant under plans/ by default.
     #[arg(long = "variant")]
     pub variants: Vec<String>,
@@ -118,13 +125,14 @@ fn run_engine_cmd(args: RunArgs) -> Result<()> {
     let engine: Box<dyn EngineUnderTest> = match args.engine.as_str() {
         "fake" => {
             if args.clickhouse_url.is_some()
+                || args.asapquery_backend_url.is_some()
                 || args.victoriametrics_url.is_some()
                 || args.victoriametrics_stream_aggregation_config.is_some()
                 || args.server_cgroup_directory.is_some()
                 || args.server_ssh_host.is_some()
             {
                 bail!(
-                    "--clickhouse-url, --victoriametrics-url, --victoriametrics-stream-aggregation-config, --server-cgroup-directory and --server-ssh-host are for engines clickhouse and victoriametrics only"
+                    "--clickhouse-url, --victoriametrics-url, --victoriametrics-stream-aggregation-config, --asapquery-backend-url, --server-cgroup-directory and --server-ssh-host are for the server engines only"
                 );
             }
             Box::new(FakeEngine::default())
@@ -159,8 +167,25 @@ fn run_engine_cmd(args: RunArgs) -> Result<()> {
             }
             Box::new(VictoriaMetricsEngine::new(VictoriaMetricsServer {
                 url,
-                cgroup,
-                stream_aggregation_config,
+                cgroup: Some(cgroup),
+                stream_aggregation_config: Some(stream_aggregation_config),
+                request_timeout: std::time::Duration::from_secs(600),
+            })?)
+        }
+        "asapquery-backend" => {
+            let (Some(url), Some(cgroup)) =
+                (args.asapquery_backend_url.clone(), server_cgroup(&args))
+            else {
+                bail!(
+                    "engine asapquery-backend needs --asapquery-backend-url and --server-cgroup-directory"
+                );
+            };
+            if args.warmup != 0 || args.runs != 1 {
+                bail!("engine asapquery-backend runs one arm per server start: pass --warmup 0 --runs 1");
+            }
+            Box::new(AsapqueryBackendEngine::new(AsapqueryBackendServer {
+                url,
+                cgroup: Some(cgroup),
                 request_timeout: std::time::Duration::from_secs(600),
             })?)
         }

@@ -52,3 +52,6 @@ thiserror.workspace = true
 prost = "0.13"
 snap = "1.1"
 ureq = { version = "2", default-features = false }
+
+[dev-dependencies]
+aqpbm-datagen.workspace = true
