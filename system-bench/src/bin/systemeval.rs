@@ -12,7 +12,7 @@ use clap::Parser;
 
 use system_bench::prometheus_api::query::ask;
 use system_bench::systemeval::query::Collected;
-use system_bench::systemeval::system;
+use system_bench::systemeval::servers::{Server, SERVERS};
 use system_bench::systemeval::write::{Options, Writer};
 
 #[derive(Parser, Debug)]
@@ -25,7 +25,7 @@ struct Args {
     #[arg(long)]
     spec: PathBuf,
 
-    #[arg(long, value_parser = PossibleValuesParser::new(system::ids()))]
+    #[arg(long, value_parser = PossibleValuesParser::new(SERVERS))]
     system: String,
 
     #[arg(long, help = "Base URL of the system, e.g. http://127.0.0.1:8428")]
@@ -74,7 +74,8 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let system = system::by_id(&args.system).expect("clap accepts only listed systems");
+    let server =
+        Server::connect(&args.system, &args.url).expect("clap accepts only listed systems");
     let spec = Spec::read(&args.spec)?;
     let generated = Instant::now();
     let series = generate(&spec, &args.data_root)?;
@@ -101,9 +102,7 @@ fn main() -> Result<()> {
         speed: args.speed,
         flush_ms: args.flush_ms,
     };
-    let base = args.url.trim_end_matches('/');
-    let mut writer = Writer::new(&series, system, base, spec.start_ms, &options);
-    let agent = ureq::AgentBuilder::new().build();
+    let mut writer = Writer::new(&series, &server, spec.start_ms, &options);
     let mut collected: Vec<Collected> = asked.iter().map(|_| Collected::default()).collect();
     let started = Instant::now();
     writer.start_clock();
@@ -111,7 +110,7 @@ fn main() -> Result<()> {
         writer.write_through(t)?;
         writer.make_visible(t)?;
         for &i in queries {
-            collected[i].record(t, ask(&agent, base, &asked[i].promql, t));
+            collected[i].record(t, ask(server.agent(), server.base(), &asked[i].promql, t));
         }
     }
     writer.write_through(spec.end_ms())?;
@@ -120,7 +119,7 @@ fn main() -> Result<()> {
     let write = writer.summary()?;
     eprintln!(
         "{}: {} samples at {:.0} samples/s, {} evaluation times, {:.1} s",
-        system.name(),
+        server.name(),
         writer.samples(),
         write.samples_per_second,
         due.len(),
@@ -140,7 +139,7 @@ fn main() -> Result<()> {
     let document = SystemevalOutput {
         schema_version: OUTPUT_SCHEMA_VERSION,
         use_case: spec.use_case.clone(),
-        system: system.name().to_string(),
+        system: server.name().to_string(),
         samples: writer.samples(),
         run_seconds,
         write,

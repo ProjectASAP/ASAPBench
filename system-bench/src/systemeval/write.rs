@@ -5,8 +5,9 @@ use anyhow::Result;
 use aqpbm_usecase::data::Series;
 use aqpbm_usecase::output::WriteSummary;
 
-use super::system::{Sent, System};
+use super::servers::Server;
 use crate::prometheus_api::remote_write::{encode, Label, Sample, TimeSeries, WriteRequest};
+use crate::prometheus_api::remote_write::{send, Sent};
 
 pub struct Options {
     pub batch_samples: usize,
@@ -15,9 +16,7 @@ pub struct Options {
 }
 
 pub struct Writer<'a> {
-    system: &'a dyn System,
-    base: String,
-    agent: ureq::Agent,
+    server: &'a Server,
     options: &'a Options,
     start_ms: i64,
     order: Vec<(i64, u32, f64)>,
@@ -47,8 +46,7 @@ fn labels_of(series: &Series) -> Vec<Label> {
 impl<'a> Writer<'a> {
     pub fn new(
         series: &[Series],
-        system: &'a dyn System,
-        base: &str,
+        server: &'a Server,
         start_ms: i64,
         options: &'a Options,
     ) -> Writer<'a> {
@@ -59,9 +57,7 @@ impl<'a> Writer<'a> {
             .collect();
         order.sort_by_key(|&(t, i, _)| (t, i));
         Writer {
-            system,
-            base: base.to_string(),
-            agent: ureq::AgentBuilder::new().build(),
+            server,
             options,
             start_ms,
             order,
@@ -134,7 +130,7 @@ impl<'a> Writer<'a> {
 
     fn send(&mut self, body: &[u8]) -> Result<()> {
         let started = Instant::now();
-        while let Sent::Busy = self.system.write(&self.agent, &self.base, body)? {
+        while let Sent::Busy = send(self.server.agent(), self.server.base(), body)? {
             self.retries += 1;
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -158,15 +154,14 @@ impl<'a> Writer<'a> {
     pub fn make_visible(&mut self, through_ms: i64) -> Result<()> {
         self.pace(through_ms);
         let started = Instant::now();
-        self.system
-            .make_visible(&self.agent, &self.base, through_ms)?;
+        self.server.make_visible(through_ms)?;
         self.barrier_seconds += started.elapsed().as_secs_f64();
         self.barriers += 1;
         Ok(())
     }
 
     pub fn summary(&self) -> Result<WriteSummary> {
-        let status = self.system.status(&self.agent, &self.base)?;
+        let status = self.server.status()?;
         let write_seconds = self.send_seconds + self.barrier_seconds;
         Ok(WriteSummary {
             samples: self.next,
