@@ -72,6 +72,7 @@ fn sum_query(id: &str, metric: &str, window_s: u64) -> WorkloadQuery {
         }],
         window_ms: window_s * 1_000,
         evaluation_interval_ms: 10_000,
+        truth: None,
     }
 }
 

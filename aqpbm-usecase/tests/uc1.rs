@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use aqpbm_usecase::accuracy::{Labels, QueryTruth};
+use aqpbm_usecase::accuracy::Labels;
 use aqpbm_usecase::data::{generate, Series};
 use aqpbm_usecase::spec::{Spec, Statistic, Truth};
 
@@ -87,7 +87,9 @@ fn a_quantile_answer_is_scored_by_rank_within_its_window_and_series() {
         metric: "m".into(),
         matchers: Default::default(),
     });
-    let truth = QueryTruth::of(&spec.queries[0]).expect("the query declares its truth");
+    let truth = spec.queries[0]
+        .declared_truth()
+        .expect("the query declares its truth");
     let cells = truth
         .score(&series, &[5], &[(5, labels("a"), 1.0)])
         .unwrap();

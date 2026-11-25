@@ -186,6 +186,7 @@ fn workload_of(plan: &str, interval_ms: u64, start_ms: i64) -> WorkloadSpec {
                 }],
                 window_ms: 60_000,
                 evaluation_interval_ms: interval_ms,
+                truth: None,
             })
             .collect(),
         data: vec![data_record(start_ms)],
@@ -736,6 +737,7 @@ fn only_a_bare_selector_keeps_the_metric_name() {
             }],
             window_ms: 60_000,
             evaluation_interval_ms: 60_000,
+            truth: None,
         }],
         data: vec![data_record(0)],
     };

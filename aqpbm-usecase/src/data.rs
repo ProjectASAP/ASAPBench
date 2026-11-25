@@ -12,24 +12,9 @@ use aqpbm_datagen::ColumnData;
 
 use crate::spec::{Change, Import, MetricSpec, Phase, SeriesGroup, Spec};
 
-pub struct Series {
-    pub labels: BTreeMap<String, String>,
-    pub points: Vec<(i64, f64)>,
-}
+pub use aqpbm_core::accuracy::declared_truth::Series;
 
 pub type Slice<'a> = (&'a Series, &'a [(i64, f64)]);
-
-impl Series {
-    pub fn between(&self, start_exclusive: i64, end_inclusive: i64) -> &[(i64, f64)] {
-        let from = self.points.partition_point(|&(t, _)| t <= start_exclusive);
-        let to = self.points.partition_point(|&(t, _)| t <= end_inclusive);
-        &self.points[from..to.max(from)]
-    }
-
-    pub fn up_to(&self, end_inclusive: i64) -> &[(i64, f64)] {
-        &self.points[..self.points.partition_point(|&(t, _)| t <= end_inclusive)]
-    }
-}
 
 pub fn between(series: &[Series], start_exclusive: i64, end_inclusive: i64) -> Vec<Slice<'_>> {
     series

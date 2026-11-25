@@ -5,7 +5,8 @@
 //!
 //! ```text
 //! workloads/<workload>.json                 harness WorkloadSpec
-//! plans/<variant>/variant.json              {"substitutions_allowed": false}
+//! plans/<variant>/variant.json              {"substitutions_allowed": false}, optionally
+//!                                           "plans": false, "run_by_default": false
 //! plans/<variant>/<workload>.plan.json      a plan file, opaque to the harness
 //! plans/<variant>/<workload>.no-plan.json   {"reason": "ExcludedByDeployment"}
 //! ```
@@ -14,8 +15,9 @@
 //! `results/<engine>/<workload>__<variant>.cell.json` (always) and the
 //! `ArmResult` beside it (when the cell ran). [`report`] joins every engine run's
 //! cells into one row per cell, with absolute CPU, memory and accuracy
-//! against a truth engine run, and [`write_report`] writes `summary.csv`,
-//! `summary.md` and `accuracy.csv`.
+//! against a truth (one engine run's cells, or each query's declared
+//! statistic), and [`write_report`] writes `summary.csv`, `summary.md`,
+//! `accuracy.csv` and `scores.csv`.
 //!
 //! Example: engine `clickhouse` over variants `clickhouse.equivalent-only` and
 //! `clickhouse.with-substitutes`, engine `asap` over both, report with truth
@@ -27,7 +29,9 @@ use std::path::{Path, PathBuf};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
+use crate::accuracy::declared_truth::{without_name, AnswerAt, QueryTruth, Series, Statistic};
 use crate::harness::arm_run::{run_arm, ArmSchedule};
+use crate::harness::data::{workload_chunks, SeriesLabels};
 use crate::harness::engine::{
     ArmSpec, CpuAccounting, EngineDescription, EngineUnderTest, WorkloadSpec,
 };
@@ -45,6 +49,18 @@ pub struct VariantRecord {
     /// planner's: an engine that reports a substitution then disagrees with
     /// the capability file the plan was made under, and the cell fails.
     pub substitutions_allowed: bool,
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
+    pub plans: bool,
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
+    pub run_by_default: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_yes(value: &bool) -> bool {
+    *value
 }
 
 /// `plans/<variant>/<workload>.no-plan.json`: why the planner wrote no plan.
@@ -59,6 +75,7 @@ pub struct NoPlanRecord {
 pub enum PlanEntry {
     PlanFile(PathBuf),
     NoPlan { reason: String },
+    QueryTextOnly,
 }
 
 /// One variant of the run directory.
@@ -173,6 +190,17 @@ pub fn read_variants(
         let record = record.ok_or_else(|| {
             BenchmarkExternalError::Layout(format!("variant {name} has no variant.json"))
         })?;
+        if !record.plans {
+            if let Some(workload) = entries.keys().next() {
+                return Err(BenchmarkExternalError::Layout(format!(
+                    "variant {name} has plans: false but holds an entry for {workload}"
+                )));
+            }
+            entries = workloads
+                .keys()
+                .map(|workload| (workload.clone(), PlanEntry::QueryTextOnly))
+                .collect();
+        }
         if let Some(missing) = workloads.keys().find(|w| !entries.contains_key(*w)) {
             return Err(BenchmarkExternalError::Layout(format!(
                 "variant {name} has neither {missing}.plan.json nor {missing}.no-plan.json"
@@ -219,6 +247,14 @@ pub fn run_engine(
             )));
         }
         variants.retain(|variant| only.contains(&variant.name));
+    } else {
+        let any = !variants.is_empty();
+        variants.retain(|variant| variant.record.run_by_default);
+        if any && variants.is_empty() {
+            return Err(BenchmarkExternalError::Layout(
+                "no variant under plans/ runs by default; name one with --variant".into(),
+            ));
+        }
     }
     let engine_id = engine.description().id;
     let engine_directory = run_directory.path().join("results").join(&engine_id);
@@ -252,19 +288,28 @@ pub fn run_engine(
                 PlanEntry::NoPlan { reason } => CellOutcome::NoPlan {
                     reason: reason.clone(),
                 },
-                PlanEntry::PlanFile(plan_file) => {
-                    match run_cell(
-                        run_directory,
-                        engine,
-                        workload,
-                        variant,
-                        plan_file,
-                        &mut setup,
-                    ) {
-                        Ok(()) => CellOutcome::Ran,
-                        Err(error) => CellOutcome::NotRun { error },
-                    }
-                }
+                PlanEntry::PlanFile(plan_file) => match run_cell(
+                    run_directory,
+                    engine,
+                    workload,
+                    variant,
+                    serde_json::json!({ "plan_file": plan_file }),
+                    &mut setup,
+                ) {
+                    Ok(()) => CellOutcome::Ran,
+                    Err(error) => CellOutcome::NotRun { error },
+                },
+                PlanEntry::QueryTextOnly => match run_cell(
+                    run_directory,
+                    engine,
+                    workload,
+                    variant,
+                    serde_json::json!({}),
+                    &mut setup,
+                ) {
+                    Ok(()) => CellOutcome::Ran,
+                    Err(error) => CellOutcome::NotRun { error },
+                },
             };
             let cell = EngineRunCell {
                 engine: engine_id.clone(),
@@ -288,14 +333,14 @@ fn run_cell(
     engine: &dyn EngineUnderTest,
     workload: &WorkloadSpec,
     variant: &Variant,
-    plan_file: &Path,
+    engine_options: serde_json::Value,
     setup: &mut EngineRunSetup,
 ) -> Result<(), String> {
     let schedule = ArmSchedule::for_workload(workload).map_err(|e| e.to_string())?;
     let arm = ArmSpec {
         name: variant.name.clone(),
         raw_data_retained: true,
-        engine_options: serde_json::json!({ "plan_file": plan_file }),
+        engine_options,
     };
     let result = run_arm(
         engine,
@@ -382,11 +427,47 @@ pub struct QueryAccuracy {
     pub variant: String,
     pub query: String,
     pub errors: PointErrors,
+    pub scores: BTreeMap<String, ScoreSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScoreSummary {
+    pub max: f64,
+    pub median: f64,
+    pub points: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReportTruth {
+    Declared,
+    Cells { engine: String, variant: String },
+}
+
+impl ReportTruth {
+    pub fn parse(text: &str) -> Result<ReportTruth, String> {
+        if text == "declared" {
+            return Ok(ReportTruth::Declared);
+        }
+        let (engine, variant) = text
+            .split_once('/')
+            .ok_or_else(|| format!("--truth must be declared or <engine>/<variant>, not {text}"))?;
+        Ok(ReportTruth::Cells {
+            engine: engine.to_string(),
+            variant: variant.to_string(),
+        })
+    }
+
+    pub fn name(&self) -> String {
+        match self {
+            ReportTruth::Declared => "declared".to_string(),
+            ReportTruth::Cells { engine, variant } => format!("{engine}/{variant}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Report {
-    /// `engine/variant` of the truth.
+    /// `engine/variant` of the truth, or `declared`.
     pub truth: String,
     pub rows: Vec<ReportRow>,
     pub accuracy: Vec<QueryAccuracy>,
@@ -484,14 +565,16 @@ fn errors_against(
     Ok(per_query)
 }
 
-/// Joins every engine run's cells into the report, with accuracy against the
-/// cells of `truth_engine`/`truth_variant`. Refuses a truth with no cell, and
-/// a workload whose ran cells ingested different numbers of samples (the
-/// engine runs did not read the same data).
+/// Joins every engine run's cells into the report, with accuracy against
+/// `truth`: the cells of one engine run, or each query's declared statistic
+/// computed from the workload's data. Refuses a truth with no cell, a
+/// workload whose ran cells ingested different numbers of samples (the
+/// engine runs did not read the same data), and, against declared
+/// statistics, a workload that no longer generates the samples its cells
+/// ingested.
 pub fn report(
     run_directory: &RunDirectory,
-    truth_engine: &str,
-    truth_variant: &str,
+    truth: &ReportTruth,
 ) -> Result<Report, BenchmarkExternalError> {
     let results = run_directory.path().join("results");
     let mut cells: Vec<(EngineRunCell, Option<ArmResult>)> = Vec::new();
@@ -510,14 +593,24 @@ pub fn report(
             cells.push((cell, result));
         }
     }
-    if !cells
-        .iter()
-        .any(|(cell, _)| cell.engine == truth_engine && cell.variant == truth_variant)
+    let (truth_engine, truth_variant) = match truth {
+        ReportTruth::Cells { engine, variant } => (engine.as_str(), variant.as_str()),
+        ReportTruth::Declared => ("", ""),
+    };
+    if matches!(truth, ReportTruth::Cells { .. })
+        && !cells
+            .iter()
+            .any(|(cell, _)| cell.engine == truth_engine && cell.variant == truth_variant)
     {
         return Err(BenchmarkExternalError::Report(format!(
             "the truth {truth_engine}/{truth_variant} has no cells under results/"
         )));
     }
+    let workloads = match truth {
+        ReportTruth::Declared => read_workloads(run_directory)?,
+        ReportTruth::Cells { .. } => BTreeMap::new(),
+    };
+    let mut series_of: BTreeMap<String, (Vec<Series>, u64)> = BTreeMap::new();
     let mut samples_per_workload: BTreeMap<&str, (u64, String)> = BTreeMap::new();
     for (cell, result) in &cells {
         let Some(result) = result else { continue };
@@ -571,7 +664,47 @@ pub fn report(
         };
         if let Some(result) = result {
             fill_measurements(&mut row, result);
-            if let Some(truth) = truth_of(&cell.workload) {
+            if matches!(truth, ReportTruth::Declared) {
+                let workload = workloads.get(&cell.workload).ok_or_else(|| {
+                    BenchmarkExternalError::Report(format!(
+                        "workload {} is not in workloads/",
+                        cell.workload
+                    ))
+                })?;
+                if !series_of.contains_key(&cell.workload) {
+                    series_of.insert(cell.workload.clone(), series_of_workload(workload)?);
+                }
+                let (series, generated) = &series_of[&cell.workload];
+                if *generated != result.ingested_samples {
+                    return Err(BenchmarkExternalError::Report(format!(
+                        "workload {}: workloads/{}.json generates {generated} samples but {}/{} ingested {}",
+                        cell.workload, cell.workload, cell.engine, cell.variant, result.ingested_samples
+                    )));
+                }
+                let per_query = declared_scores(workload, series, result)
+                    .map_err(BenchmarkExternalError::Report)?;
+                if per_query.is_empty() {
+                    row.no_truth = true;
+                } else {
+                    let mut all = DeclaredQuery::default();
+                    for (query, declared) in per_query {
+                        all.relative_errors
+                            .extend_from_slice(&declared.relative_errors);
+                        all.points += declared.points;
+                        all.missing_points += declared.missing_points;
+                        all.extra_points += declared.extra_points;
+                        accuracy.push(QueryAccuracy {
+                            workload: cell.workload.clone(),
+                            engine: cell.engine.clone(),
+                            variant: cell.variant.clone(),
+                            query,
+                            errors: declared.point_errors(),
+                            scores: declared.scores,
+                        });
+                    }
+                    row.accuracy = Some(all.point_errors());
+                }
+            } else if let Some(truth) = truth_of(&cell.workload) {
                 let per_query =
                     errors_against(result, truth).map_err(BenchmarkExternalError::Report)?;
                 let (mut all, mut missing, mut extra) = (Vec::new(), 0, 0);
@@ -589,6 +722,7 @@ pub fn report(
                             errors.missing_points,
                             errors.extra_points,
                         ),
+                        scores: BTreeMap::new(),
                     });
                 }
                 row.accuracy = Some(point_errors(&all, missing, extra));
@@ -599,10 +733,151 @@ pub fn report(
         rows.push(row);
     }
     Ok(Report {
-        truth: format!("{truth_engine}/{truth_variant}"),
+        truth: truth.name(),
         rows,
         accuracy,
     })
+}
+
+fn series_of_workload(
+    workload: &WorkloadSpec,
+) -> Result<(Vec<Series>, u64), BenchmarkExternalError> {
+    let refresh_ms = ArmSchedule::for_workload(workload)
+        .map_err(|e| BenchmarkExternalError::Report(format!("workload {}: {e}", workload.name)))?
+        .refresh_ms;
+    let mut points: BTreeMap<SeriesLabels, Vec<(i64, f64)>> = BTreeMap::new();
+    let mut generated = 0u64;
+    let chunks = workload_chunks(&workload.data, refresh_ms)
+        .map_err(|e| BenchmarkExternalError::Report(format!("workload {}: {e}", workload.name)))?;
+    for chunk in chunks {
+        let chunk = chunk.map_err(|e| {
+            BenchmarkExternalError::Report(format!("workload {}: {e}", workload.name))
+        })?;
+        generated += chunk.samples.len() as u64;
+        for sample in chunk.samples {
+            points
+                .entry((*sample.labels).clone())
+                .or_default()
+                .push((sample.ts_ms, sample.value));
+        }
+    }
+    let series = points
+        .into_iter()
+        .map(|(labels, mut points)| {
+            points.sort_by_key(|(t, _)| *t);
+            Series { labels, points }
+        })
+        .collect();
+    Ok((series, generated))
+}
+
+const NOT_SCORES: [&str; 7] = [
+    "truth",
+    "estimate",
+    "items",
+    "grid_points",
+    "probes",
+    "stream_items",
+    "stream_distinct",
+];
+
+#[derive(Debug, Default)]
+struct DeclaredQuery {
+    relative_errors: Vec<f64>,
+    points: u64,
+    missing_points: u64,
+    extra_points: u64,
+    scores: BTreeMap<String, ScoreSummary>,
+}
+
+impl DeclaredQuery {
+    fn point_errors(&self) -> PointErrors {
+        PointErrors {
+            max_relative_error: self.relative_errors.iter().copied().max_by(f64::total_cmp),
+            median_relative_error: median_of(&self.relative_errors),
+            points: self.points,
+            missing_points: self.missing_points,
+            extra_points: self.extra_points,
+        }
+    }
+}
+
+fn declared_scores(
+    workload: &WorkloadSpec,
+    series: &[Series],
+    result: &ArmResult,
+) -> Result<BTreeMap<String, DeclaredQuery>, String> {
+    let ends: Vec<i64> = result.answers.iter().map(|(t, _)| *t).collect();
+    let mut per_query = BTreeMap::new();
+    for query in &workload.queries {
+        let Some(declared) = &query.truth else {
+            continue;
+        };
+        let answered: Vec<AnswerAt> = result
+            .answers
+            .iter()
+            .flat_map(|(t, answers)| {
+                answers
+                    .0
+                    .get(&query.id)
+                    .into_iter()
+                    .flatten()
+                    .map(|(labels, value)| (*t, labels.clone(), *value))
+            })
+            .collect();
+        let cells = QueryTruth::new(declared, query.window_ms as i64)
+            .score(series, &ends, &answered)
+            .map_err(|e| format!("workload {}, query {}: {e}", workload.name, query.id))?;
+        let mut summary = DeclaredQuery::default();
+        let mut values: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+        let mut truth_keys = std::collections::HashSet::new();
+        for (end, labels, scores) in &cells {
+            truth_keys.insert((*end, labels.clone()));
+            match scores {
+                None => summary.missing_points += 1,
+                Some(scores) => {
+                    summary.points += 1;
+                    if let (Some(truth), Some(estimate)) =
+                        (scores.get("truth"), scores.get("estimate"))
+                    {
+                        summary
+                            .relative_errors
+                            .push(relative_error(*estimate, *truth));
+                    }
+                    for (name, value) in scores {
+                        if !NOT_SCORES.contains(&name.as_str()) {
+                            values.entry(name.clone()).or_default().push(*value);
+                        }
+                    }
+                }
+            }
+        }
+        if !matches!(declared.statistic, Statistic::TopK { .. }) {
+            summary.extra_points = answered
+                .iter()
+                .filter(|(t, labels, _)| !truth_keys.contains(&(*t, without_name(labels))))
+                .count() as u64;
+        }
+        summary.scores = values
+            .into_iter()
+            .map(|(name, values)| {
+                (
+                    name,
+                    ScoreSummary {
+                        max: values
+                            .iter()
+                            .copied()
+                            .max_by(f64::total_cmp)
+                            .unwrap_or(f64::NAN),
+                        median: median_of(&values).unwrap_or(f64::NAN),
+                        points: values.len() as u64,
+                    },
+                )
+            })
+            .collect();
+        per_query.insert(query.id.clone(), summary);
+    }
+    Ok(per_query)
 }
 
 fn fill_measurements(row: &mut ReportRow, result: &ArmResult) {
@@ -654,6 +929,8 @@ fn fill_measurements(row: &mut ReportRow, result: &ArmResult) {
 
 /// The `summary.csv` header.
 pub const SUMMARY_CSV_HEADER: &str = "workload,engine,variant,status,cpu_accounting,ingest_cpu_ns_per_sample,query_cpu_ms_per_evaluation,engine_counter_cpu_ms_per_evaluation,server_cpu_ms_whole_arm,server_memory_before_bytes,server_memory_after_bytes,server_lifetime_peak_bytes,installs_held,stored_bytes_last_install,max_relative_error,median_relative_error,points,missing_points,extra_points,substitutions,sharing_lost";
+
+pub const SCORES_CSV_HEADER: &str = "workload,engine,variant,query,score,max,median,points";
 
 /// The `accuracy.csv` header.
 pub const ACCURACY_CSV_HEADER: &str =
@@ -731,6 +1008,26 @@ impl Report {
         text
     }
 
+    pub fn scores_csv(&self) -> String {
+        let mut text = format!("{SCORES_CSV_HEADER}\n");
+        for row in &self.accuracy {
+            for (name, summary) in &row.scores {
+                text.push_str(&format!(
+                    "{},{},{},{},{},{},{},{}\n",
+                    csv_text(&row.workload),
+                    csv_text(&row.engine),
+                    csv_text(&row.variant),
+                    csv_text(&row.query),
+                    csv_text(name),
+                    summary.max,
+                    summary.median,
+                    summary.points,
+                ));
+            }
+        }
+        text
+    }
+
     /// `summary.md`: rows = workloads, columns = `engine/variant`, sorted.
     /// A ran cell reads `q 2.000 ms, i 2000.0 ns/sample, err 0.100 [cgroup]`.
     pub fn summary_markdown(&self) -> String {
@@ -802,6 +1099,7 @@ pub fn write_report(
         ("summary.csv", report.summary_csv()),
         ("summary.md", report.summary_markdown()),
         ("accuracy.csv", report.accuracy_csv()),
+        ("scores.csv", report.scores_csv()),
     ] {
         let path = run_directory.path().join(name);
         std::fs::write(&path, text).map_err(|e| io(&path, e))?;

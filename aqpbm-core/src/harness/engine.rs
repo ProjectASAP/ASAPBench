@@ -92,6 +92,8 @@ pub struct WorkloadQuery {
     pub texts: Vec<QueryText>,
     pub window_ms: u64,
     pub evaluation_interval_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truth: Option<crate::accuracy::declared_truth::Truth>,
 }
 
 /// A query text in one language.

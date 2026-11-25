@@ -19,6 +19,7 @@ fn workload(name: &str) -> WorkloadSpec {
             }],
             window_ms: 10_000,
             evaluation_interval_ms: 10_000,
+            truth: None,
         }],
         data: vec![DataRecord {
             metric: "m".into(),

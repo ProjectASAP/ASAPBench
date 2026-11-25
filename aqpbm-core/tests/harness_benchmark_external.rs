@@ -3,9 +3,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use aqpbm_core::accuracy::declared_truth::{Statistic, Truth};
 use aqpbm_core::harness::benchmark_external::{
     read_variants, read_workloads, report, run_engine, write_report, CellOutcome, EngineRunCell,
-    EngineRunSetup, SUMMARY_CSV_HEADER,
+    EngineRunSetup, PlanEntry, ReportTruth, SUMMARY_CSV_HEADER,
 };
 use aqpbm_core::harness::cgroup::CgroupMemory;
 use aqpbm_core::harness::data::{DataRecord, SeriesLabels};
@@ -65,6 +66,7 @@ fn workload(name: &str) -> WorkloadSpec {
             }],
             window_ms: 10_000,
             evaluation_interval_ms: 10_000,
+            truth: None,
         }],
         data: vec![DataRecord {
             metric: "m".into(),
@@ -505,7 +507,14 @@ fn report_fixture(temp: &TempDir) -> RunDirectory {
 fn the_summary_has_absolute_numbers_and_errors_against_the_truth() {
     let temp = TempDir::new("p1");
     let run = report_fixture(&temp);
-    let report = report(&run, "a", "v1").unwrap();
+    let report = report(
+        &run,
+        &ReportTruth::Cells {
+            engine: "a".into(),
+            variant: "v1".into(),
+        },
+    )
+    .unwrap();
     let csv = report.summary_csv();
     let lines: Vec<&str> = csv.lines().collect();
     assert_eq!(lines[0], SUMMARY_CSV_HEADER);
@@ -554,7 +563,15 @@ fn the_summary_has_absolute_numbers_and_errors_against_the_truth() {
 }
 
 fn report_error(run: &RunDirectory, engine: &str, variant: &str) -> String {
-    report(run, engine, variant).unwrap_err().to_string()
+    report(
+        run,
+        &ReportTruth::Cells {
+            engine: engine.into(),
+            variant: variant.into(),
+        },
+    )
+    .unwrap_err()
+    .to_string()
 }
 
 /// P2: the relative-error rules.
@@ -645,4 +662,207 @@ fn result_file_names_are_checked_before_any_cell_runs() {
     let error = run_fake(&run, None).unwrap_err();
     assert!(error.contains("w__3") && error.contains("__"), "{error}");
     assert!(!run.path().join("results/fake").exists());
+}
+
+#[test]
+fn variants_without_plans_and_variants_run_only_when_named() {
+    let temp = TempDir::new("plan-free");
+    let run = fixture(&temp, "{}", "{}");
+    let plans = run.path().join("plans");
+    write(
+        &plans.join("normal/variant.json"),
+        r#"{"substitutions_allowed": true, "plans": false}"#,
+    );
+    write(
+        &plans.join("named/variant.json"),
+        r#"{"substitutions_allowed": true, "plans": false, "run_by_default": false}"#,
+    );
+    let workloads = read_workloads(&run).unwrap();
+    let variants = read_variants(&run, &workloads).unwrap();
+    let normal = variants.iter().find(|v| v.name == "normal").unwrap();
+    assert!(normal
+        .entries
+        .values()
+        .all(|e| *e == PlanEntry::QueryTextOnly));
+    assert_eq!(normal.entries.len(), 2);
+
+    let cells = run_fake(&run, None).unwrap();
+    let ran: std::collections::BTreeSet<(String, String)> = cells
+        .iter()
+        .map(|c| (c.workload.clone(), c.variant.clone()))
+        .collect();
+    assert!(ran.contains(&("w1".into(), "normal".into())));
+    assert!(ran.contains(&("w2".into(), "normal".into())));
+    assert!(!ran.iter().any(|(_, v)| v == "named"));
+
+    let named = run_fake(&run, Some(&["named".to_string()])).unwrap();
+    let only_named = TempDir::new("only-named");
+    let lone = fixture(&only_named, "{}", "{}");
+    for variant in ["v1", "v2"] {
+        let path = lone.path().join(format!("plans/{variant}/variant.json"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        write(&path, &text.replace('}', r#", "run_by_default": false}"#));
+    }
+    let error = run_fake(&lone, None).unwrap_err();
+    assert!(error.contains("--variant"), "{error}");
+    assert_eq!(named.len(), 2);
+    assert!(named.iter().all(|c| c.variant == "named"));
+
+    write(&plans.join("normal/w1.plan.json"), "{}");
+    let error = read_variants(&run, &workloads).unwrap_err().to_string();
+    assert!(error.contains("plans: false"), "{error}");
+}
+
+#[test]
+fn answers_are_scored_against_each_queries_declared_statistic() {
+    let temp = TempDir::new("declared");
+    let run = RunDirectory::create_at(&temp.0.join("run")).unwrap();
+    let mut spec = workload("w1");
+    spec.queries[0].id = "distinct".into();
+    spec.queries[0].truth = Some(Truth {
+        statistic: Statistic::Distinct,
+        metric: "m".into(),
+        matchers: BTreeMap::new(),
+    });
+    let mut undeclared = spec.queries[0].clone();
+    undeclared.id = "undeclared".into();
+    undeclared.truth = None;
+    spec.queries.push(undeclared);
+    let mut quantile = spec.queries[0].clone();
+    quantile.id = "median".into();
+    quantile.truth = Some(Truth {
+        statistic: Statistic::Quantile(0.5),
+        metric: "m".into(),
+        matchers: BTreeMap::new(),
+    });
+    spec.queries.push(quantile);
+    write(
+        &run.path().join("workloads/w1.json"),
+        &serde_json::to_string(&spec).unwrap(),
+    );
+    let mut plain = workload("w2");
+    plain.queries[0].truth = None;
+    write(
+        &run.path().join("workloads/w2.json"),
+        &serde_json::to_string(&plain).unwrap(),
+    );
+    let mut labels: Vec<SeriesLabels> = Vec::new();
+    let mut generated = 0u64;
+    for chunk in aqpbm_core::harness::data::workload_chunks(&spec.data, 10_000).unwrap() {
+        let chunk = chunk.unwrap();
+        generated += chunk.samples.len() as u64;
+        for sample in chunk.samples {
+            let mut l = (*sample.labels).clone();
+            l.remove("__name__");
+            if !labels.contains(&l) {
+                labels.push(l);
+            }
+        }
+    }
+    labels.sort();
+    assert_eq!(labels.len(), 2);
+    let at = |values: Vec<(SeriesLabels, f64)>| {
+        Answers(
+            [
+                ("distinct".to_string(), values.clone().into_iter().collect()),
+                ("undeclared".to_string(), BTreeMap::new()),
+                ("median".to_string(), values.into_iter().collect()),
+            ]
+            .into_iter()
+            .collect(),
+        )
+    };
+    let mut extra = labels[0].clone();
+    extra.insert("s".into(), "nowhere".into());
+    let answers = vec![
+        (
+            10_000,
+            at(vec![(labels[0].clone(), 10.0), (labels[1].clone(), 10.0)]),
+        ),
+        (20_000, at(vec![(labels[0].clone(), 12.0)])),
+        (
+            30_000,
+            at(vec![
+                (labels[0].clone(), 10.0),
+                (labels[1].clone(), 10.0),
+                (extra, 3.0),
+            ]),
+        ),
+    ];
+    let mut w1 = result("e", "w1", "v", answers);
+    w1.ingested_samples = generated;
+    put(&run, "e", "w1", "v", CellOutcome::Ran, Some(w1.clone()));
+    let mut w2 = result("e", "w2", "v", vec![(10_000, answers_of_sum())]);
+    w2.ingested_samples = generated;
+    put(&run, "e", "w2", "v", CellOutcome::Ran, Some(w2));
+    let report = report(&run, &ReportTruth::Declared).unwrap();
+    assert_eq!(report.truth, "declared");
+    let distinct: Vec<_> = report
+        .accuracy
+        .iter()
+        .filter(|a| a.workload == "w1" && a.query == "distinct")
+        .collect();
+    assert_eq!(distinct.len(), 1, "{:?}", report.accuracy);
+    assert!(!report.accuracy.iter().any(|a| a.query == "undeclared"));
+    let median = report
+        .accuracy
+        .iter()
+        .find(|a| a.query == "median")
+        .unwrap();
+    assert_eq!(median.errors.points, 5);
+    assert_eq!(median.errors.missing_points, 1);
+    assert_eq!(median.errors.max_relative_error, None);
+    assert!(
+        median.scores.keys().any(|name| name.contains("rank")),
+        "{:?}",
+        median.scores
+    );
+    let errors = &distinct[0].errors;
+    assert_eq!(errors.points, 5);
+    assert_eq!(errors.missing_points, 1);
+    assert_eq!(errors.extra_points, 1);
+    assert!((errors.max_relative_error.unwrap() - 0.2).abs() < 1e-12);
+    assert_eq!(errors.median_relative_error, Some(0.0));
+    assert!(distinct[0].scores.contains_key("relative_error"));
+    assert!(!distinct[0].scores.contains_key("truth"));
+    assert!(!distinct[0].scores.contains_key("estimate"));
+    let w2 = report.rows.iter().find(|r| r.workload == "w2").unwrap();
+    assert!(w2.no_truth);
+    write_report(&run, &report).unwrap();
+    let scores = std::fs::read_to_string(run.path().join("scores.csv")).unwrap();
+    let mut edited = spec.clone();
+    edited.data[0].description.duration_ms = 30_000;
+    write(
+        &run.path().join("workloads/w1.json"),
+        &serde_json::to_string(&edited).unwrap(),
+    );
+    let error = aqpbm_core::harness::benchmark_external::report(&run, &ReportTruth::Declared)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("generates"), "{error}");
+    assert!(scores.starts_with("workload,engine,variant,query,score,max,median,points\n"));
+    assert!(
+        scores.contains("w1,e,v,distinct,relative_error,0.2,0,5"),
+        "{scores}"
+    );
+}
+
+fn answers_of_sum() -> Answers {
+    Answers([("sum".to_string(), BTreeMap::new())].into_iter().collect())
+}
+
+#[test]
+fn the_truth_is_declared_or_one_engines_cells() {
+    assert_eq!(
+        ReportTruth::parse("declared").unwrap(),
+        ReportTruth::Declared
+    );
+    assert_eq!(
+        ReportTruth::parse("fake/v1").unwrap(),
+        ReportTruth::Cells {
+            engine: "fake".into(),
+            variant: "v1".into()
+        }
+    );
+    assert!(ReportTruth::parse("fake").is_err());
 }

@@ -288,6 +288,7 @@ fn workload(texts: &[&str], interval_ms: u64) -> WorkloadSpec {
                 }],
                 window_ms: 60_000,
                 evaluation_interval_ms: interval_ms,
+                truth: None,
             })
             .collect(),
         data: vec![],
