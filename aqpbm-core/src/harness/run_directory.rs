@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use crate::harness::data::DataRecord;
 use crate::harness::protocol::{JobMark, JobRecord};
 use crate::harness::records::{ArmResult, RunRecord};
+use crate::harness::write_throughput::WriteThroughputResult;
 
 /// A created run directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,6 +118,28 @@ impl RunDirectory {
         std::fs::create_dir_all(&dir).map_err(|source| io(&dir, source))?;
         let path = dir.join(format!("{}__{}.json", result.workload, result.arm));
         write_json(&path, result)?;
+        Ok(path)
+    }
+
+    pub fn append_write_throughput(
+        &self,
+        result: &WriteThroughputResult,
+    ) -> Result<PathBuf, RunDirectoryError> {
+        check_result_name("engine", &result.engine.id, false)?;
+        let dir = self.path.join("results").join(&result.engine.id);
+        std::fs::create_dir_all(&dir).map_err(|source| io(&dir, source))?;
+        let path = dir.join("write-throughput.jsonl");
+        let mut line = serde_json::to_string(result).map_err(|source| RunDirectoryError::Json {
+            path: path.clone(),
+            source,
+        })?;
+        line.push('\n');
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut file| file.write_all(line.as_bytes()))
+            .map_err(|source| io(&path, source))?;
         Ok(path)
     }
 
