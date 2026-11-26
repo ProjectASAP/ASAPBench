@@ -10,8 +10,9 @@ use aqpbm_core::harness::engine::{CpuAccounting, EngineError, StepReport};
 use aqpbm_core::harness::fake::FakeClock;
 use aqpbm_core::harness::protocol::{
     compare, core_busy_fraction, median, noise_band, pin_current_thread, process_state_from_stat,
-    processes_cpu_ns, Comparison, CpuClock, EngineClock, JobMark, LoadProbe, MeasurementClocks,
-    OsCpuClock, ProcessCpuFiles, ProcessesCpuClock, Protocol, ProtocolError,
+    processes_cpu_ns, processes_memory, Comparison, CpuClock, EngineClock, JobMark, LoadProbe,
+    MeasurementClocks, OsCpuClock, ProcessCpuFiles, ProcessesCpuClock, ProcessesMemory, Protocol,
+    ProtocolError,
 };
 use aqpbm_core::harness::run_directory::RunDirectory;
 use chrono::{TimeZone, Utc};
@@ -574,4 +575,84 @@ fn a_nonexistent_core_is_refused_before_the_idle_sample() {
     );
     assert_eq!(probe.0, 0, "the idle check sampled a nonexistent core");
     assert_eq!(calls.get(), 0);
+}
+
+fn write_fake_memory(root: &std::path::Path, pid: u32, smaps_rollup: &str, status: &str) {
+    let dir = root.join(pid.to_string());
+    std::fs::write(dir.join("smaps_rollup"), smaps_rollup).unwrap();
+    std::fs::write(dir.join("status"), status).unwrap();
+}
+
+#[test]
+fn process_memory_of_one_pid_has_its_proportional_set_size_and_peak() {
+    let root = TempDir::new("process-memory-one");
+    write_fake_process(&root.0, 101, 'S', &[0]);
+    write_fake_memory(
+        &root.0,
+        101,
+        "Rss:\t    1200 kB\nPss:\t    1000 kB\n",
+        "Name:\tsrv\nVmHWM:\t    3000 kB\nVmRSS:\t    1200 kB\n",
+    );
+    assert_eq!(
+        processes_memory(&root.0, &[101]),
+        Ok(ProcessesMemory {
+            proportional_set_size_bytes: 1000 * 1024,
+            peak_resident_set_size_bytes: Some(3000 * 1024),
+        })
+    );
+}
+
+#[test]
+fn process_memory_of_several_pids_sums_proportional_set_sizes_and_has_no_peak() {
+    let root = TempDir::new("process-memory-several");
+    write_fake_process(&root.0, 101, 'S', &[0]);
+    write_fake_process(&root.0, 102, 'S', &[0]);
+    write_fake_memory(&root.0, 101, "Pss:\t1000 kB\n", "VmHWM:\t3000 kB\n");
+    write_fake_memory(&root.0, 102, "Pss:\t500 kB\n", "VmHWM:\t700 kB\n");
+    assert_eq!(
+        processes_memory(&root.0, &[101, 102]),
+        Ok(ProcessesMemory {
+            proportional_set_size_bytes: 1500 * 1024,
+            peak_resident_set_size_bytes: None,
+        })
+    );
+
+    let error = processes_memory(&root.0, &[101, 999]).unwrap_err();
+    assert!(
+        matches!(error, ProtocolError::MissingProcess { pid: 999, .. }),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn process_memory_without_a_peak_line_is_a_parse_error() {
+    let root = TempDir::new("process-memory-no-peak");
+    write_fake_process(&root.0, 103, 'S', &[0]);
+    write_fake_memory(&root.0, 103, "Pss:\t1000 kB\n", "VmRSS:\t1000 kB\n");
+    let error = processes_memory(&root.0, &[103]).unwrap_err();
+    assert!(matches!(error, ProtocolError::Parse { .. }), "{error:?}");
+    assert!(error.to_string().contains("VmHWM"), "{error}");
+}
+
+#[test]
+fn process_memory_of_an_exited_pid_is_an_error() {
+    let root = TempDir::new("process-memory-zombie");
+    write_fake_process(&root.0, 104, 'Z', &[0]);
+    write_fake_memory(&root.0, 104, "Pss:\t1 kB\n", "VmHWM:\t1 kB\n");
+    assert_eq!(
+        processes_memory(&root.0, &[104]),
+        Err(ProtocolError::ProcessExited {
+            pid: 104,
+            state: 'Z'
+        })
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn process_memory_of_this_process_has_a_peak_at_least_its_proportional_set_size() {
+    let memory = processes_memory(std::path::Path::new("/proc"), &[std::process::id()]).unwrap();
+    let peak = memory.peak_resident_set_size_bytes.unwrap();
+    assert!(memory.proportional_set_size_bytes > 0, "{memory:?}");
+    assert!(peak >= memory.proportional_set_size_bytes, "{memory:?}");
 }

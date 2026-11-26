@@ -9,7 +9,7 @@ use crate::harness::engine::{
 };
 use crate::harness::fit::{ConstantsFit, FitPoint};
 use crate::harness::machine::MachineDescription;
-use crate::harness::protocol::{JobRecord, Protocol};
+use crate::harness::protocol::{JobRecord, ProcessesMemory, Protocol};
 
 /// `run.json`: how the run was started and under which protocol.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -49,6 +49,10 @@ pub struct ArmResult {
     /// the arm at once (`installs_held` of them), so this is not one
     /// install's memory.
     pub server_memory_after: Option<CgroupMemory>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_process_memory_before: Option<ProcessesMemory>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_process_memory_after: Option<ProcessesMemory>,
     /// For a `Cgroup` engine, the server's CPU from before the installs to
     /// after the footprint, in ns: the steps plus work between them, such
     /// as background merges, over every install.

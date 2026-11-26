@@ -91,13 +91,16 @@ pub struct FakeServer {
     /// The fake `/proc` (and an empty cgroup mount beside it).
     pub cpu_files: ProcessCpuFiles,
     cpu_ns: Rc<Cell<u64>>,
+    memory_kilobytes: Rc<Cell<u64>>,
     /// Set by [`FakeServer::start_in_cgroup`]: the group directory whose
     /// `cpu.stat` the fake rewrites after every charge.
     pub cgroup_dir: Option<PathBuf>,
 }
 
 impl FakeServer {
-    /// Creates `<root>/<pid>/stat` and the thread's `schedstat` with no CPU used.
+    /// Creates `<root>/<pid>/stat`, `<root>/<pid>/smaps_rollup` (`Pss`
+    /// 2,048 kB), `<root>/<pid>/status` (`VmHWM` 2,048 kB) and the thread's
+    /// `schedstat` with no CPU used. Each install adds 1,024 kB to both.
     pub fn start(root: &Path, pid: u32) -> std::io::Result<Self> {
         let process = root.join(pid.to_string());
         std::fs::create_dir_all(process.join("task").join(pid.to_string()))?;
@@ -112,9 +115,11 @@ impl FakeServer {
                 cgroup_root: root.join("cgroup"),
             },
             cpu_ns: Rc::default(),
+            memory_kilobytes: Rc::new(Cell::new(2048)),
             cgroup_dir: None,
         };
         server.write_schedstat()?;
+        server.write_memory()?;
         Ok(server)
     }
 
@@ -149,6 +154,26 @@ impl FakeServer {
         self.cpu_ns.set(self.cpu_ns.get() + ns);
         self.write_schedstat()
             .unwrap_or_else(|error| panic!("fake server {} schedstat: {error}", self.pid));
+    }
+
+    pub fn hold_kilobytes(&self, kilobytes: u64) {
+        self.memory_kilobytes
+            .set(self.memory_kilobytes.get() + kilobytes);
+        self.write_memory()
+            .unwrap_or_else(|error| panic!("fake server {} memory: {error}", self.pid));
+    }
+
+    fn write_memory(&self) -> std::io::Result<()> {
+        let process = self.cpu_files.proc_root.join(self.pid.to_string());
+        let kilobytes = self.memory_kilobytes.get();
+        std::fs::write(
+            process.join("smaps_rollup"),
+            format!("Rss:\t{kilobytes} kB\nPss:\t{kilobytes} kB\n"),
+        )?;
+        std::fs::write(
+            process.join("status"),
+            format!("Name:\tfake server\nVmHWM:\t{kilobytes} kB\nVmRSS:\t{kilobytes} kB\n"),
+        )
     }
 
     /// The thread's `schedstat`: CPU ns, wait ns, time slices. The CPU is
@@ -285,7 +310,10 @@ impl EngineUnderTest for FakeEngine {
         self.installs.set(self.installs.get() + 1);
         let plan = FakePlanFile::read(arm)?;
         match &self.server {
-            Some(server) => server.charge(self.ns_per_install),
+            Some(server) => {
+                server.charge(self.ns_per_install);
+                server.hold_kilobytes(1024);
+            }
             None => self.clock.charge_thread(self.ns_per_install),
         }
         let mut queries = Vec::new();

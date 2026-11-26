@@ -379,6 +379,44 @@ pub fn processes_cpu_ns(proc_root: &Path, pids: &[u32]) -> Result<u64, ProtocolE
     Ok(total_ns)
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessesMemory {
+    pub proportional_set_size_bytes: u64,
+    pub peak_resident_set_size_bytes: Option<u64>,
+}
+
+pub fn processes_memory(proc_root: &Path, pids: &[u32]) -> Result<ProcessesMemory, ProtocolError> {
+    let mut memory = ProcessesMemory::default();
+    for &pid in pids {
+        check_running(proc_root, pid)?;
+        let process = proc_root.join(pid.to_string());
+        memory.proportional_set_size_bytes +=
+            proc_file_bytes(pid, &process.join("smaps_rollup"), "Pss:")?;
+        if pids.len() == 1 {
+            memory.peak_resident_set_size_bytes =
+                Some(proc_file_bytes(pid, &process.join("status"), "VmHWM:")?);
+        }
+    }
+    Ok(memory)
+}
+
+fn proc_file_bytes(pid: u32, path: &Path, field: &str) -> Result<u64, ProtocolError> {
+    let text = std::fs::read_to_string(path).map_err(|_| ProtocolError::MissingProcess {
+        pid,
+        path: path.display().to_string(),
+    })?;
+    text.lines()
+        .find_map(|line| line.strip_prefix(field))
+        .and_then(|value| value.trim().strip_suffix("kB"))
+        .and_then(|kilobytes| kilobytes.trim().parse::<u64>().ok())
+        .map(|kilobytes| kilobytes * 1024)
+        .ok_or_else(|| ProtocolError::Parse {
+            what: path.display().to_string(),
+            message: format!("no {field} line in kB"),
+        })
+}
+
 /// What the harness reads CPU from, per engine accounting: the caller's
 /// clock for a `CallingThread` engine ([`OsCpuClock`], or a fake clock in
 /// tests), and a [`ProcessesCpuClock`] it builds itself over

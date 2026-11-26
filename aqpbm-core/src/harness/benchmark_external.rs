@@ -396,6 +396,9 @@ pub struct ReportRow {
     pub server_memory_after_bytes: Option<u64>,
     /// A `cgroup` server's `memory.peak` over the container's whole life.
     pub server_lifetime_peak_bytes: Option<u64>,
+    pub server_process_proportional_set_size_before_bytes: Option<u64>,
+    pub server_process_proportional_set_size_after_bytes: Option<u64>,
+    pub server_process_peak_resident_set_size_bytes: Option<u64>,
     pub installs_held: Option<u32>,
     /// View plus raw bytes the last install holds.
     pub stored_bytes_last_install: Option<u64>,
@@ -655,6 +658,9 @@ pub fn report(
             server_memory_before_bytes: None,
             server_memory_after_bytes: None,
             server_lifetime_peak_bytes: None,
+            server_process_proportional_set_size_before_bytes: None,
+            server_process_proportional_set_size_after_bytes: None,
+            server_process_peak_resident_set_size_bytes: None,
             installs_held: None,
             stored_bytes_last_install: None,
             no_truth: false,
@@ -920,6 +926,15 @@ fn fill_measurements(row: &mut ReportRow, result: &ArmResult) {
     row.server_lifetime_peak_bytes = result
         .server_memory_after
         .and_then(|memory| memory.lifetime_peak_bytes);
+    row.server_process_proportional_set_size_before_bytes = result
+        .server_process_memory_before
+        .map(|memory| memory.proportional_set_size_bytes);
+    row.server_process_proportional_set_size_after_bytes = result
+        .server_process_memory_after
+        .map(|memory| memory.proportional_set_size_bytes);
+    row.server_process_peak_resident_set_size_bytes = result
+        .server_process_memory_after
+        .and_then(|memory| memory.peak_resident_set_size_bytes);
     row.installs_held = Some(result.installs_held);
     row.stored_bytes_last_install =
         Some(result.footprint.view_bytes + result.footprint.raw_retained_bytes);
@@ -928,7 +943,7 @@ fn fill_measurements(row: &mut ReportRow, result: &ArmResult) {
 }
 
 /// The `summary.csv` header.
-pub const SUMMARY_CSV_HEADER: &str = "workload,engine,variant,status,cpu_accounting,ingest_cpu_ns_per_sample,query_cpu_ms_per_evaluation,engine_counter_cpu_ms_per_evaluation,server_cpu_ms_whole_arm,server_memory_before_bytes,server_memory_after_bytes,server_lifetime_peak_bytes,installs_held,stored_bytes_last_install,max_relative_error,median_relative_error,points,missing_points,extra_points,substitutions,sharing_lost";
+pub const SUMMARY_CSV_HEADER: &str = "workload,engine,variant,status,cpu_accounting,ingest_cpu_ns_per_sample,query_cpu_ms_per_evaluation,engine_counter_cpu_ms_per_evaluation,server_cpu_ms_whole_arm,server_memory_before_bytes,server_memory_after_bytes,server_lifetime_peak_bytes,server_process_proportional_set_size_before_bytes,server_process_proportional_set_size_after_bytes,server_process_peak_resident_set_size_bytes,installs_held,stored_bytes_last_install,max_relative_error,median_relative_error,points,missing_points,extra_points,substitutions,sharing_lost";
 
 pub const SCORES_CSV_HEADER: &str = "workload,engine,variant,query,score,max,median,points";
 
@@ -969,7 +984,7 @@ impl Report {
         let mut text = format!("{SUMMARY_CSV_HEADER}\n");
         for row in &self.rows {
             text.push_str(&format!(
-                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
                 csv_text(&row.workload),
                 csv_text(&row.engine),
                 csv_text(&row.variant),
@@ -982,6 +997,9 @@ impl Report {
                 field(row.server_memory_before_bytes),
                 field(row.server_memory_after_bytes),
                 field(row.server_lifetime_peak_bytes),
+                field(row.server_process_proportional_set_size_before_bytes),
+                field(row.server_process_proportional_set_size_after_bytes),
+                field(row.server_process_peak_resident_set_size_bytes),
                 field(row.installs_held),
                 field(row.stored_bytes_last_install),
                 error_fields(row.accuracy.as_ref()),
