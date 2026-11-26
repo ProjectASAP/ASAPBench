@@ -268,3 +268,35 @@ fn the_fake_engine_refuses_server_flags() {
     assert!(stderr.contains("--asapquery-backend-url"), "{stderr}");
     let _ = std::fs::remove_dir_all(run.parent().unwrap());
 }
+
+#[test]
+fn write_throughput_names_its_engines_and_needs_the_precompute_engine_url() {
+    let run = fixture("write-throughput");
+    let run_directory = run.to_str().unwrap();
+    let base = [
+        "benchmark-external",
+        "write-throughput",
+        "--run-directory",
+        run_directory,
+        "--workload",
+        "w1",
+        "--writers",
+        "2",
+        "--max-event-time-lead-ms",
+        "2000",
+        "--engine",
+    ];
+    let out = approxbench(&[&base[..], &["fake"]].concat());
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("asapquery-precompute-engine"), "{stderr}");
+
+    let out = approxbench(&[&base[..], &["asapquery-precompute-engine"]].concat());
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--asapquery-precompute-engine-url") && stderr.contains("--server-pid"),
+        "{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(run.parent().unwrap());
+}

@@ -52,6 +52,7 @@ aqpbm-usecase = { workspace = true, optional = true }
 anyhow.workspace = true
 clap = { workspace = true, optional = true }
 serde.workspace = true
+serde_norway.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 prost = "0.13"

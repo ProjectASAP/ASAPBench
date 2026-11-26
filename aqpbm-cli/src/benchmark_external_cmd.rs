@@ -8,18 +8,22 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Result};
 use aqpbm_core::harness::benchmark_external::{
-    report, run_engine, write_report, EngineRunSetup, ReportTruth,
+    read_workloads, report, run_engine, write_report, EngineRunSetup, ReportTruth,
 };
 use aqpbm_core::harness::cgroup::CgroupSource;
-use aqpbm_core::harness::engine::EngineUnderTest;
+use aqpbm_core::harness::engine::{ArmSpec, EngineUnderTest};
 use aqpbm_core::harness::fake::FakeEngine;
 use aqpbm_core::harness::protocol::{
     load_probe_for, MeasurementClocks, OsCpuClock, ProcessCpuFiles, Protocol,
 };
 use aqpbm_core::harness::run_directory::RunDirectory;
+use aqpbm_core::harness::write_throughput::{run_write_throughput, WriteLoad};
 use clap::{Parser, Subcommand};
 use system_bench::engines_external::asapquery_backend_server::{
     AsapqueryBackendEngine, AsapqueryBackendServer,
+};
+use system_bench::engines_external::asapquery_precompute_engine_server::{
+    AsapqueryPrecomputeEngine, AsapqueryPrecomputeEngineServer,
 };
 use system_bench::engines_external::clickhouse_server::{ClickHouseEngine, ClickHouseServer};
 use system_bench::engines_external::victoriametrics_server::{
@@ -28,6 +32,8 @@ use system_bench::engines_external::victoriametrics_server::{
 
 /// The engines this binary can run.
 pub const ENGINES: [&str; 4] = ["fake", "clickhouse", "victoriametrics", "asapquery-backend"];
+
+pub const WRITE_THROUGHPUT_ENGINES: [&str; 1] = ["asapquery-precompute-engine"];
 
 #[derive(Parser, Debug)]
 pub struct BenchmarkExternalArgs {
@@ -41,6 +47,10 @@ pub enum BenchmarkExternalCmd {
     Run(Box<RunArgs>),
     /// Join every engine run's cells into summary.csv, summary.md and accuracy.csv.
     Report(ReportArgs),
+    #[command(
+        about = "Load one engine through concurrent sample writers and append its acknowledged samples per second, CPU and memory to results/<engine>/write-throughput.jsonl"
+    )]
+    WriteThroughput(Box<WriteThroughputArgs>),
 }
 
 #[derive(Parser, Debug)]
@@ -104,6 +114,42 @@ pub struct RunArgs {
 }
 
 #[derive(Parser, Debug)]
+pub struct WriteThroughputArgs {
+    #[arg(long)]
+    pub run_directory: PathBuf,
+    #[arg(long)]
+    pub engine: String,
+    #[arg(long)]
+    pub workload: String,
+    #[arg(long, default_value = "write-only")]
+    pub arm: String,
+    #[arg(long)]
+    pub asapquery_precompute_engine_url: Option<String>,
+    #[arg(long)]
+    pub asapquery_precompute_engine_streaming_config: Option<PathBuf>,
+    #[arg(long = "server-pid")]
+    pub server_pids: Vec<u32>,
+    #[arg(long, default_value = "unreported")]
+    pub server_version: String,
+    #[arg(long, default_value_t = 60)]
+    pub request_timeout_seconds: u64,
+    #[arg(long)]
+    pub writers: usize,
+    #[arg(long, default_value_t = 2000)]
+    pub samples_per_request: usize,
+    #[arg(long)]
+    pub target_samples_per_second: Option<f64>,
+    #[arg(long)]
+    pub max_event_time_lead_ms: u64,
+    #[arg(long, default_value_t = 15)]
+    pub warmup_seconds: u64,
+    #[arg(long, default_value_t = 30)]
+    pub measure_seconds: u64,
+    #[arg(long, default_value_t = 10)]
+    pub stop_grace_seconds: u64,
+}
+
+#[derive(Parser, Debug)]
 pub struct ReportArgs {
     #[arg(long)]
     pub run_directory: PathBuf,
@@ -118,7 +164,63 @@ pub fn run(args: BenchmarkExternalArgs) -> Result<()> {
     match args.command {
         BenchmarkExternalCmd::Run(args) => run_engine_cmd(*args),
         BenchmarkExternalCmd::Report(args) => report_cmd(args),
+        BenchmarkExternalCmd::WriteThroughput(args) => write_throughput_cmd(*args),
     }
+}
+
+fn write_throughput_cmd(args: WriteThroughputArgs) -> Result<()> {
+    let engine: Box<dyn EngineUnderTest> = match args.engine.as_str() {
+        "asapquery-precompute-engine" => {
+            let (Some(url), Some(streaming_config), false) = (
+                args.asapquery_precompute_engine_url.clone(),
+                args.asapquery_precompute_engine_streaming_config.clone(),
+                args.server_pids.is_empty(),
+            ) else {
+                bail!("engine asapquery-precompute-engine needs --asapquery-precompute-engine-url, --asapquery-precompute-engine-streaming-config and --server-pid");
+            };
+            Box::new(AsapqueryPrecomputeEngine::new(
+                AsapqueryPrecomputeEngineServer {
+                    url,
+                    pids: args.server_pids.clone(),
+                    streaming_config,
+                    version: args.server_version.clone(),
+                    request_timeout: std::time::Duration::from_secs(args.request_timeout_seconds),
+                },
+            )?)
+        }
+        other => bail!(
+            "unknown engine '{other}' for write throughput; known engines: {}",
+            WRITE_THROUGHPUT_ENGINES.join(", ")
+        ),
+    };
+    let run_directory = RunDirectory::open(&args.run_directory)?;
+    let mut workloads = read_workloads(&run_directory)?;
+    let Some(workload) = workloads.remove(&args.workload) else {
+        bail!(
+            "no workload {} under workloads/; known workloads: {}",
+            args.workload,
+            workloads.keys().cloned().collect::<Vec<_>>().join(", ")
+        );
+    };
+    let arm = ArmSpec {
+        name: args.arm.clone(),
+        raw_data_retained: true,
+        engine_options: serde_json::json!({}),
+    };
+    let load = WriteLoad {
+        writers: args.writers,
+        samples_per_request: args.samples_per_request,
+        target_samples_per_second: args.target_samples_per_second,
+        max_event_time_lead_ms: args.max_event_time_lead_ms,
+        warmup_ms: args.warmup_seconds * 1_000,
+        measure_ms: args.measure_seconds * 1_000,
+        stop_grace_ms: args.stop_grace_seconds * 1_000,
+    };
+    let clocks = MeasurementClocks::with_calling_thread(&OsCpuClock);
+    let result = run_write_throughput(engine.as_ref(), &workload, &arm, &load, &clocks)?;
+    run_directory.append_write_throughput(&result)?;
+    println!("{}", serde_json::to_string(&result)?);
+    Ok(())
 }
 
 fn run_engine_cmd(args: RunArgs) -> Result<()> {
