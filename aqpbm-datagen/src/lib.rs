@@ -35,7 +35,8 @@ pub use rule::{RULE_MASK_ALL, RULE_MONOTONIC_INCREASE, RULE_NONE};
 pub use table::{splitmix64, GeneratedTable, TableDescription};
 pub use timeseries::{
     sample_offsets_ms, series_stream_seed, GeneratedTimeSeries, OwnedTimeSeriesSamples,
-    SeriesLabelSpec, TimeSeriesDescription, TimeSeriesSample, TimeSeriesSamples,
+    SeriesLabelSpec, SeriesRangeSamples, TimeSeriesDescription, TimeSeriesSample,
+    TimeSeriesSamples,
 };
 pub use value::{ColumnData, ColumnItem, StrCfg, StringOpts};
 
