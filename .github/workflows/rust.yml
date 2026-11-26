@@ -90,7 +90,7 @@ jobs:
       env:
         RUSTC_WRAPPER: sccache
 
-    - name: Check system-bench without default features
-      run: cargo check -p system-bench --no-default-features --all-targets --locked
+    - name: Lint system-bench without default features
+      run: cargo clippy -p system-bench --no-default-features --all-targets --locked -- -D warnings
       env:
         RUSTC_WRAPPER: sccache

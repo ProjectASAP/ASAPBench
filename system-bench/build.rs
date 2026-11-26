@@ -1,5 +1,8 @@
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
+    if std::env::var_os("CARGO_FEATURE_PLANEVAL").is_none() {
+        return;
+    }
     let manifest = std::fs::read_to_string("Cargo.toml").expect("reading Cargo.toml");
     let rev = manifest
         .lines()
