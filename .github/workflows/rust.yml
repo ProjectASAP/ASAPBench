@@ -89,3 +89,8 @@ jobs:
       run: cargo test -p system-bench --features planeval --locked
       env:
         RUSTC_WRAPPER: sccache
+
+    - name: Check system-bench without default features
+      run: cargo check -p system-bench --no-default-features --all-targets --locked
+      env:
+        RUSTC_WRAPPER: sccache
