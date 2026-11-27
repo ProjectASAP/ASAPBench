@@ -22,6 +22,7 @@ pub mod arm_run;
 pub mod benchmark_external;
 pub mod cgroup;
 pub mod conformance;
+pub mod cpu_frequency;
 pub mod data;
 pub mod data_stats;
 pub mod engine;

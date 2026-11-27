@@ -11,6 +11,7 @@ use aqpbm_core::harness::benchmark_external::{
     read_workloads, report, run_engine, write_report, EngineRunSetup, ReportTruth,
 };
 use aqpbm_core::harness::cgroup::CgroupSource;
+use aqpbm_core::harness::cpu_frequency::{governors, HeldGovernor, LINUX_CPU_ROOT};
 use aqpbm_core::harness::engine::{ArmSpec, EngineUnderTest};
 use aqpbm_core::harness::fake::FakeEngine;
 use aqpbm_core::harness::protocol::{
@@ -147,6 +148,8 @@ pub struct WriteThroughputArgs {
     pub measure_seconds: u64,
     #[arg(long, default_value_t = 10)]
     pub stop_grace_seconds: u64,
+    #[arg(long)]
+    pub cpu_frequency_governor: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -216,10 +219,27 @@ fn write_throughput_cmd(args: WriteThroughputArgs) -> Result<()> {
         measure_ms: args.measure_seconds * 1_000,
         stop_grace_ms: args.stop_grace_seconds * 1_000,
     };
+    let cpu_root = std::path::Path::new(LINUX_CPU_ROOT);
+    let held = args
+        .cpu_frequency_governor
+        .as_deref()
+        .map(|governor| HeldGovernor::hold(cpu_root, governor))
+        .transpose()?;
+    if let Some(held) = &held {
+        held.restore_on_interrupt_or_panic();
+    }
+    let in_effect = governors(cpu_root).unwrap_or_default();
     let clocks = MeasurementClocks::with_calling_thread(&OsCpuClock);
-    let result = run_write_throughput(engine.as_ref(), &workload, &arm, &load, &clocks)?;
+    let measured = run_write_throughput(engine.as_ref(), &workload, &arm, &load, &clocks);
+    let restored = held.map_or(Ok(()), HeldGovernor::restore);
+    if let (Err(error), Err(_)) = (&restored, &measured) {
+        eprintln!("restoring the CPU frequency governor: {error}");
+    }
+    let mut result = measured?;
+    result.cpu_frequency_governors = in_effect;
     run_directory.append_write_throughput(&result)?;
     println!("{}", serde_json::to_string(&result)?);
+    restored?;
     Ok(())
 }
 
