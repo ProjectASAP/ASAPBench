@@ -591,7 +591,7 @@ fn parse_float(text: &str) -> Option<f64> {
 /// The server's HTTP interface. A statement is the `query` parameter; an
 /// insert's rows are the body.
 #[derive(Clone)]
-struct Http {
+pub(crate) struct Http {
     agent: ureq::Agent,
     url: String,
     /// `max_execution_time` of every statement, in whole seconds.
@@ -602,7 +602,7 @@ struct Http {
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl Http {
-    fn new(url: &str, statement_timeout: Duration) -> Http {
+    pub(crate) fn new(url: &str, statement_timeout: Duration) -> Http {
         Http {
             // The client waits a little longer than the server lets a
             // statement run, so the server's own timeout error arrives.
@@ -624,6 +624,20 @@ impl Http {
         params: &[(&str, &str)],
         insert_rows: Option<&str>,
     ) -> Result<(String, u64), EngineError> {
+        let (text, summary) = self.run_with_summary(sql, params, insert_rows)?;
+        let read_bytes = summary
+            .get("read_bytes")
+            .and_then(|bytes| bytes.as_str()?.parse().ok())
+            .unwrap_or(0);
+        Ok((text, read_bytes))
+    }
+
+    pub(crate) fn run_with_summary(
+        &self,
+        sql: &str,
+        params: &[(&str, &str)],
+        insert_rows: Option<&str>,
+    ) -> Result<(String, serde_json::Value), EngineError> {
         // `wait_end_of_query`: the status and the summary header come after
         // the statement ends, so an error raised mid-answer is a status
         // error and `read_bytes` is complete.
@@ -649,16 +663,15 @@ impl Http {
                         text.trim_end()
                     )));
                 }
-                let read_bytes = response
+                let summary = response
                     .header("X-ClickHouse-Summary")
                     .and_then(|summary| serde_json::from_str::<serde_json::Value>(summary).ok())
-                    .and_then(|summary| summary.get("read_bytes")?.as_str()?.parse().ok())
-                    .unwrap_or(0);
+                    .unwrap_or(serde_json::Value::Null);
                 // `into_string` stops at 10 MB; an answer may be larger.
                 let mut text = String::new();
                 std::io::Read::read_to_string(&mut response.into_reader(), &mut text)
                     .map_err(|error| EngineError(format!("reading the answer: {error}")))?;
-                Ok((text, read_bytes))
+                Ok((text, summary))
             }
             Err(ureq::Error::Status(code, response)) => {
                 let text = response.into_string().unwrap_or_default();

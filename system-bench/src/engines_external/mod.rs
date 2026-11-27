@@ -16,6 +16,7 @@
 pub mod asapquery_backend_server;
 pub mod asapquery_precompute_engine_server;
 pub mod clickhouse;
+pub mod clickhouse_query_text;
 pub mod clickhouse_server;
 pub mod duckdb_command_line;
 pub mod plan_file;
