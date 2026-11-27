@@ -7,7 +7,11 @@ repository.workspace = true
 description = "System level: runs ASAPPlanner's plans on its executor (feature planeval), translates ASAPPlanner plan files for external engines, and writes a spec's samples to time series systems and asks them its queries."
 
 [features]
+default = ["systemeval"]
+systemeval = ["dep:aqpbm-usecase", "dep:clap"]
 planeval = [
+    "dep:aqpbm-usecase",
+    "dep:clap",
     "dep:asap-planner",
     "dep:asap-executor",
     "dep:asap-types",
@@ -25,6 +29,7 @@ required-features = ["planeval"]
 [[bin]]
 name = "systemeval"
 path = "src/bin/systemeval.rs"
+required-features = ["systemeval"]
 
 [[test]]
 name = "uc1"
@@ -43,9 +48,9 @@ asap_sketchlib = { workspace = true, optional = true }
 futures = { version = "0.3", optional = true }
 tokio = { version = "1", features = ["rt", "macros"], optional = true }
 aqpbm-core.workspace = true
-aqpbm-usecase.workspace = true
+aqpbm-usecase = { workspace = true, optional = true }
 anyhow.workspace = true
-clap.workspace = true
+clap = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
