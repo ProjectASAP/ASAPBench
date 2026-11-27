@@ -220,6 +220,8 @@ pub struct TableRecord {
 #[serde(deny_unknown_fields)]
 pub struct QueryRecord {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub group_by_column_positions: Vec<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sql: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -390,6 +392,7 @@ pub fn run_one_shot_queries(
         let Some(sql) = query.sql_for(dialect) else {
             queries.push(QueryRecord {
                 id: query.id.clone(),
+                group_by_column_positions: query.group_by_column_positions.clone(),
                 sql: None,
                 skipped: Some(format!("no SQL text for {dialect:?}")),
                 runs: Vec::new(),
@@ -465,6 +468,7 @@ pub fn run_one_shot_queries(
         ));
         queries.push(QueryRecord {
             id: query.id.clone(),
+            group_by_column_positions: query.group_by_column_positions.clone(),
             sql: Some(sql.to_string()),
             skipped: None,
             runs,
