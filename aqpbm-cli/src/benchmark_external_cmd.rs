@@ -14,6 +14,12 @@ use aqpbm_core::harness::cgroup::CgroupSource;
 use aqpbm_core::harness::cpu_frequency::{governors, HeldGovernor, LINUX_CPU_ROOT};
 use aqpbm_core::harness::engine::{ArmSpec, EngineUnderTest};
 use aqpbm_core::harness::fake::FakeEngine;
+use aqpbm_core::harness::one_shot::{
+    run_one_shot_queries, OneShotQueryEngine, OneShotSchedule, OneShotSetup, LINUX_DROP_CACHES,
+};
+use aqpbm_core::harness::one_shot_report::{
+    one_shot_report, write_one_shot_report, ConfigurationName,
+};
 use aqpbm_core::harness::protocol::{
     load_probe_for, MeasurementClocks, OsCpuClock, ProcessCpuFiles, Protocol,
 };
@@ -26,7 +32,12 @@ use system_bench::engines_external::asapquery_backend_server::{
 use system_bench::engines_external::asapquery_precompute_engine_server::{
     AsapqueryPrecomputeEngine, AsapqueryPrecomputeEngineServer,
 };
+use system_bench::engines_external::clickhouse_query_text::{
+    ClickHouseQueryTextEngine, ClickHouseQueryTextServer,
+};
 use system_bench::engines_external::clickhouse_server::{ClickHouseEngine, ClickHouseServer};
+use system_bench::engines_external::duckdb_command_line::{DuckDbCommandLine, DuckDbEngine};
+use system_bench::engines_external::pilotdb::{PilotDbEngine, PilotDbOnDuckDb};
 use system_bench::engines_external::victoriametrics_server::{
     VictoriaMetricsEngine, VictoriaMetricsServer,
 };
@@ -35,6 +46,8 @@ use system_bench::engines_external::victoriametrics_server::{
 pub const ENGINES: [&str; 4] = ["fake", "clickhouse", "victoriametrics", "asapquery-backend"];
 
 pub const WRITE_THROUGHPUT_ENGINES: [&str; 1] = ["asapquery-precompute-engine"];
+
+pub const ONE_SHOT_ENGINES: [&str; 3] = ["duckdb", "clickhouse", "pilotdb"];
 
 #[derive(Parser, Debug)]
 pub struct BenchmarkExternalArgs {
@@ -52,6 +65,14 @@ pub enum BenchmarkExternalCmd {
         about = "Load one engine through concurrent sample writers and append its acknowledged samples per second, CPU and memory to results/<engine>/write-throughput.jsonl"
     )]
     WriteThroughput(Box<WriteThroughputArgs>),
+    #[command(
+        about = "Run a workload's one-shot queries on one engine configuration and write results/<engine>/<workload>__<configuration>.one-shot.json"
+    )]
+    OneShotQueries(Box<OneShotQueriesArgs>),
+    #[command(
+        about = "Join the one-shot results into one-shot-summary.csv, one-shot-summary.md and one-shot-tables.csv"
+    )]
+    OneShotReport(OneShotReportArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -153,6 +174,70 @@ pub struct WriteThroughputArgs {
 }
 
 #[derive(Parser, Debug)]
+pub struct OneShotQueriesArgs {
+    #[arg(long)]
+    pub run_directory: PathBuf,
+    #[arg(long)]
+    pub engine: String,
+    #[arg(long)]
+    pub workload: String,
+    #[arg(long)]
+    pub configuration: String,
+    #[arg(long = "query")]
+    pub queries: Vec<String>,
+    #[arg(long, default_value_t = 3)]
+    pub runs: u32,
+    #[arg(long)]
+    pub cold_first_run: bool,
+    #[arg(long, default_value = LINUX_DROP_CACHES)]
+    pub drop_caches_file: PathBuf,
+    #[arg(long)]
+    pub data_directory: Option<PathBuf>,
+    #[arg(long, default_value = "duckdb")]
+    pub duckdb_program: PathBuf,
+    #[arg(long)]
+    pub duckdb_database: Option<PathBuf>,
+    #[arg(long)]
+    pub duckdb_threads: Option<u32>,
+    #[arg(long)]
+    pub duckdb_storage_version: Option<String>,
+    #[arg(long)]
+    pub clickhouse_url: Option<String>,
+    #[arg(long, default_value = "default")]
+    pub clickhouse_database: String,
+    #[arg(long)]
+    pub clickhouse_max_threads: Option<u32>,
+    #[arg(long, default_value_t = 600)]
+    pub clickhouse_statement_timeout_seconds: u64,
+    #[arg(long)]
+    pub clickhouse_restart_command: Option<String>,
+    #[arg(long, default_value_t = 120)]
+    pub clickhouse_ready_timeout_seconds: u64,
+    #[arg(long, default_value_t = 3600)]
+    pub clickhouse_idle_timeout_seconds: u64,
+    #[arg(long = "clickhouse-setting", value_parser = parse_setting)]
+    pub clickhouse_settings: Vec<(String, String)>,
+    #[arg(long, default_value = "python3")]
+    pub pilotdb_python: PathBuf,
+    #[arg(long, default_value_t = 0.05)]
+    pub pilotdb_relative_error: f64,
+    #[arg(long, default_value_t = 0.05)]
+    pub pilotdb_failure_probability: f64,
+    #[arg(long)]
+    pub cpu_frequency_governor: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+pub struct OneShotReportArgs {
+    #[arg(long)]
+    pub run_directory: PathBuf,
+    #[arg(long)]
+    pub truth: Option<String>,
+    #[arg(long = "baseline")]
+    pub baselines: Vec<String>,
+}
+
+#[derive(Parser, Debug)]
 pub struct ReportArgs {
     #[arg(long)]
     pub run_directory: PathBuf,
@@ -168,7 +253,132 @@ pub fn run(args: BenchmarkExternalArgs) -> Result<()> {
         BenchmarkExternalCmd::Run(args) => run_engine_cmd(*args),
         BenchmarkExternalCmd::Report(args) => report_cmd(args),
         BenchmarkExternalCmd::WriteThroughput(args) => write_throughput_cmd(*args),
+        BenchmarkExternalCmd::OneShotQueries(args) => one_shot_queries_cmd(*args),
+        BenchmarkExternalCmd::OneShotReport(args) => one_shot_report_cmd(args),
     }
+}
+
+fn parse_setting(text: &str) -> Result<(String, String), String> {
+    match text.split_once('=') {
+        Some((name, value)) if !name.is_empty() => Ok((name.to_string(), value.to_string())),
+        _ => Err(format!("'{text}' is not name=value")),
+    }
+}
+
+fn one_shot_engine(args: &OneShotQueriesArgs) -> Result<Box<dyn OneShotQueryEngine>> {
+    let duckdb_database = || {
+        args.duckdb_database
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("engine {} needs --duckdb-database", args.engine))
+    };
+    Ok(match args.engine.as_str() {
+        "duckdb" => Box::new(DuckDbEngine::new(DuckDbCommandLine {
+            program: args.duckdb_program.clone(),
+            database: duckdb_database()?,
+            threads: args.duckdb_threads,
+            storage_version: args.duckdb_storage_version.clone(),
+        })?),
+        "clickhouse" => {
+            let Some(url) = args.clickhouse_url.clone() else {
+                bail!("engine clickhouse needs --clickhouse-url");
+            };
+            Box::new(ClickHouseQueryTextEngine::new(ClickHouseQueryTextServer {
+                url,
+                database: args.clickhouse_database.clone(),
+                max_threads: args.clickhouse_max_threads,
+                statement_timeout: std::time::Duration::from_secs(
+                    args.clickhouse_statement_timeout_seconds,
+                ),
+                restart_command: args.clickhouse_restart_command.clone(),
+                ready_timeout: std::time::Duration::from_secs(
+                    args.clickhouse_ready_timeout_seconds,
+                ),
+                idle_timeout: std::time::Duration::from_secs(args.clickhouse_idle_timeout_seconds),
+                settings: args.clickhouse_settings.clone(),
+            })?)
+        }
+        "pilotdb" => Box::new(PilotDbEngine::new(PilotDbOnDuckDb {
+            python: args.pilotdb_python.clone(),
+            database: duckdb_database()?,
+            relative_error: args.pilotdb_relative_error,
+            failure_probability: args.pilotdb_failure_probability,
+            threads: args.duckdb_threads,
+            scratch_directory: std::env::temp_dir(),
+        })?),
+        other => bail!(
+            "unknown engine '{other}' for one-shot queries; known engines: {}",
+            ONE_SHOT_ENGINES.join(", ")
+        ),
+    })
+}
+
+fn one_shot_queries_cmd(args: OneShotQueriesArgs) -> Result<()> {
+    let run_directory = RunDirectory::open(&args.run_directory)?;
+    let mut workloads = read_workloads(&run_directory)?;
+    let Some(workload) = workloads.remove(&args.workload) else {
+        bail!(
+            "no workload {} under workloads/; known workloads: {}",
+            args.workload,
+            workloads.keys().cloned().collect::<Vec<_>>().join(", ")
+        );
+    };
+    let mut engine = one_shot_engine(&args)?;
+    let schedule = OneShotSchedule {
+        runs: args.runs,
+        cold_first_run: args.cold_first_run,
+        queries: args.queries.clone(),
+    };
+    let setup = OneShotSetup {
+        configuration: &args.configuration,
+        schedule: &schedule,
+        data_directory: args.data_directory.as_deref(),
+        drop_caches: &args.drop_caches_file,
+    };
+    let cpu_root = std::path::Path::new(LINUX_CPU_ROOT);
+    let held = args
+        .cpu_frequency_governor
+        .as_deref()
+        .map(|governor| HeldGovernor::hold(cpu_root, governor))
+        .transpose()?;
+    if let Some(held) = &held {
+        held.restore_on_interrupt_or_panic();
+    }
+    let in_effect = governors(cpu_root).unwrap_or_default();
+    let measured = run_one_shot_queries(engine.as_mut(), &workload, &setup, &mut |line| {
+        eprintln!("{line}")
+    });
+    let restored = held.map_or(Ok(()), HeldGovernor::restore);
+    if let (Err(error), Err(_)) = (&restored, &measured) {
+        eprintln!("restoring the CPU frequency governor: {error}");
+    }
+    let mut result = measured?;
+    result.cpu_frequency_governors = in_effect;
+    let path = run_directory.write_one_shot(&result)?;
+    println!("{}", path.display());
+    restored?;
+    Ok(())
+}
+
+fn one_shot_report_cmd(args: OneShotReportArgs) -> Result<()> {
+    let run_directory = RunDirectory::open(&args.run_directory)?;
+    let results = run_directory.read_one_shot_results()?;
+    let truth = args
+        .truth
+        .as_deref()
+        .map(ConfigurationName::parse)
+        .transpose()
+        .map_err(anyhow::Error::msg)?;
+    let baselines = args
+        .baselines
+        .iter()
+        .map(|baseline| ConfigurationName::parse(baseline))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(anyhow::Error::msg)?;
+    let report =
+        one_shot_report(&results, truth.as_ref(), &baselines).map_err(anyhow::Error::msg)?;
+    write_one_shot_report(run_directory.path(), &report)?;
+    print!("{}", report.summary_markdown());
+    Ok(())
 }
 
 fn write_throughput_cmd(args: WriteThroughputArgs) -> Result<()> {
