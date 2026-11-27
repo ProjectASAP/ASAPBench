@@ -16,6 +16,7 @@ fn workload(name: &str) -> WorkloadSpec {
             texts: vec![QueryText {
                 language: QueryLanguage::PromQl,
                 text: "sum_over_time(m[10s])".into(),
+                dialect: None,
             }],
             window_ms: 10_000,
             evaluation_interval_ms: 10_000,
@@ -42,6 +43,8 @@ fn workload(name: &str) -> WorkloadSpec {
                 seed: 1,
             },
         }],
+        tables: Vec::new(),
+        one_shot_queries: Vec::new(),
     }
 }
 

@@ -183,6 +183,7 @@ fn workload_of(plan: &str, interval_ms: u64, start_ms: i64) -> WorkloadSpec {
                 texts: vec![QueryText {
                     language: QueryLanguage::PromQl,
                     text: text.clone(),
+                    dialect: None,
                 }],
                 window_ms: 60_000,
                 evaluation_interval_ms: interval_ms,
@@ -190,6 +191,8 @@ fn workload_of(plan: &str, interval_ms: u64, start_ms: i64) -> WorkloadSpec {
             })
             .collect(),
         data: vec![data_record(start_ms)],
+        tables: Vec::new(),
+        one_shot_queries: Vec::new(),
     }
 }
 
@@ -297,6 +300,7 @@ fn install_maps_queries_by_index_and_text() {
         QueryText {
             language: QueryLanguage::Sql,
             text: "SELECT 1".into(),
+            dialect: None,
         },
     );
     assert!(engine
@@ -734,12 +738,15 @@ fn only_a_bare_selector_keeps_the_metric_name() {
             texts: vec![QueryText {
                 language: QueryLanguage::PromQl,
                 text: "data".into(),
+                dialect: None,
             }],
             window_ms: 60_000,
             evaluation_interval_ms: 60_000,
             truth: None,
         }],
         data: vec![data_record(0)],
+        tables: Vec::new(),
+        one_shot_queries: Vec::new(),
     };
     let mut selector_arm = arm("sum_over_time_1h_stored_sum");
     selector_arm.engine_options = json!({ "plan_file": path });

@@ -11,6 +11,7 @@ fn query(id: &str, window_ms: u64, evaluation_interval_ms: u64) -> WorkloadQuery
         texts: vec![QueryText {
             language: QueryLanguage::PromQl,
             text: format!("sum_over_time(m[{window_ms}ms])"),
+            dialect: None,
         }],
         window_ms,
         evaluation_interval_ms,
@@ -43,6 +44,8 @@ fn workload(queries: Vec<WorkloadQuery>, start_ms: i64, duration_ms: u64) -> Wor
                 seed: 1,
             },
         }],
+        tables: Vec::new(),
+        one_shot_queries: Vec::new(),
     }
 }
 

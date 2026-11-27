@@ -116,6 +116,7 @@ fn workload() -> WorkloadSpec {
                 texts: vec![QueryText {
                     language: QueryLanguage::PromQl,
                     text: text.into(),
+                    dialect: None,
                 }],
                 window_ms: 60_000,
                 evaluation_interval_ms: 60_000,
@@ -143,6 +144,8 @@ fn workload() -> WorkloadSpec {
                 seed: 1,
             },
         }],
+        tables: Vec::new(),
+        one_shot_queries: Vec::new(),
     }
 }
 

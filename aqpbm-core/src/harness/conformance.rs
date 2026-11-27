@@ -442,6 +442,7 @@ pub fn probe_workloads() -> Vec<WorkloadSpec> {
                 QueryText {
                     language: QueryLanguage::PromQl,
                     text: format!("{promql_function}(probe[10s])"),
+                    dialect: None,
                 },
                 QueryText {
                     language: QueryLanguage::Sql,
@@ -449,6 +450,7 @@ pub fn probe_workloads() -> Vec<WorkloadSpec> {
                         "SELECT instance, {sql_aggregate} FROM probe \
                              WHERE ts_ms > $t - 10000 AND ts_ms <= $t GROUP BY instance"
                     ),
+                    dialect: None,
                 },
             ],
             window_ms: PROBE_STEP_MS,
@@ -456,6 +458,8 @@ pub fn probe_workloads() -> Vec<WorkloadSpec> {
             truth: None,
         }],
         data: vec![data.clone()],
+        tables: Vec::new(),
+        one_shot_queries: Vec::new(),
     })
     .collect()
 }

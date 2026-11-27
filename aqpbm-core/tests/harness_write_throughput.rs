@@ -63,6 +63,8 @@ fn workload(series: u64, duration_ms: u64) -> WorkloadSpec {
                 seed: 1,
             },
         }],
+        tables: Vec::new(),
+        one_shot_queries: Vec::new(),
     }
 }
 
