@@ -126,6 +126,7 @@ dependencies = [
  "aqpbm-datagen",
  "bitflags",
  "chrono",
+ "csv",
  "hdrhistogram",
  "libc",
  "rand 0.9.4",
