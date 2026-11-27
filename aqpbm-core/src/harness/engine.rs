@@ -81,6 +81,69 @@ pub struct WorkloadSpec {
     pub name: String,
     pub queries: Vec<WorkloadQuery>,
     pub data: Vec<DataRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tables: Vec<TableSource>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub one_shot_queries: Vec<OneShotQuery>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TableSource {
+    pub name: String,
+    pub file_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    pub rows: u64,
+    pub load_statements: Vec<LoadStatements>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoadStatements {
+    pub dialect: SqlDialect,
+    pub statements: Vec<String>,
+}
+
+impl TableSource {
+    pub fn statements_for(
+        &self,
+        dialect: SqlDialect,
+        file: &std::path::Path,
+    ) -> Option<Vec<String>> {
+        let file = file.to_string_lossy();
+        self.load_statements
+            .iter()
+            .find(|load| load.dialect == dialect)
+            .map(|load| {
+                load.statements
+                    .iter()
+                    .map(|statement| statement.replace("{file}", &file))
+                    .collect()
+            })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OneShotQuery {
+    pub id: String,
+    pub texts: Vec<QueryText>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub group_by_column_positions: Vec<usize>,
+}
+
+impl OneShotQuery {
+    pub fn sql_for(&self, dialect: SqlDialect) -> Option<&str> {
+        let sql = |wanted: Option<SqlDialect>| {
+            self.texts
+                .iter()
+                .find(|text| text.language == QueryLanguage::Sql && text.dialect == wanted)
+        };
+        sql(Some(dialect))
+            .or_else(|| sql(None))
+            .map(|text| text.text.as_str())
+    }
 }
 
 /// One recurring query: evaluated every `evaluation_interval_ms` over the
@@ -102,6 +165,15 @@ pub struct WorkloadQuery {
 pub struct QueryText {
     pub language: QueryLanguage,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dialect: Option<SqlDialect>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum SqlDialect {
+    ClickHouse,
+    DuckDb,
+    PostgreSql,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

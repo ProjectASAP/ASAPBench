@@ -46,6 +46,7 @@ serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
 schemars = { workspace = true, optional = true }
 chrono.workspace = true
+csv.workspace = true
 thiserror.workspace = true
 tikv-jemalloc-ctl = { workspace = true, optional = true }
 

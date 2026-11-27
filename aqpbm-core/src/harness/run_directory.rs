@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 
 use crate::harness::data::DataRecord;
+use crate::harness::one_shot::OneShotResult;
 use crate::harness::protocol::{JobMark, JobRecord};
 use crate::harness::records::{ArmResult, RunRecord};
 use crate::harness::write_throughput::WriteThroughputResult;
@@ -119,6 +120,50 @@ impl RunDirectory {
         let path = dir.join(format!("{}__{}.json", result.workload, result.arm));
         write_json(&path, result)?;
         Ok(path)
+    }
+
+    pub fn write_one_shot(&self, result: &OneShotResult) -> Result<PathBuf, RunDirectoryError> {
+        check_result_name("engine", &result.engine.id, false)?;
+        check_result_name("workload", &result.workload, true)?;
+        check_result_name("configuration", &result.configuration, true)?;
+        let dir = self.path.join("results").join(&result.engine.id);
+        std::fs::create_dir_all(&dir).map_err(|source| io(&dir, source))?;
+        let path = dir.join(format!(
+            "{}__{}{ONE_SHOT_SUFFIX}",
+            result.workload, result.configuration
+        ));
+        write_json(&path, result)?;
+        Ok(path)
+    }
+
+    pub fn read_one_shot_results(&self) -> Result<Vec<OneShotResult>, RunDirectoryError> {
+        let results = self.path.join("results");
+        let mut paths = Vec::new();
+        for engine in std::fs::read_dir(&results).map_err(|source| io(&results, source))? {
+            let engine = engine.map_err(|source| io(&results, source))?.path();
+            if !engine.is_dir() {
+                continue;
+            }
+            for file in std::fs::read_dir(&engine).map_err(|source| io(&engine, source))? {
+                let file = file.map_err(|source| io(&engine, source))?.path();
+                if file
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(ONE_SHOT_SUFFIX))
+                {
+                    paths.push(file);
+                }
+            }
+        }
+        paths.sort();
+        paths
+            .into_iter()
+            .map(|path| {
+                let text = std::fs::read_to_string(&path).map_err(|source| io(&path, source))?;
+                serde_json::from_str(&text)
+                    .map_err(|source| RunDirectoryError::Json { path, source })
+            })
+            .collect()
     }
 
     pub fn append_write_throughput(
@@ -241,6 +286,8 @@ fn io(path: &Path, source: std::io::Error) -> RunDirectoryError {
         source,
     }
 }
+
+const ONE_SHOT_SUFFIX: &str = ".one-shot.json";
 
 /// Writes `value` as pretty JSON with a final newline to a new file; an
 /// existing file is refused (`create_new`), so a result is never overwritten.

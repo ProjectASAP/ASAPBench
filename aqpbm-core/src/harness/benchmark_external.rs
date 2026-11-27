@@ -494,7 +494,7 @@ pub fn relative_error(answer: f64, truth: f64) -> f64 {
 }
 
 /// The middle value; the mean of the two middle values for an even count.
-fn median_of(values: &[f64]) -> Option<f64> {
+pub(crate) fn median_of(values: &[f64]) -> Option<f64> {
     if values.is_empty() {
         return None;
     }

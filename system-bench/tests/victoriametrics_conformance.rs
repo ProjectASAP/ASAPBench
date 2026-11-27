@@ -90,6 +90,7 @@ fn workload(plan: &Value, interval_ms: u64) -> WorkloadSpec {
                 texts: vec![QueryText {
                     language: QueryLanguage::PromQl,
                     text: text.clone(),
+                    dialect: None,
                 }],
                 window_ms: 60_000,
                 evaluation_interval_ms: interval_ms,
@@ -97,6 +98,8 @@ fn workload(plan: &Value, interval_ms: u64) -> WorkloadSpec {
             })
             .collect(),
         data: vec![],
+        tables: Vec::new(),
+        one_shot_queries: Vec::new(),
     }
 }
 

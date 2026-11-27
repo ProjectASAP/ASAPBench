@@ -31,6 +31,8 @@ pub mod fake;
 pub mod fit;
 pub mod gate;
 pub mod machine;
+pub mod one_shot;
+pub mod one_shot_report;
 pub mod protocol;
 pub mod records;
 pub mod run_directory;

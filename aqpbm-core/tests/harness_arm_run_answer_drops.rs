@@ -152,6 +152,8 @@ fn workload() -> WorkloadSpec {
                 seed: 1,
             },
         }],
+        tables: Vec::new(),
+        one_shot_queries: Vec::new(),
     }
 }
 
