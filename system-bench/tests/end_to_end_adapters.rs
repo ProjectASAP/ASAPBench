@@ -14,6 +14,9 @@ use serde_json::json;
 use system_bench::engines_external::asapquery_backend_server::{
     AsapqueryBackendEngine, AsapqueryBackendServer,
 };
+use system_bench::engines_external::asapquery_precompute_engine_server::{
+    AsapqueryPrecomputeEngine, AsapqueryPrecomputeEngineServer,
+};
 use system_bench::engines_external::victoriametrics_server::{
     VictoriaMetricsEngine, VictoriaMetricsServer,
 };
@@ -344,4 +347,134 @@ fn victoriametrics_without_a_plan_writes_the_samples_and_asks_the_query_text() {
         .iter()
         .any(|r| r.target.starts_with("/api/v1/query?") && r.target.contains("nocache=1")));
     assert!(requests.iter().any(|r| r.target == "/internal/force_flush"));
+}
+
+fn streaming_config(test: &str, metric: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "system-bench-precompute-engine-{}-{test}.yaml",
+        std::process::id()
+    ));
+    std::fs::write(
+        &path,
+        format!(
+            "aggregations:\n- aggregationId: 1\n  aggregationType: DatasketchesKLL\n  \
+             metric: {metric}\n  windowType: tumbling\nmetrics:\n  {metric}: [job]\n"
+        ),
+    )
+    .unwrap();
+    path
+}
+
+fn precompute_engine_server(
+    url: &str,
+    streaming_config: std::path::PathBuf,
+) -> AsapqueryPrecomputeEngineServer {
+    AsapqueryPrecomputeEngineServer {
+        url: url.into(),
+        pids: vec![std::process::id()],
+        streaming_config,
+        version: "test".into(),
+        request_timeout: Duration::from_secs(10),
+    }
+}
+
+fn precompute_engine(url: &str, test: &str) -> AsapqueryPrecomputeEngine {
+    let config = streaming_config(test, "m");
+    let engine = AsapqueryPrecomputeEngine::new(precompute_engine_server(url, config.clone()));
+    let _ = std::fs::remove_file(config);
+    engine.unwrap()
+}
+
+fn workload_without_queries() -> WorkloadSpec {
+    WorkloadSpec {
+        queries: Vec::new(),
+        ..workload()
+    }
+}
+
+#[test]
+fn asapquery_precompute_engine_writes_through_each_sample_writer() {
+    let (url, seen) = recording_server();
+    let engine = precompute_engine(&url, "writes");
+    assert_eq!(
+        engine.cpu_accounting(),
+        aqpbm_core::harness::engine::CpuAccounting::Processes(vec![std::process::id()])
+    );
+    let mut arm = engine
+        .install(&workload_without_queries(), &query_text_arm())
+        .unwrap();
+    let mut writers = arm.sample_writers(2).unwrap();
+    assert_eq!(writers.len(), 2);
+    let samples = chunk().samples;
+    let busy = writers[0].write(&samples[..1]).unwrap_err();
+    assert!(busy.0.contains("busy"), "{busy}");
+    seen.lock().unwrap().clear();
+    writers[0].write(&samples[..100]).unwrap();
+    writers[1].write(&samples[100..300]).unwrap();
+    let requests = seen.lock().unwrap();
+    let writes: Vec<&Request> = requests
+        .iter()
+        .filter(|r| r.method == "POST" && r.target == "/api/v1/write")
+        .collect();
+    assert_eq!(writes.len(), 2);
+    assert_eq!(written_samples(&requests), 300);
+    assert_eq!(engine.description().version, "test");
+}
+
+#[test]
+fn asapquery_precompute_engine_answers_no_queries() {
+    let (url, _) = recording_server();
+    let engine = precompute_engine(&url, "no-queries");
+    let error = engine
+        .install(&workload(), &query_text_arm())
+        .err()
+        .unwrap();
+    assert!(error.0.contains("answers no queries"), "{error}");
+    let mut arm = engine
+        .install(&workload_without_queries(), &query_text_arm())
+        .unwrap();
+    assert!(arm.evaluate(60_000).is_err());
+    let plan_arm = ArmSpec {
+        engine_options: json!({"plan_file": "plan.json"}),
+        ..query_text_arm()
+    };
+    assert!(engine
+        .install(&workload_without_queries(), &plan_arm)
+        .is_err());
+}
+
+#[test]
+fn asapquery_precompute_engine_needs_a_pid_and_a_listening_server() {
+    let (url, _) = recording_server();
+    let config = streaming_config("checks", "m");
+    let no_pid = AsapqueryPrecomputeEngine::new(AsapqueryPrecomputeEngineServer {
+        pids: Vec::new(),
+        ..precompute_engine_server(&url, config.clone())
+    });
+    assert!(no_pid.is_err());
+    let unused = TcpListener::bind("127.0.0.1:0").unwrap();
+    let closed = format!("http://{}", unused.local_addr().unwrap());
+    drop(unused);
+    let refused = AsapqueryPrecomputeEngine::new(precompute_engine_server(&closed, config.clone()));
+    assert!(refused.is_err());
+    let _ = std::fs::remove_file(config);
+    let missing = AsapqueryPrecomputeEngine::new(precompute_engine_server(
+        &url,
+        std::env::temp_dir().join("system-bench-no-such-streaming-config.yaml"),
+    ));
+    assert!(missing.is_err());
+}
+
+#[test]
+fn asapquery_precompute_engine_refuses_a_metric_its_streaming_config_does_not_aggregate() {
+    let (url, _) = recording_server();
+    let config = streaming_config("other-metric", "other_metric");
+    let engine =
+        AsapqueryPrecomputeEngine::new(precompute_engine_server(&url, config.clone())).unwrap();
+    let _ = std::fs::remove_file(config);
+    let error = engine
+        .install(&workload_without_queries(), &query_text_arm())
+        .err()
+        .unwrap();
+    assert!(error.0.contains("no aggregation"), "{error}");
 }

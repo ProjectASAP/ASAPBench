@@ -1,4 +1,5 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -46,10 +47,17 @@ pub enum Sent {
     Busy,
 }
 
+pub fn write_url(base: &str) -> String {
+    format!("{base}/api/v1/write")
+}
+
 pub fn send(agent: &ureq::Agent, base: &str, body: &[u8]) -> Result<Sent> {
-    let url = format!("{base}/api/v1/write");
+    send_to(agent, &write_url(base), body)
+}
+
+pub fn send_to(agent: &ureq::Agent, url: &str, body: &[u8]) -> Result<Sent> {
     let response = agent
-        .post(&url)
+        .post(url)
         .set("Content-Encoding", "snappy")
         .set("Content-Type", "application/x-protobuf")
         .set("X-Prometheus-Remote-Write-Version", "0.1.0")
@@ -96,5 +104,67 @@ pub fn request_of(samples: &[HarnessSample]) -> WriteRequest {
                 samples,
             })
             .collect(),
+    }
+}
+
+pub struct RemoteWriteEncoder {
+    labels_of_series: HashMap<usize, (Arc<SeriesLabels>, Vec<Label>)>,
+    snappy: snap::raw::Encoder,
+    buffer: Vec<u8>,
+}
+
+impl Default for RemoteWriteEncoder {
+    fn default() -> Self {
+        RemoteWriteEncoder {
+            labels_of_series: HashMap::new(),
+            snappy: snap::raw::Encoder::new(),
+            buffer: Vec::new(),
+        }
+    }
+}
+
+impl RemoteWriteEncoder {
+    pub fn encode(&mut self, samples: &[HarnessSample]) -> Vec<u8> {
+        let mut request = WriteRequest::default();
+        let mut keys: Vec<usize> = Vec::new();
+        let mut position_of_series: HashMap<usize, usize> = HashMap::new();
+        for sample in samples {
+            let key = Arc::as_ptr(&sample.labels) as usize;
+            let position = *position_of_series.entry(key).or_insert_with(|| {
+                let (_, labels) = self.labels_of_series.entry(key).or_insert_with(|| {
+                    let labels = sample
+                        .labels
+                        .iter()
+                        .map(|(name, value)| Label {
+                            name: name.clone(),
+                            value: value.clone(),
+                        })
+                        .collect();
+                    (Arc::clone(&sample.labels), labels)
+                });
+                request.timeseries.push(TimeSeries {
+                    labels: std::mem::take(labels),
+                    samples: Vec::new(),
+                });
+                keys.push(key);
+                request.timeseries.len() - 1
+            });
+            request.timeseries[position].samples.push(Sample {
+                value: sample.value,
+                timestamp: sample.ts_ms,
+            });
+        }
+        self.buffer.clear();
+        request
+            .encode(&mut self.buffer)
+            .expect("a Vec grows to fit any message");
+        for (series, key) in request.timeseries.into_iter().zip(keys) {
+            if let Some((_, labels)) = self.labels_of_series.get_mut(&key) {
+                *labels = series.labels;
+            }
+        }
+        self.snappy
+            .compress_vec(&self.buffer)
+            .expect("snappy compresses any buffer")
     }
 }

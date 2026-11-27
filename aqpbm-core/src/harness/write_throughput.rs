@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender};
@@ -48,6 +49,8 @@ pub struct WriteThroughputResult {
     pub server_memory_after: Option<CgroupMemory>,
     pub server_process_memory_after: Option<ProcessesMemory>,
     pub widest_event_time_lead_ms: i64,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub cpu_frequency_governors: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -591,5 +594,6 @@ pub fn run_write_throughput(
         server_memory_after,
         server_process_memory_after,
         widest_event_time_lead_ms: shared.widest_lead_ms.load(Ordering::Relaxed),
+        cpu_frequency_governors: BTreeSet::new(),
     })
 }

@@ -14,6 +14,7 @@
 //! what each engine can run; their README gives the evidence per entry.
 
 pub mod asapquery_backend_server;
+pub mod asapquery_precompute_engine_server;
 pub mod clickhouse;
 pub mod clickhouse_server;
 pub mod plan_file;
