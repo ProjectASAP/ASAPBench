@@ -385,10 +385,32 @@ impl GeneratedTimeSeries {
         }
     }
 
+    pub fn samples_of_series(
+        &self,
+        series: std::ops::Range<usize>,
+    ) -> Result<SeriesRangeSamples<'_>, DataGenError> {
+        let series_num = self.description.series_num as usize;
+        if series.start > series.end || series.end > series_num {
+            return Err(bad(format!(
+                "time series: series {}..{} is outside 0..{series_num}",
+                series.start, series.end
+            )));
+        }
+        Ok(SeriesRangeSamples {
+            series: self,
+            cursor: self.cursor_of(series),
+        })
+    }
+
     /// The position and random state of an iterator over the samples.
     fn cursor(&self) -> TimeSeriesCursor {
+        self.cursor_of(0..self.labels.len())
+    }
+
+    fn cursor_of(&self, series: std::ops::Range<usize>) -> TimeSeriesCursor {
         let value_seed = self.description.seed ^ self.description.value_distribution.seed();
-        let streams = (0..self.labels.len() as u64)
+        let first = series.start;
+        let streams: Vec<SeriesStream> = (series.start as u64..series.end as u64)
             .map(|i| SeriesStream {
                 rng: Xoshiro256PlusPlus::seed_from_u64(series_stream_seed(value_seed, i)),
                 counter: self.description.counter.then(|| {
@@ -402,8 +424,9 @@ impl GeneratedTimeSeries {
             })
             .collect();
         TimeSeriesCursor {
+            sample_count: streams.len() as u64 * self.description.samples_per_series(),
             streams,
-            sample_count: self.labels.len() as u64 * self.description.samples_per_series(),
+            first,
             next: 0,
         }
     }
@@ -443,6 +466,19 @@ impl<'a> Iterator for TimeSeriesSamples<'a> {
     }
 }
 
+pub struct SeriesRangeSamples<'a> {
+    series: &'a GeneratedTimeSeries,
+    cursor: TimeSeriesCursor,
+}
+
+impl Iterator for SeriesRangeSamples<'_> {
+    type Item = Result<(usize, i64, f64), DataGenError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.cursor.next_sample(self.series)
+    }
+}
+
 /// The iterator [`GeneratedTimeSeries::into_samples`] returns.
 pub struct OwnedTimeSeriesSamples {
     series: GeneratedTimeSeries,
@@ -463,6 +499,7 @@ impl Iterator for OwnedTimeSeriesSamples {
 /// made from.
 struct TimeSeriesCursor {
     streams: Vec<SeriesStream>,
+    first: usize,
     /// Samples in all: series times samples per series.
     sample_count: u64,
     /// Index of the next sample, time-major.
@@ -480,12 +517,13 @@ impl TimeSeriesCursor {
             return None;
         }
         let series_num = self.streams.len() as u64;
-        let (step, index) = (self.next / series_num, (self.next % series_num) as usize);
+        let (step, local) = (self.next / series_num, (self.next % series_num) as usize);
+        let index = self.first + local;
         self.next += 1;
         let description = &series.description;
         let timestamp_ms =
             description.start_ms + ((step + 1) * description.sample_interval_ms) as i64;
-        let stream = &mut self.streams[index];
+        let stream = &mut self.streams[local];
         let draw = series.sampler.sample(&mut stream.rng);
         let value = match &mut stream.counter {
             Some(acc) => match acc.push(draw) {
@@ -571,6 +609,42 @@ mod tests {
                 .unwrap();
             assert_eq!(owned, collect(&d));
         }
+    }
+
+    #[test]
+    fn samples_of_a_series_range_are_those_series_samples_in_the_full_order() {
+        for counter in [false, true] {
+            let generated = description(counter).generate().unwrap();
+            let all: Vec<(usize, i64, f64)> = generated
+                .samples_of_series(0..30)
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            let full: Vec<(usize, i64, f64)> = description(counter)
+                .generate()
+                .unwrap()
+                .into_samples()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert_eq!(all, full);
+            let part: Vec<(usize, i64, f64)> = generated
+                .samples_of_series(7..19)
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            let expected: Vec<(usize, i64, f64)> = full
+                .into_iter()
+                .filter(|(index, _, _)| (7..19).contains(index))
+                .collect();
+            assert_eq!(part, expected);
+            assert!(generated.samples_of_series(5..5).unwrap().next().is_none());
+        }
+    }
+
+    #[test]
+    fn samples_of_a_series_range_outside_the_series_is_an_error() {
+        let generated = description(false).generate().unwrap();
+        assert!(generated.samples_of_series(25..31).is_err());
     }
 
     #[test]

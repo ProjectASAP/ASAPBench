@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-pub use crate::harness::data::{DataRecord, SampleChunk, SeriesLabels};
+pub use crate::harness::data::{DataRecord, Sample, SampleChunk, SeriesLabels};
 
 /// An engine the harness can measure: the Planner's executor, a fake, or an
 /// external server such as ClickHouse.
@@ -139,6 +139,14 @@ pub trait InstalledArm {
         let _ = usage;
         None
     }
+    fn sample_writers(&mut self, count: usize) -> Option<Vec<Box<dyn SampleWriter>>> {
+        let _ = count;
+        None
+    }
+}
+
+pub trait SampleWriter: Send {
+    fn write(&mut self, samples: &[Sample]) -> Result<(), EngineError>;
 }
 
 /// What an engine reports about one step besides time. It never reports its

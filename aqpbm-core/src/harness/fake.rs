@@ -24,11 +24,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::harness::cgroup::CgroupSource;
-use crate::harness::data::{SampleChunk, SeriesLabels};
+use crate::harness::data::{Sample, SampleChunk, SeriesLabels};
 use crate::harness::engine::{
     Answers, ArmSpec, Calibratable, CostTarget, CpuAccounting, EngineDescription, EngineError,
-    EngineUnderTest, Footprint, InstalledArm, NodeProfile, PlanSummary, QueryLanguage, StepReport,
-    WorkloadSpec,
+    EngineUnderTest, Footprint, InstalledArm, NodeProfile, PlanSummary, QueryLanguage,
+    SampleWriter, StepReport, WorkloadSpec,
 };
 use crate::harness::protocol::{CpuClock, ProcessCpuFiles};
 
@@ -209,6 +209,14 @@ impl FakeServer {
             .truncate(false)
             .open(path)?
             .write_all(format!("{:020} 0 0\n", self.cpu_ns.get()).as_bytes())
+    }
+}
+
+struct FakeSampleWriter;
+
+impl SampleWriter for FakeSampleWriter {
+    fn write(&mut self, _samples: &[Sample]) -> Result<(), EngineError> {
+        Ok(())
     }
 }
 
@@ -621,6 +629,14 @@ impl InstalledArm for FakeArm {
             self.charge_node(&query.id, self.ns_per_series * answered_series);
         }
         Ok((Answers(answers), self.report()))
+    }
+
+    fn sample_writers(&mut self, count: usize) -> Option<Vec<Box<dyn SampleWriter>>> {
+        Some(
+            (0..count)
+                .map(|_| Box::new(FakeSampleWriter) as Box<dyn SampleWriter>)
+                .collect(),
+        )
     }
 
     /// Each stored sample as 16 bytes (timestamp and value).

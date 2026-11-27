@@ -34,3 +34,4 @@ pub mod protocol;
 pub mod records;
 pub mod run_directory;
 pub mod sweep;
+pub mod write_throughput;
