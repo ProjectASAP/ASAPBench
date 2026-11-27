@@ -8,7 +8,8 @@ use crate::harness::engine::{
     WorkloadSpec,
 };
 use crate::harness::protocol::{
-    CoreLoad, EngineClock, JobRecord, LoadProbe, MeasurementClocks, Protocol, ProtocolError,
+    processes_memory, CoreLoad, EngineClock, JobRecord, LoadProbe, MeasurementClocks, Protocol,
+    ProtocolError,
 };
 use crate::harness::records::ArmResult;
 
@@ -205,6 +206,17 @@ pub fn run_arm(
         .as_ref()
         .map(|source| Ok::<_, ProtocolError>((source.cpu()?.usage_ns, source.memory()?)))
         .transpose()?;
+    let server_pids = match engine.cpu_accounting() {
+        CpuAccounting::Processes(pids) => Some(pids),
+        _ => None,
+    };
+    let read_process_memory = || {
+        server_pids
+            .as_ref()
+            .map(|pids| processes_memory(&clocks.process_cpu_files.proc_root, pids))
+            .transpose()
+    };
+    let process_memory_before = read_process_memory()?;
     let mut installs: Vec<Box<dyn InstalledArm>> = (0..runs)
         .map(|_| engine.install(workload, arm))
         .collect::<Result<_, _>>()?;
@@ -261,6 +273,7 @@ pub fn run_arm(
         .as_ref()
         .map(|source| Ok::<_, ProtocolError>((source.cpu()?.usage_ns, source.memory()?)))
         .transpose()?;
+    let process_memory_after = read_process_memory()?;
     let data_seconds = data_ms as f64 / 1_000.0;
     let usage = MeasuredUsage {
         ingest_cpu_ns_per_second: median_cpu_ns(&ingest, &clock) / data_seconds,
@@ -282,6 +295,8 @@ pub fn run_arm(
         ingested_samples,
         server_memory_before: server_before.map(|(_, memory)| memory),
         server_memory_after: server_after.map(|(_, memory)| memory),
+        server_process_memory_before: process_memory_before,
+        server_process_memory_after: process_memory_after,
         server_cpu_ns_whole_arm: server_before
             .zip(server_after)
             .map(|((before_ns, _), (after_ns, _))| after_ns.saturating_sub(before_ns)),

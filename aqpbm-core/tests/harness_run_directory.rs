@@ -95,6 +95,8 @@ fn arm_result(workload: &str) -> ArmResult {
         ingested_samples: 0,
         server_memory_before: None,
         server_memory_after: None,
+        server_process_memory_before: None,
+        server_process_memory_after: None,
         server_cpu_ns_whole_arm: None,
         cpu_source: "calling-thread".into(),
         installs_held: 1,

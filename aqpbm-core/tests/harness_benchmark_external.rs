@@ -16,7 +16,7 @@ use aqpbm_core::harness::engine::{
 };
 use aqpbm_core::harness::fake::FakeEngine;
 use aqpbm_core::harness::protocol::{
-    JobRecord, LoadProbe, MeasurementClocks, Protocol, ProtocolError,
+    JobRecord, LoadProbe, MeasurementClocks, ProcessesMemory, Protocol, ProtocolError,
 };
 use aqpbm_core::harness::records::ArmResult;
 use aqpbm_core::harness::run_directory::RunDirectory;
@@ -376,6 +376,8 @@ fn result(engine: &str, workload: &str, variant: &str, answers: Vec<(i64, Answer
         ingested_samples: 4,
         server_memory_before: None,
         server_memory_after: None,
+        server_process_memory_before: None,
+        server_process_memory_after: None,
         server_cpu_ns_whole_arm: None,
         cpu_source: "calling-thread".into(),
         installs_held: 1,
@@ -518,14 +520,14 @@ fn the_summary_has_absolute_numbers_and_errors_against_the_truth() {
     let csv = report.summary_csv();
     let lines: Vec<&str> = csv.lines().collect();
     assert_eq!(lines[0], SUMMARY_CSV_HEADER);
-    assert_eq!(SUMMARY_CSV_HEADER.split(',').count(), 21);
-    let empty_after_status = ",".repeat(17);
+    assert_eq!(SUMMARY_CSV_HEADER.split(',').count(), 24);
+    let empty_after_status = ",".repeat(20);
     let expected = [
-        "w1,a,v1,ok,thread,250,0.001,,,,,,1,0,0,0,2,0,0,,".to_string(),
+        "w1,a,v1,ok,thread,250,0.001,,,,,,,,,1,0,0,0,2,0,0,,".to_string(),
         "w2,a,v1,no plan: ExcludedByDeployment".to_string() + &empty_after_status,
-        "w1,b,v1,ok,cgroup,2000,2,2,9,3145728,3145728,5242880,6,120,0.1,0.05,2,0,1,quantileDD for Kll at node 3;x,\"node 4 for nodes 6, 7\"".to_string(),
+        "w1,b,v1,ok,cgroup,2000,2,2,9,3145728,3145728,5242880,,,,6,120,0.1,0.05,2,0,1,quantileDD for Kll at node 3;x,\"node 4 for nodes 6, 7\"".to_string(),
         "w1,b,v2,no plan: ExcludedByDeployment".to_string() + &empty_after_status,
-        "w2,b,v1,ok,thread,250,0.001,,,,,,1,0,,,,,,,".to_string(),
+        "w2,b,v1,ok,thread,250,0.001,,,,,,,,,1,0,,,,,,,".to_string(),
         "w1,c,v1,not run: refused: filter@node 3".to_string() + &empty_after_status,
     ];
     assert_eq!(
@@ -865,4 +867,46 @@ fn the_truth_is_declared_or_one_engines_cells() {
         }
     );
     assert!(ReportTruth::parse("fake").is_err());
+}
+
+#[test]
+fn the_summary_has_a_processes_engine_memory_in_its_own_columns() {
+    let temp = TempDir::new("process-memory");
+    let run = RunDirectory::create_at(&temp.0.join("run")).unwrap();
+    put(
+        &run,
+        "a",
+        "w1",
+        "v1",
+        CellOutcome::Ran,
+        Some(result("a", "w1", "v1", truth_answers())),
+    );
+    let mut p = result("p", "w1", "v1", truth_answers());
+    p.cpu_source = "schedstat".into();
+    p.server_process_memory_before = Some(ProcessesMemory {
+        proportional_set_size_bytes: 1_048_576,
+        peak_resident_set_size_bytes: Some(2_097_152),
+    });
+    p.server_process_memory_after = Some(ProcessesMemory {
+        proportional_set_size_bytes: 3_145_728,
+        peak_resident_set_size_bytes: Some(5_242_880),
+    });
+    put(&run, "p", "w1", "v1", CellOutcome::Ran, Some(p));
+    let csv = report(
+        &run,
+        &ReportTruth::Cells {
+            engine: "a".into(),
+            variant: "v1".into(),
+        },
+    )
+    .unwrap()
+    .summary_csv();
+    let row: Vec<&str> = csv
+        .lines()
+        .find(|line| line.starts_with("w1,p,v1,"))
+        .unwrap()
+        .split(',')
+        .collect();
+    assert_eq!(row[4], "processes");
+    assert_eq!(&row[9..15], ["", "", "", "1048576", "3145728", "5242880"]);
 }

@@ -11,7 +11,7 @@ use aqpbm_core::harness::engine::{
 };
 use aqpbm_core::harness::fake::{FakeEngine, FakeServer};
 use aqpbm_core::harness::protocol::{
-    CpuClock, EngineClock, LoadProbe, MeasurementClocks, Protocol, ProtocolError,
+    CpuClock, EngineClock, LoadProbe, MeasurementClocks, ProcessesMemory, Protocol, ProtocolError,
 };
 use aqpbm_core::harness::records::ArmResult;
 use aqpbm_datagen::{DataDistribution, SeriesLabelSpec, TimeSeriesDescription, UniformParameter};
@@ -453,4 +453,45 @@ fn a_workload_without_data_is_refused() {
         }
     );
     assert_eq!(engine.installs.get(), 0);
+}
+
+#[test]
+fn a_processes_engine_records_the_server_memory() {
+    let root = fake_proc_root("server-memory");
+    let server = FakeServer::start(&root, 4242).unwrap();
+    let engine = FakeEngine {
+        server: Some(server.clone()),
+        ..FakeEngine::default()
+    };
+    let clock = engine.clock.clone();
+    let clocks = MeasurementClocks {
+        calling_thread: &clock,
+        process_cpu_files: server.cpu_files.clone(),
+    };
+    let result = run_probe_on(&engine, 7, &clocks).unwrap();
+    let installs = u64::from(result.installs_held);
+    assert!(installs > 1);
+    assert_eq!(
+        result.server_process_memory_before,
+        Some(ProcessesMemory {
+            proportional_set_size_bytes: 2048 * 1024,
+            peak_resident_set_size_bytes: Some(2048 * 1024),
+        })
+    );
+    let after_bytes = (2048 + 1024 * installs) * 1024;
+    assert_eq!(
+        result.server_process_memory_after,
+        Some(ProcessesMemory {
+            proportional_set_size_bytes: after_bytes,
+            peak_resident_set_size_bytes: Some(after_bytes),
+        })
+    );
+    assert_eq!(result.server_memory_before, None);
+}
+
+#[test]
+fn a_calling_thread_engine_records_no_server_memory() {
+    let result = run_probe(&FakeEngine::default(), 7);
+    assert_eq!(result.server_process_memory_before, None);
+    assert_eq!(result.server_process_memory_after, None);
 }
