@@ -434,32 +434,32 @@ pub fn probe_workloads() -> Vec<WorkloadSpec> {
         ("count", "count_over_time", "count(*)"),
     ]
     .into_iter()
-    .map(|(id, promql_function, sql_aggregate)| WorkloadSpec {
-        name: format!("probe-{id}"),
-        queries: vec![WorkloadQuery {
-            id: id.into(),
-            texts: vec![
-                QueryText {
-                    language: QueryLanguage::PromQl,
-                    text: format!("{promql_function}(probe[10s])"),
-                    dialect: None,
-                },
-                QueryText {
-                    language: QueryLanguage::Sql,
-                    text: format!(
-                        "SELECT instance, {sql_aggregate} FROM probe \
+    .map(|(id, promql_function, sql_aggregate)| {
+        WorkloadSpec::periodic(
+            format!("probe-{id}"),
+            vec![WorkloadQuery {
+                id: id.into(),
+                texts: vec![
+                    QueryText {
+                        language: QueryLanguage::PromQl,
+                        text: format!("{promql_function}(probe[10s])"),
+                        dialect: None,
+                    },
+                    QueryText {
+                        language: QueryLanguage::Sql,
+                        text: format!(
+                            "SELECT instance, {sql_aggregate} FROM probe \
                              WHERE ts_ms > $t - 10000 AND ts_ms <= $t GROUP BY instance"
-                    ),
-                    dialect: None,
-                },
-            ],
-            window_ms: PROBE_STEP_MS,
-            evaluation_interval_ms: PROBE_STEP_MS,
-            truth: None,
-        }],
-        data: vec![data.clone()],
-        tables: Vec::new(),
-        one_shot_queries: Vec::new(),
+                        ),
+                        dialect: None,
+                    },
+                ],
+                window_ms: PROBE_STEP_MS,
+                evaluation_interval_ms: PROBE_STEP_MS,
+                truth: None,
+            }],
+            vec![data.clone()],
+        )
     })
     .collect()
 }

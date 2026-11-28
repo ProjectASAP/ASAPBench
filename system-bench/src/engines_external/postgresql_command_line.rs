@@ -9,6 +9,8 @@ use aqpbm_core::harness::one_shot::{OneShotQueryEngine, QueryRun, ResultTable};
 
 use super::restart_command::restart_and_wait;
 
+pub const DIALECT: &str = "PostgreSql";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PostgreSqlCommandLine {
     pub program: PathBuf,
@@ -188,7 +190,7 @@ impl OneShotQueryEngine for PostgreSqlEngine {
     }
 
     fn dialect(&self) -> SqlDialect {
-        SqlDialect::PostgreSql
+        SqlDialect::new(DIALECT)
     }
 
     fn configuration(&self) -> serde_json::Value {
@@ -248,4 +250,32 @@ impl OneShotQueryEngine for PostgreSqlEngine {
             details: BTreeMap::new(),
         })
     }
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct PostgreSqlOptions {
+    #[arg(long, default_value = "psql")]
+    pub postgresql_program: PathBuf,
+    #[arg(long)]
+    pub postgresql_connection: Option<String>,
+    #[arg(long = "postgresql-setting", value_parser = super::parse_setting)]
+    pub postgresql_settings: Vec<(String, String)>,
+    #[arg(long)]
+    pub postgresql_restart_command: Option<String>,
+    #[arg(long, default_value_t = 120)]
+    pub postgresql_ready_timeout_seconds: u64,
+}
+
+pub fn one_shot_queries(matches: &clap::ArgMatches) -> anyhow::Result<Box<dyn OneShotQueryEngine>> {
+    let options = <PostgreSqlOptions as clap::FromArgMatches>::from_arg_matches(matches)?;
+    let Some(connection) = options.postgresql_connection else {
+        anyhow::bail!("engine postgresql needs --postgresql-connection");
+    };
+    Ok(Box::new(PostgreSqlEngine::new(PostgreSqlCommandLine {
+        program: options.postgresql_program,
+        connection,
+        settings: options.postgresql_settings,
+        restart_command: options.postgresql_restart_command,
+        ready_timeout: Duration::from_secs(options.postgresql_ready_timeout_seconds),
+    })?))
 }

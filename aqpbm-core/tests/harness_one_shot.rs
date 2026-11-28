@@ -53,7 +53,7 @@ impl OneShotQueryEngine for ScriptedEngine {
         }
     }
     fn dialect(&self) -> SqlDialect {
-        SqlDialect::DuckDb
+        SqlDialect::new("DuckDb")
     }
     fn table_rows(&mut self, _table: &str) -> Result<Option<u64>, EngineError> {
         Ok(self.rows)
@@ -106,21 +106,19 @@ fn sql(text: &str, dialect: Option<SqlDialect>) -> QueryText {
 }
 
 fn workload() -> WorkloadSpec {
-    WorkloadSpec {
-        name: "clickbench".into(),
-        queries: Vec::new(),
-        data: Vec::new(),
-        tables: vec![TableSource {
+    WorkloadSpec::one_shot(
+        "clickbench".into(),
+        vec![TableSource {
             name: "hits".into(),
             file_name: "hits.parquet".into(),
             url: None,
             rows: 10,
             load_statements: vec![LoadStatements {
-                dialect: SqlDialect::DuckDb,
+                dialect: SqlDialect::new("DuckDb"),
                 statements: vec!["INSERT INTO hits SELECT * FROM read_parquet('{file}')".into()],
             }],
         }],
-        one_shot_queries: vec![
+        vec![
             OneShotQuery {
                 id: "1".into(),
                 texts: vec![sql("SELECT COUNT(*) FROM hits", None)],
@@ -129,11 +127,11 @@ fn workload() -> WorkloadSpec {
             },
             OneShotQuery {
                 id: "2".into(),
-                texts: vec![sql("SELECT 2", Some(SqlDialect::ClickHouse))],
+                texts: vec![sql("SELECT 2", Some(SqlDialect::new("ClickHouse")))],
                 group_by_column_positions: Vec::new(),
                 variants: BTreeMap::from([(
                     "approximate".to_string(),
-                    vec![sql("SELECT 2.0", Some(SqlDialect::ClickHouse))],
+                    vec![sql("SELECT 2.0", Some(SqlDialect::new("ClickHouse")))],
                 )]),
             },
             OneShotQuery {
@@ -146,7 +144,7 @@ fn workload() -> WorkloadSpec {
                 )]),
             },
         ],
-    }
+    )
 }
 
 fn schedule(runs: u32, cold_first_run: bool) -> OneShotSchedule {

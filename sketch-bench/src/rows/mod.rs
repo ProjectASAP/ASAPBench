@@ -1,6 +1,5 @@
-//! Which sketch a pair of strings names: the only place in the program where a
-//! name is bound to code. [`registry`](crate::registry) declares what rows
-//! exist; this binds each one to its wrapper.
+//! The rows each [`registry`](crate::registry) entry names, and the call that
+//! runs the row an entry names.
 
 use std::marker::PhantomData;
 use std::rc::Rc;
@@ -61,27 +60,21 @@ pub type RowBinding = fn(
 
 type Materialise<I> = fn(&ValueColumn, GeneratedTable) -> Result<Rc<Vec<I>>, RunError>;
 
-/// Bind a row to its wrapper and hand back the closures. The registry declares
-/// the pair; [`binding`] is what names the code, so a pair the registry lists
-/// and this table does not is a disagreement, reported as one.
+/// Run the row the registry entry names and hand back the closures.
 pub fn measurements(
     req: &Requirement,
     columns: &ColumnRoles,
     table: GeneratedTable,
     want: &[(Operation, Metric)],
 ) -> Result<Measurements, RunError> {
-    crate::registry::find(&req.variant, &req.library).ok_or_else(|| {
-        RunError::Sketch(format!(
-            "{}/{} is not a registered row",
-            req.variant, req.library
-        ))
-    })?;
-    let row = binding(&req.variant, &req.library).ok_or_else(|| {
-        RunError::Sketch(format!(
-            "{}/{} is registered, but no row here is bound to it",
-            req.variant, req.library
-        ))
-    })?;
+    let row = crate::registry::find(&req.variant, &req.library)
+        .ok_or_else(|| {
+            RunError::Sketch(format!(
+                "{}/{} is not a registered row",
+                req.variant, req.library
+            ))
+        })?
+        .row;
     let mut order = columns.labels.clone();
     order.push(columns.value);
     let table = table.select(&order)?;
@@ -90,113 +83,6 @@ pub fn measurements(
         key_offset: columns.value_key_offset.clone(),
     };
     row(req, &value_column, table, want)
-}
-
-/// The pair a registry entry names, bound to the code that runs it.
-fn binding(variant: &str, library: &str) -> Option<RowBinding> {
-    Some(match (variant, library) {
-        ("cms", "oxide") => row_cms_oxide,
-        ("cms", "datasketches") => row_cms_datasketches,
-        ("cms", "polars") => row_cms_polars,
-        ("cms-fastpath-fixedmatrix", "lib") => row_cms_fastpath_fixedmatrix_lib,
-        ("cms-fastpath-vector2d", "lib") => row_cms_fastpath_vector2d_lib,
-        ("cms-regularpath-vector2d", "lib") => row_cms_regularpath_vector2d_lib,
-        ("cms-fastpath-fixedmatrix-32k-parallel", "lib") => {
-            row_cms_fastpath_fixedmatrix_32k_parallel_lib
-        }
-        ("cms-heap-fastpath-vector2d", "lib") => row_cms_heap_fastpath_vector2d_lib,
-        ("cms-heap-regularpath-vector2d", "lib") => row_cms_heap_regularpath_vector2d_lib,
-        ("cms-heap-topk-fastpath-vector2d", "lib") => row_cms_heap_topk_fastpath_vector2d_lib,
-        ("cms-heap-topk-regularpath-vector2d", "lib") => row_cms_heap_topk_regularpath_vector2d_lib,
-        ("countsketch", "oxide") => row_countsketch_oxide,
-        ("countsketch", "polars") => row_countsketch_polars,
-        ("countsketch-fastpath-fixedmatrix", "lib") => row_countsketch_fastpath_fixedmatrix_lib,
-        ("countsketch-fastpath-vector2d", "lib") => row_countsketch_fastpath_vector2d_lib,
-        ("countsketch-regularpath-vector2d", "lib") => row_countsketch_regularpath_vector2d_lib,
-        ("countsketch-fastpath-fixedmatrix-32k-parallel", "lib") => {
-            row_countsketch_fastpath_fixedmatrix_32k_parallel_lib
-        }
-        ("hll", "oxide") => row_hll_oxide,
-        ("hll", "datasketches") => row_hll_datasketches,
-        ("hll", "lib") => row_hll_lib,
-        ("hll", "polars") => row_hll_polars,
-        ("hll-hip", "lib") => row_hll_hip_lib,
-        ("hll-fastpath-parallel", "lib") => row_hll_fastpath_parallel_lib,
-        ("kll-percall", "oxide") => row_kll_percall_oxide,
-        ("kll-percall", "lib") => row_kll_percall_lib,
-        ("kll-cdf", "oxide") => row_kll_cdf_oxide,
-        ("kll-cdf", "lib") => row_kll_cdf_lib,
-        ("kll-cdf", "polars") => row_kll_cdf_polars,
-        ("dd", "lib") => row_dd_lib,
-        ("dd", "oxide") => row_dd_oxide,
-        ("hydra-cms", "lib") => row_hydra_cms_lib,
-        ("hydra-cms", "polars") => row_hydra_cms_polars,
-        ("hydra-cs", "lib") => row_hydra_cs_lib,
-        ("hydra-cs", "polars") => row_hydra_cs_polars,
-        ("hydra-hll", "lib") => row_hydra_hll_lib,
-        ("hydra-hll", "polars") => row_hydra_hll_polars,
-        ("hydra-kll", "lib") => row_hydra_kll_lib,
-        ("hydra-kll", "polars") => row_hydra_kll_polars,
-        ("hydra-kll-cdf", "lib") => row_hydra_kll_cdf_lib,
-        ("hydra-kll-cdf", "polars") => row_hydra_kll_cdf_polars,
-        ("hydra-univmon-cardinality", "lib") => row_hydra_univmon_cardinality_lib,
-        ("hydra-univmon-cardinality", "polars") => row_hydra_univmon_cardinality_polars,
-        ("hydra-univmon-l1-norm", "lib") => row_hydra_univmon_l1_norm_lib,
-        ("hydra-univmon-l1-norm", "polars") => row_hydra_univmon_l1_norm_polars,
-        ("hydra-univmon-l2-norm", "lib") => row_hydra_univmon_l2_norm_lib,
-        ("hydra-univmon-l2-norm", "polars") => row_hydra_univmon_l2_norm_polars,
-        ("hydra-univmon-entropy", "lib") => row_hydra_univmon_entropy_lib,
-        ("hydra-univmon-entropy", "polars") => row_hydra_univmon_entropy_polars,
-        ("hydra-univmon-sum", "lib") => row_hydra_univmon_sum_lib,
-        ("hydra-univmon-sum", "polars") => row_hydra_univmon_sum_polars,
-        ("univmon-cardinality", "lib") => row_univmon_cardinality_lib,
-        ("univmon-l1-norm", "lib") => row_univmon_l1_norm_lib,
-        ("univmon-l1-norm", "oxide") => row_univmon_l1_norm_oxide,
-        ("univmon-l2-norm", "lib") => row_univmon_l2_norm_lib,
-        ("univmon-l2-norm", "oxide") => row_univmon_l2_norm_oxide,
-        ("univmon-entropy", "lib") => row_univmon_entropy_lib,
-        ("univmon-entropy", "oxide") => row_univmon_entropy_oxide,
-        ("univmon-topk", "lib") => row_univmon_topk_lib,
-        ("countsketch-heap-topk-fastpath-vector2d", "lib") => {
-            row_countsketch_heap_topk_fastpath_vector2d_lib
-        }
-        ("hll-ertl", "lib") => row_hll_ertl_lib,
-        ("kmv", "lib") => row_kmv_lib,
-        ("bloom", "lib") => row_bloom_lib,
-        ("count-sketch-l2-norm", "lib") => row_count_sketch_l2_norm_lib,
-        ("count-min-hll", "lib") => row_count_min_hll_lib,
-        ("elastic", "lib") => row_elastic_lib,
-        ("elastic-topk", "lib") => row_elastic_topk_lib,
-        ("coco", "lib") => row_coco_lib,
-        ("kll-dynamic", "lib") => row_kll_dynamic_lib,
-        ("uniform-sampling", "lib") => row_uniform_sampling_lib,
-        ("univmon-two-tier-cardinality", "lib") => row_univmon_two_tier_cardinality_lib,
-        ("univmon-two-tier-l1-norm", "lib") => row_univmon_two_tier_l1_norm_lib,
-        ("univmon-two-tier-l2-norm", "lib") => row_univmon_two_tier_l2_norm_lib,
-        ("univmon-two-tier-entropy", "lib") => row_univmon_two_tier_entropy_lib,
-        ("univmon-q-quantile", "lib") => row_univmon_q_quantile_lib,
-        ("univmon-q-cardinality", "lib") => row_univmon_q_cardinality_lib,
-        ("univmon-q-frequency", "lib") => row_univmon_q_frequency_lib,
-        ("univmon-q-topk", "lib") => row_univmon_q_topk_lib,
-        ("nitro-count-min", "lib") => row_nitro_count_min_lib,
-        ("nitro-count-sketch", "lib") => row_nitro_count_sketch_lib,
-        ("space-saving", "lib") => row_space_saving_lib,
-        ("space-saving-topk", "lib") => row_space_saving_topk_lib,
-        ("count-min-space-saving", "lib") => row_count_min_space_saving_lib,
-        ("count-min-space-saving-topk", "lib") => row_count_min_space_saving_topk_lib,
-        ("count-sketch-space-saving", "lib") => row_count_sketch_space_saving_lib,
-        ("count-sketch-space-saving-topk", "lib") => row_count_sketch_space_saving_topk_lib,
-        ("count-min-fold", "lib") => row_count_min_fold_lib,
-        ("count-min-fold-topk", "lib") => row_count_min_fold_topk_lib,
-        ("count-sketch-fold", "lib") => row_count_sketch_fold_lib,
-        ("count-sketch-fold-topk", "lib") => row_count_sketch_fold_topk_lib,
-        ("exact-sum", "exact") => row_exact_sum,
-        ("exact-min", "exact") => row_exact_min,
-        ("exact-max", "exact") => row_exact_max,
-        ("exact-increase", "exact") => row_exact_increase,
-        ("exact-delta-set", "exact") => row_exact_delta_set,
-        _ => return None,
-    })
 }
 
 mod bloom;
@@ -222,43 +108,25 @@ mod string_keyed;
 mod uniform_sampling;
 mod univmon;
 
-use bloom::*;
-use cms::*;
-use cms_heap::*;
-use count_matrix::*;
-use cs::*;
-use dd::*;
-use exact::*;
-use fixed_matrix::*;
-use fold::*;
-use hll::*;
-use hydra::*;
-use hydra_univmon::*;
-use kll::*;
-use kmv::*;
+pub(crate) use bloom::*;
+pub(crate) use cms::*;
+pub(crate) use cms_heap::*;
+pub(crate) use count_matrix::*;
+pub(crate) use cs::*;
+pub(crate) use dd::*;
+pub(crate) use exact::*;
+pub(crate) use fixed_matrix::*;
+pub(crate) use fold::*;
+pub(crate) use hll::*;
+pub(crate) use hydra::*;
+pub(crate) use hydra_univmon::*;
+pub(crate) use kll::*;
+pub(crate) use kmv::*;
 use materialise::*;
 use measurement::*;
-use nitro::*;
-use space_saving::*;
+pub(crate) use nitro::*;
+pub(crate) use space_saving::*;
 use statistic::*;
-use string_keyed::*;
-use uniform_sampling::*;
-use univmon::*;
-
-#[cfg(test)]
-mod tests {
-    use super::binding;
-    use crate::registry::REGISTRY;
-
-    #[test]
-    fn every_registered_pair_is_bound() {
-        for e in REGISTRY {
-            assert!(
-                binding(e.variant, e.library).is_some(),
-                "{}/{}",
-                e.variant,
-                e.library
-            );
-        }
-    }
-}
+pub(crate) use string_keyed::*;
+pub(crate) use uniform_sampling::*;
+pub(crate) use univmon::*;

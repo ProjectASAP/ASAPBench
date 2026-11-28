@@ -128,7 +128,6 @@ SHAPES = {
     "query": ({"id", "texts"}, {"group_by_column_positions", "variants"}),
     "text": ({"language", "text"}, {"dialect"}),
 }
-DIALECTS = {"ClickHouse", "DuckDb", "PostgreSql", "Druid"}
 LANGUAGES = {"PromQl", "Sql", "MetricsQl"}
 
 
@@ -153,8 +152,6 @@ for table in workload.get("tables", []):
     check("table", table, f"{source}: table")
     for load in table["load_statements"]:
         check("load", load, f"{source}: table {table['name']}")
-        if load["dialect"] not in DIALECTS:
-            sys.exit(f"table {table['name']}: dialect {load['dialect']} is not one of {sorted(DIALECTS)}")
     if not os.path.isfile(os.path.join(data, table["file_name"])):
         sys.exit(f"table {table['name']}: no {table['file_name']} in {data}")
 ids = set()
@@ -175,8 +172,8 @@ for query in queries:
             sys.exit(f"{where}: needs a list of texts")
         for text in texts:
             check("text", text, where)
-            if text["language"] not in LANGUAGES or text.get("dialect", "DuckDb") not in DIALECTS:
-                sys.exit(f"{where}: unknown language {text['language']} or dialect {text.get('dialect')}")
+            if text["language"] not in LANGUAGES:
+                sys.exit(f"{where}: unknown language {text['language']}")
 workload.setdefault("queries", [])
 workload.setdefault("data", [])
 

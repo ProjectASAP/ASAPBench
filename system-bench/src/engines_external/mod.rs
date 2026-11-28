@@ -16,6 +16,7 @@
 pub mod asapquery_backend_server;
 pub mod asapquery_precompute_engine_server;
 pub mod clickhouse;
+pub mod clickhouse_connection;
 pub mod clickhouse_query_text;
 pub mod clickhouse_server;
 pub mod druid_sql;
@@ -24,10 +25,18 @@ pub mod pilotdb;
 pub mod plan_file;
 pub mod postgresql_command_line;
 mod restart_command;
+pub mod server_cgroup;
 pub mod victoriametrics;
 pub mod victoriametrics_server;
 
 use plan_file::{PlanFile, Timing};
+
+pub(crate) fn parse_setting(text: &str) -> Result<(String, String), String> {
+    match text.split_once('=') {
+        Some((name, value)) if !name.is_empty() => Ok((name.to_string(), value.to_string())),
+        _ => Err(format!("'{text}' is not name=value")),
+    }
+}
 
 /// A node's position in the plan file's DAG.
 pub type NodeId = usize;

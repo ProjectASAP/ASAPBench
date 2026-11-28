@@ -246,9 +246,9 @@ fn cgroup_cpu_is_quantized_to_whole_microseconds() {
 /// 2 series, one sample per second for 60 s from 1,000 ms; one
 /// `sum_over_time` query over 10 s every 10 s.
 fn two_series_workload() -> WorkloadSpec {
-    WorkloadSpec {
-        name: "two".into(),
-        queries: vec![WorkloadQuery {
+    WorkloadSpec::periodic(
+        "two".into(),
+        vec![WorkloadQuery {
             id: "sum".into(),
             texts: vec![QueryText {
                 language: QueryLanguage::PromQl,
@@ -259,7 +259,7 @@ fn two_series_workload() -> WorkloadSpec {
             evaluation_interval_ms: 10_000,
             truth: None,
         }],
-        data: vec![DataRecord {
+        vec![DataRecord {
             metric: "m".into(),
             description: TimeSeriesDescription {
                 labels: vec![SeriesLabelSpec {
@@ -280,9 +280,7 @@ fn two_series_workload() -> WorkloadSpec {
                 seed: 1,
             },
         }],
-        tables: Vec::new(),
-        one_shot_queries: Vec::new(),
-    }
+    )
 }
 
 /// A1: a whole arm on a fake server in its own group. Ingesting a chunk of

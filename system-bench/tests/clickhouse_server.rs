@@ -17,6 +17,7 @@ use aqpbm_core::harness::engine::{
 };
 use common::{fixture_path, fixture_value, payload_body};
 use serde_json::json;
+use system_bench::engines_external::clickhouse_connection::ClickHouseConnection;
 use system_bench::engines_external::clickhouse_server::{
     series_identity, ClickHouseEngine, ClickHouseServer,
 };
@@ -148,14 +149,16 @@ fn decode(text: &str) -> String {
 
 fn engine(stub: &Stub) -> ClickHouseEngine {
     ClickHouseEngine::new(ClickHouseServer {
-        url: stub.url.clone(),
+        connection: ClickHouseConnection {
+            url: stub.url.clone(),
+            statement_timeout: Duration::from_secs(5),
+        },
         cgroup: CgroupSource::Remote {
             ssh_program: "ssh".into(),
             host: "bench@10.0.0.2".into(),
             cgroup_directory: "/sys/fs/cgroup/system.slice/docker-1.scope".into(),
         },
         max_threads: 1,
-        statement_timeout: Duration::from_secs(5),
     })
     .expect("engine")
 }
@@ -173,9 +176,9 @@ fn arm(plan: &str) -> ArmSpec {
 fn workload_of(plan: &str, interval_ms: u64, start_ms: i64) -> WorkloadSpec {
     let value = fixture_value(plan);
     let texts: Vec<String> = serde_json::from_value(value["query_texts"].clone()).unwrap();
-    WorkloadSpec {
-        name: plan.into(),
-        queries: texts
+    WorkloadSpec::periodic(
+        plan.into(),
+        texts
             .iter()
             .enumerate()
             .map(|(i, text)| WorkloadQuery {
@@ -190,10 +193,8 @@ fn workload_of(plan: &str, interval_ms: u64, start_ms: i64) -> WorkloadSpec {
                 truth: None,
             })
             .collect(),
-        data: vec![data_record(start_ms)],
-        tables: Vec::new(),
-        one_shot_queries: Vec::new(),
-    }
+        vec![data_record(start_ms)],
+    )
 }
 
 fn data_record(start_ms: i64) -> DataRecord {
@@ -603,14 +604,16 @@ fn a_server_that_never_answers_times_out() {
     });
     let started = std::time::Instant::now();
     let result = ClickHouseEngine::new(ClickHouseServer {
-        url,
+        connection: ClickHouseConnection {
+            url,
+            statement_timeout: Duration::from_secs(1),
+        },
         cgroup: CgroupSource::Remote {
             ssh_program: "ssh".into(),
             host: "bench@10.0.0.2".into(),
             cgroup_directory: "/sys/fs/cgroup/system.slice/docker-1.scope".into(),
         },
         max_threads: 1,
-        statement_timeout: Duration::from_secs(1),
     });
     assert!(result.is_err());
     assert!(started.elapsed() < Duration::from_secs(20));
@@ -666,14 +669,16 @@ fn leftover_databases_are_refused() {
             .then(|| (200, vec![], "bench_1_0\nbench_1_1\n".to_string()))
     })]);
     let error = ClickHouseEngine::new(ClickHouseServer {
-        url: stub.url.clone(),
+        connection: ClickHouseConnection {
+            url: stub.url.clone(),
+            statement_timeout: Duration::from_secs(5),
+        },
         cgroup: CgroupSource::Remote {
             ssh_program: "ssh".into(),
             host: "bench@10.0.0.2".into(),
             cgroup_directory: "/sys/fs/cgroup/system.slice/docker-1.scope".into(),
         },
         max_threads: 1,
-        statement_timeout: Duration::from_secs(5),
     })
     .err()
     .expect("refused");
@@ -731,9 +736,9 @@ fn only_a_bare_selector_keeps_the_metric_name() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("selector.plan.json");
     std::fs::write(&path, plan.to_string()).unwrap();
-    let workload = WorkloadSpec {
-        name: "selector".into(),
-        queries: vec![WorkloadQuery {
+    let workload = WorkloadSpec::periodic(
+        "selector".into(),
+        vec![WorkloadQuery {
             id: "q0".into(),
             texts: vec![QueryText {
                 language: QueryLanguage::PromQl,
@@ -744,10 +749,8 @@ fn only_a_bare_selector_keeps_the_metric_name() {
             evaluation_interval_ms: 60_000,
             truth: None,
         }],
-        data: vec![data_record(0)],
-        tables: Vec::new(),
-        one_shot_queries: Vec::new(),
-    };
+        vec![data_record(0)],
+    );
     let mut selector_arm = arm("sum_over_time_1h_stored_sum");
     selector_arm.engine_options = json!({ "plan_file": path });
     let mut installed = engine(&stub).install(&workload, &selector_arm).unwrap();

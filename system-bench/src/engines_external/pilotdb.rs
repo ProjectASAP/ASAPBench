@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use super::duckdb_command_line::DuckDbDatabaseOptions;
 use aqpbm_core::harness::engine::{EngineDescription, EngineError, SqlDialect};
 use aqpbm_core::harness::one_shot::{
     ErrorTarget, OneShotQueryEngine, QueryRun, ResultTable, ResultValue,
@@ -160,7 +161,7 @@ impl OneShotQueryEngine for PilotDbEngine {
     }
 
     fn dialect(&self) -> SqlDialect {
-        SqlDialect::DuckDb
+        SqlDialect::new(super::duckdb_command_line::DIALECT)
     }
 
     fn configuration(&self) -> serde_json::Value {
@@ -214,4 +215,28 @@ impl OneShotQueryEngine for PilotDbEngine {
         ])?;
         parse_driver_answer(&line)
     }
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct PilotDbOptions {
+    #[arg(long, default_value = "python3")]
+    pub pilotdb_python: PathBuf,
+    #[command(flatten)]
+    pub database: DuckDbDatabaseOptions,
+    #[arg(long, default_value_t = 0.05)]
+    pub pilotdb_relative_error: f64,
+    #[arg(long, default_value_t = 0.05)]
+    pub pilotdb_failure_probability: f64,
+}
+
+pub fn one_shot_queries(matches: &clap::ArgMatches) -> anyhow::Result<Box<dyn OneShotQueryEngine>> {
+    let options = <PilotDbOptions as clap::FromArgMatches>::from_arg_matches(matches)?;
+    Ok(Box::new(PilotDbEngine::new(PilotDbOnDuckDb {
+        python: options.pilotdb_python,
+        database: options.database.database("pilotdb")?,
+        relative_error: options.pilotdb_relative_error,
+        failure_probability: options.pilotdb_failure_probability,
+        threads: options.database.duckdb_threads,
+        scratch_directory: std::env::temp_dir(),
+    })?))
 }

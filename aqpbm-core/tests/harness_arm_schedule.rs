@@ -20,10 +20,10 @@ fn query(id: &str, window_ms: u64, evaluation_interval_ms: u64) -> WorkloadQuery
 }
 
 fn workload(queries: Vec<WorkloadQuery>, start_ms: i64, duration_ms: u64) -> WorkloadSpec {
-    WorkloadSpec {
-        name: "w".into(),
+    WorkloadSpec::periodic(
+        "w".into(),
         queries,
-        data: vec![DataRecord {
+        vec![DataRecord {
             metric: "m".into(),
             description: TimeSeriesDescription {
                 labels: vec![SeriesLabelSpec {
@@ -44,9 +44,7 @@ fn workload(queries: Vec<WorkloadQuery>, start_ms: i64, duration_ms: u64) -> Wor
                 seed: 1,
             },
         }],
-        tables: Vec::new(),
-        one_shot_queries: Vec::new(),
-    }
+    )
 }
 
 /// Windows 30 s and 20 s every 10 s over data from 0 ms for 120 s: the

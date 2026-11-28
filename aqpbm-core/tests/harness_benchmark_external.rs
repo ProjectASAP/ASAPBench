@@ -56,9 +56,9 @@ impl LoadProbe for IdleProbe {
 /// `sum_over_time(m[10s])` every 10 s over 2 series, 1 sample per second
 /// for 60 s.
 fn workload(name: &str) -> WorkloadSpec {
-    WorkloadSpec {
-        name: name.into(),
-        queries: vec![WorkloadQuery {
+    WorkloadSpec::periodic(
+        name.into(),
+        vec![WorkloadQuery {
             id: "sum".into(),
             texts: vec![QueryText {
                 language: QueryLanguage::PromQl,
@@ -69,7 +69,7 @@ fn workload(name: &str) -> WorkloadSpec {
             evaluation_interval_ms: 10_000,
             truth: None,
         }],
-        data: vec![DataRecord {
+        vec![DataRecord {
             metric: "m".into(),
             description: TimeSeriesDescription {
                 labels: vec![SeriesLabelSpec {
@@ -90,9 +90,7 @@ fn workload(name: &str) -> WorkloadSpec {
                 seed: 1,
             },
         }],
-        tables: Vec::new(),
-        one_shot_queries: Vec::new(),
-    }
+    )
 }
 
 fn write(path: &Path, text: &str) {

@@ -3,6 +3,7 @@
 //! [`REGISTRY`](crate::registry::REGISTRY). [`check`](crate::registry::check) is what the frontend calls.
 
 use crate::request::Requirement;
+use crate::rows::{self, RowBinding};
 use aqpbm_core::metrics::{is_measurable, Metric, MetricsMask, Operation, OperationMask};
 
 pub use crate::request::{Capability, Dtype};
@@ -24,6 +25,8 @@ pub struct SketchId {
     /// The metrics this sketch can carry. Everything but accuracy, which needs
     /// a comparator and so follows [`SketchId::capability`].
     pub metrics: MetricsMask,
+    pub row: RowBinding,
+    pub takes_seed: bool,
 }
 
 // ---------- the registry ----------
@@ -48,6 +51,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_cms_oxide,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "cms",
@@ -64,6 +69,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_cms_datasketches,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "cms",
@@ -80,6 +87,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_cms_polars,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "cms",
@@ -96,6 +105,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_cms_fastpath_fixedmatrix_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "cms",
@@ -112,6 +123,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_cms_fastpath_vector2d_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "cms",
@@ -128,6 +141,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_cms_regularpath_vector2d_lib,
+        takes_seed: false,
     },
     // Parallel insert: no `ask`, so nothing scores it and no query is offered.
     SketchId {
@@ -141,6 +156,8 @@ pub const REGISTRY: &[SketchId] = &[
         metrics: MetricsMask::THROUGHPUT
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY),
+        row: rows::row_cms_fastpath_fixedmatrix_32k_parallel_lib,
+        takes_seed: false,
     },
     // -------- CMS + heap (frequency, and top-k) --------
     // A separate algorithm from `cms`: `CmsHeapParams` adds the heap's
@@ -166,6 +183,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_cms_heap_fastpath_vector2d_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "cms-heap",
@@ -184,6 +203,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_cms_heap_topk_fastpath_vector2d_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "cms-heap",
@@ -200,6 +221,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_cms_heap_regularpath_vector2d_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "cms-heap",
@@ -218,6 +241,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_cms_heap_topk_regularpath_vector2d_lib,
+        takes_seed: false,
     },
     // -------- CountSketch (frequency) --------
     // No `datasketches` entry: that library ships no CountSketch.
@@ -236,6 +261,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_countsketch_oxide,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "countsketch",
@@ -252,6 +279,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_countsketch_polars,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "countsketch",
@@ -268,6 +297,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_countsketch_fastpath_fixedmatrix_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "countsketch",
@@ -284,6 +315,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_countsketch_fastpath_vector2d_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "countsketch",
@@ -300,6 +333,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_countsketch_regularpath_vector2d_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "countsketch",
@@ -312,6 +347,8 @@ pub const REGISTRY: &[SketchId] = &[
         metrics: MetricsMask::THROUGHPUT
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY),
+        row: rows::row_countsketch_fastpath_fixedmatrix_32k_parallel_lib,
+        takes_seed: false,
     },
     // -------- CountSketch + heap (top-k) --------
     SketchId {
@@ -329,6 +366,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_countsketch_heap_topk_fastpath_vector2d_lib,
+        takes_seed: false,
     },
     // -------- HLL (cardinality) --------
     // The three `lib` precisions are one entry: one variant at one library, with
@@ -348,6 +387,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hll_oxide,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "hll",
@@ -364,6 +405,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hll_datasketches,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "hll",
@@ -380,6 +423,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hll_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "hll",
@@ -396,6 +441,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hll_polars,
+        takes_seed: false,
     },
     // Its own variant, not an impl of `hll`: the estimate is maintained on the
     // insert path instead of scanned at query time. It also supplies no `merge`,
@@ -413,6 +460,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hll_hip_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "hll",
@@ -425,6 +474,8 @@ pub const REGISTRY: &[SketchId] = &[
         metrics: MetricsMask::THROUGHPUT
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY),
+        row: rows::row_hll_fastpath_parallel_lib,
+        takes_seed: false,
     },
     // -------- KLL (quantile) --------
     // Two query paths x two libraries. The `cdf` entries supply a `prepare` and
@@ -445,6 +496,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_kll_percall_oxide,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "kll",
@@ -461,6 +514,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_kll_percall_lib,
+        takes_seed: true,
     },
     SketchId {
         algorithm: "kll",
@@ -478,6 +533,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_kll_cdf_oxide,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "kll",
@@ -495,6 +552,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_kll_cdf_lib,
+        takes_seed: true,
     },
     // The exact baseline is i64 only, unlike the four sketch entries above it.
     SketchId {
@@ -512,6 +571,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_kll_cdf_polars,
+        takes_seed: false,
     },
     // -------- DDSketch (quantile) --------
     SketchId {
@@ -529,6 +590,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_dd_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "dd",
@@ -545,6 +608,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_dd_oxide,
+        takes_seed: false,
     },
     // -------- Hydra (per-subpopulation statistics over labelled records) --------
     // Three algorithms, not one: what sits in a cell decides which statistic the
@@ -565,6 +630,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hydra_cms_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "hydra-cms",
@@ -581,6 +648,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hydra_cms_polars,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "hydra-cs",
@@ -597,6 +666,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hydra_cs_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "hydra-cs",
@@ -613,6 +684,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hydra_cs_polars,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "hydra-hll",
@@ -629,6 +702,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hydra_hll_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "hydra-hll",
@@ -645,6 +720,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hydra_hll_polars,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "hydra-kll",
@@ -661,6 +738,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hydra_kll_lib,
+        takes_seed: true,
     },
     SketchId {
         algorithm: "hydra-kll",
@@ -677,6 +756,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hydra_kll_polars,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "hydra-kll",
@@ -693,6 +774,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hydra_kll_cdf_lib,
+        takes_seed: true,
     },
     SketchId {
         algorithm: "hydra-kll",
@@ -709,6 +792,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hydra_kll_cdf_polars,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "hydra-univmon",
@@ -725,6 +810,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hydra_univmon_cardinality_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "hydra-univmon",
@@ -741,6 +828,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hydra_univmon_cardinality_polars,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "hydra-univmon",
@@ -757,6 +846,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hydra_univmon_l1_norm_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "hydra-univmon",
@@ -773,6 +864,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hydra_univmon_l1_norm_polars,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "hydra-univmon",
@@ -789,6 +882,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hydra_univmon_l2_norm_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "hydra-univmon",
@@ -805,6 +900,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hydra_univmon_l2_norm_polars,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "hydra-univmon",
@@ -821,6 +918,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hydra_univmon_entropy_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "hydra-univmon",
@@ -837,6 +936,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hydra_univmon_entropy_polars,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "hydra-univmon",
@@ -853,6 +954,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hydra_univmon_sum_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "hydra-univmon",
@@ -869,6 +972,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hydra_univmon_sum_polars,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "univmon",
@@ -885,6 +990,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_univmon_cardinality_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "univmon",
@@ -901,6 +1008,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_univmon_l1_norm_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "univmon",
@@ -917,6 +1026,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_univmon_l1_norm_oxide,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "univmon",
@@ -933,6 +1044,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_univmon_l2_norm_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "univmon",
@@ -949,6 +1062,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_univmon_l2_norm_oxide,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "univmon",
@@ -965,6 +1080,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_univmon_entropy_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "univmon",
@@ -981,6 +1098,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_univmon_entropy_oxide,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "univmon",
@@ -998,6 +1117,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_univmon_topk_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "hll",
@@ -1014,6 +1135,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_hll_ertl_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "kmv",
@@ -1030,6 +1153,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_kmv_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "bloom",
@@ -1046,6 +1171,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_bloom_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "space-saving",
@@ -1062,6 +1189,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_space_saving_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "space-saving",
@@ -1078,6 +1207,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_space_saving_topk_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "count-min-space-saving",
@@ -1094,6 +1225,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_count_min_space_saving_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "count-min-space-saving",
@@ -1110,6 +1243,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_count_min_space_saving_topk_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "count-sketch-space-saving",
@@ -1126,6 +1261,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_count_sketch_space_saving_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "count-sketch-space-saving",
@@ -1142,6 +1279,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_count_sketch_space_saving_topk_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "count-min-fold",
@@ -1158,6 +1297,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_count_min_fold_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "count-min-fold",
@@ -1174,6 +1315,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_count_min_fold_topk_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "count-sketch-fold",
@@ -1190,6 +1333,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_count_sketch_fold_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "count-sketch-fold",
@@ -1206,6 +1351,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_count_sketch_fold_topk_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "count-sketch-l2-norm",
@@ -1222,6 +1369,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_count_sketch_l2_norm_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "count-min-hll",
@@ -1238,6 +1387,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_count_min_hll_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "elastic",
@@ -1254,6 +1405,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_elastic_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "elastic",
@@ -1270,6 +1423,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_elastic_topk_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "coco",
@@ -1286,6 +1441,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_coco_lib,
+        takes_seed: true,
     },
     SketchId {
         algorithm: "kll",
@@ -1302,6 +1459,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_kll_dynamic_lib,
+        takes_seed: true,
     },
     SketchId {
         algorithm: "uniform-sampling",
@@ -1318,6 +1477,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_uniform_sampling_lib,
+        takes_seed: true,
     },
     SketchId {
         algorithm: "univmon-two-tier",
@@ -1334,6 +1495,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_univmon_two_tier_cardinality_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "univmon-two-tier",
@@ -1350,6 +1513,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_univmon_two_tier_l1_norm_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "univmon-two-tier",
@@ -1366,6 +1531,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_univmon_two_tier_l2_norm_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "univmon-two-tier",
@@ -1382,6 +1549,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_univmon_two_tier_entropy_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "univmon-q",
@@ -1398,6 +1567,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_univmon_q_quantile_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "univmon-q",
@@ -1414,6 +1585,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_univmon_q_cardinality_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "univmon-q",
@@ -1430,6 +1603,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_univmon_q_frequency_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "univmon-q",
@@ -1446,6 +1621,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_univmon_q_topk_lib,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "nitro",
@@ -1461,6 +1638,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_nitro_count_min_lib,
+        takes_seed: true,
     },
     SketchId {
         algorithm: "nitro",
@@ -1476,6 +1655,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_nitro_count_sketch_lib,
+        takes_seed: true,
     },
     // -------- exact multi-subpopulation accumulators (as ASAPQuery's) --------
     // Grouped input: every column before the value is a label. `exact-sum`
@@ -1496,6 +1677,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_exact_sum,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "exact",
@@ -1512,6 +1695,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_exact_min,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "exact",
@@ -1528,6 +1713,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_exact_max,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "exact",
@@ -1545,6 +1732,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_exact_increase,
+        takes_seed: false,
     },
     SketchId {
         algorithm: "exact",
@@ -1561,6 +1750,8 @@ pub const REGISTRY: &[SketchId] = &[
             .union(MetricsMask::CPU)
             .union(MetricsMask::MEMORY)
             .union(MetricsMask::ACCURACY),
+        row: rows::row_exact_delta_set,
+        takes_seed: false,
     },
 ];
 

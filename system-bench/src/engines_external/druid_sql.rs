@@ -7,6 +7,8 @@ use serde_json::{json, Map, Value};
 
 use super::restart_command::restart_and_wait;
 
+pub const DIALECT: &str = "Druid";
+
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq)]
@@ -280,7 +282,7 @@ impl OneShotQueryEngine for DruidEngine {
     }
 
     fn dialect(&self) -> SqlDialect {
-        SqlDialect::Druid
+        SqlDialect::new(DIALECT)
     }
 
     fn configuration(&self) -> Value {
@@ -355,4 +357,42 @@ impl OneShotQueryEngine for DruidEngine {
             std::thread::sleep(Duration::from_secs(1));
         }
     }
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct DruidOptions {
+    #[arg(long)]
+    pub druid_url: Option<String>,
+    #[arg(long = "druid-context", value_parser = super::parse_setting)]
+    pub druid_context: Vec<(String, String)>,
+    #[arg(long, default_value_t = 600)]
+    pub druid_statement_timeout_seconds: u64,
+    #[arg(long, default_value_t = 21600)]
+    pub druid_load_timeout_seconds: u64,
+    #[arg(long)]
+    pub druid_restart_command: Option<String>,
+    #[arg(long, default_value_t = 600)]
+    pub druid_ready_timeout_seconds: u64,
+    #[arg(long, default_value_t = 3600)]
+    pub druid_idle_timeout_seconds: u64,
+}
+
+pub fn one_shot_queries(matches: &clap::ArgMatches) -> anyhow::Result<Box<dyn OneShotQueryEngine>> {
+    let options = <DruidOptions as clap::FromArgMatches>::from_arg_matches(matches)?;
+    let Some(url) = options.druid_url else {
+        anyhow::bail!("engine druid needs --druid-url");
+    };
+    Ok(Box::new(DruidEngine::new(DruidServer {
+        url,
+        context: options
+            .druid_context
+            .iter()
+            .map(|(name, value)| (name.clone(), context_value(value)))
+            .collect(),
+        statement_timeout: Duration::from_secs(options.druid_statement_timeout_seconds),
+        load_timeout: Duration::from_secs(options.druid_load_timeout_seconds),
+        restart_command: options.druid_restart_command,
+        ready_timeout: Duration::from_secs(options.druid_ready_timeout_seconds),
+        idle_timeout: Duration::from_secs(options.druid_idle_timeout_seconds),
+    })?))
 }

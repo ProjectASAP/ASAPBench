@@ -47,24 +47,22 @@ fn sql(text: &str) -> QueryText {
 }
 
 fn workload() -> WorkloadSpec {
-    WorkloadSpec {
-        name: "events".into(),
-        queries: Vec::new(),
-        data: Vec::new(),
-        tables: vec![TableSource {
+    WorkloadSpec::one_shot(
+        "events".into(),
+        vec![TableSource {
             name: "events".into(),
             file_name: "events.csv".into(),
             url: None,
             rows: 4,
             load_statements: vec![LoadStatements {
-                dialect: SqlDialect::DuckDb,
+                dialect: SqlDialect::new("DuckDb"),
                 statements: vec![
                     "CREATE TABLE events (k INTEGER, v DOUBLE)".into(),
                     "INSERT INTO events SELECT * FROM read_csv('{file}')".into(),
                 ],
             }],
         }],
-        one_shot_queries: vec![
+        vec![
             OneShotQuery {
                 id: "total".into(),
                 texts: vec![sql("SELECT SUM(v), COUNT(*) FROM events")],
@@ -81,7 +79,7 @@ fn workload() -> WorkloadSpec {
                 )]),
             },
         ],
-    }
+    )
 }
 
 fn write_workload(run: &Path) {
@@ -135,6 +133,38 @@ fn an_unknown_engine_and_a_missing_database_are_refused() {
         "duckdb",
     ]);
     assert!(!output.status.success());
+}
+
+#[test]
+fn a_dialect_no_system_reads_is_refused() {
+    let fixture = Fixture::new("dialect");
+    let run = fixture.run();
+    let mut spec = workload();
+    spec.one_shot_queries[0].texts[0].dialect = Some(SqlDialect::new("SQLite"));
+    std::fs::write(
+        run.join("workloads/events.json"),
+        serde_json::to_string_pretty(&spec).unwrap(),
+    )
+    .unwrap();
+    let output = approxbench(&[
+        "one-shot-queries",
+        "--run-directory",
+        run.to_str().unwrap(),
+        "--workload",
+        "events",
+        "--configuration",
+        "exact",
+        "--engine",
+        "duckdb",
+        "--duckdb-database",
+        "/nonexistent",
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown variant `SQLite`, expected one of `DuckDb`, `ClickHouse`"),
+        "{stderr}"
+    );
 }
 
 #[test]

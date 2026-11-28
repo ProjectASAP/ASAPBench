@@ -128,10 +128,10 @@ impl InstalledArm for MarkerArm {
 
 /// One series of `m`, one sample per second for 20 s.
 fn workload() -> WorkloadSpec {
-    WorkloadSpec {
-        name: "w".into(),
-        queries: Vec::new(),
-        data: vec![DataRecord {
+    WorkloadSpec::periodic(
+        "w".into(),
+        Vec::new(),
+        vec![DataRecord {
             metric: "m".into(),
             description: TimeSeriesDescription {
                 labels: vec![SeriesLabelSpec {
@@ -152,9 +152,7 @@ fn workload() -> WorkloadSpec {
                 seed: 1,
             },
         }],
-        tables: Vec::new(),
-        one_shot_queries: Vec::new(),
-    }
+    )
 }
 
 /// Warm-up 1 and 5 runs, evaluations at 10 s and 20 s: each evaluation

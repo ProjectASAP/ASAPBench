@@ -107,9 +107,9 @@ fn recording_server() -> (String, Arc<Mutex<Vec<Request>>>) {
 }
 
 fn workload() -> WorkloadSpec {
-    WorkloadSpec {
-        name: "w".into(),
-        queries: [("q", "max_over_time(m[1m])"), ("selector", "m{job=\"a\"}")]
+    WorkloadSpec::periodic(
+        "w".into(),
+        [("q", "max_over_time(m[1m])"), ("selector", "m{job=\"a\"}")]
             .into_iter()
             .map(|(id, text)| WorkloadQuery {
                 id: id.into(),
@@ -123,7 +123,7 @@ fn workload() -> WorkloadSpec {
                 truth: None,
             })
             .collect(),
-        data: vec![aqpbm_core::harness::data::DataRecord {
+        vec![aqpbm_core::harness::data::DataRecord {
             metric: "m".into(),
             description: TimeSeriesDescription {
                 labels: vec![SeriesLabelSpec {
@@ -144,9 +144,7 @@ fn workload() -> WorkloadSpec {
                 seed: 1,
             },
         }],
-        tables: Vec::new(),
-        one_shot_queries: Vec::new(),
-    }
+    )
 }
 
 fn query_text_arm() -> ArmSpec {

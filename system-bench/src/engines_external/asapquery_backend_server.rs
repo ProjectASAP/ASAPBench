@@ -8,9 +8,11 @@ use aqpbm_core::harness::engine::{
     InstalledArm, PlanSummary, QueryLanguage, StepReport, WorkloadSpec,
 };
 
+use super::server_cgroup::ServerCgroupOptions;
 use crate::prometheus_api::query_text_arm::{
     ask_every_query, queries_to_ask, write_chunk, QueryToAsk,
 };
+use aqpbm_core::harness::protocol::Protocol;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AsapqueryBackendServer {
@@ -176,4 +178,38 @@ impl InstalledArm for AsapqueryBackendArm {
             .held_bytes()
             .map_err(|error| EngineError(format!("{error:#}")))
     }
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct AsapqueryBackendOptions {
+    /// The ASAPQuery-backend server's HTTP interface, e.g.
+    /// `http://10.0.0.1:8080` (engine `asapquery-backend`).
+    #[arg(long)]
+    pub asapquery_backend_url: Option<String>,
+    #[command(flatten)]
+    pub cgroup: ServerCgroupOptions,
+}
+
+pub fn periodic_queries(
+    matches: &clap::ArgMatches,
+    protocol: &Protocol,
+) -> anyhow::Result<Box<dyn EngineUnderTest>> {
+    let options = <AsapqueryBackendOptions as clap::FromArgMatches>::from_arg_matches(matches)?;
+    let (Some(url), Some(cgroup)) = (options.asapquery_backend_url, options.cgroup.source()) else {
+        anyhow::bail!(
+            "engine asapquery-backend needs --asapquery-backend-url and --server-cgroup-directory"
+        );
+    };
+    if protocol.warmup_runs != 0 || protocol.measured_runs != 1 {
+        anyhow::bail!(
+            "engine asapquery-backend runs one arm per server start: pass --warmup 0 --runs 1"
+        );
+    }
+    Ok(Box::new(AsapqueryBackendEngine::new(
+        AsapqueryBackendServer {
+            url,
+            cgroup,
+            request_timeout: Duration::from_secs(600),
+        },
+    )?))
 }

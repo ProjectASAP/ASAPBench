@@ -32,10 +32,10 @@ fn proc_root(test: &str) -> TempRoot {
 }
 
 fn workload(series: u64, duration_ms: u64) -> WorkloadSpec {
-    WorkloadSpec {
-        name: "writes".into(),
-        queries: Vec::new(),
-        data: vec![DataRecord {
+    WorkloadSpec::periodic(
+        "writes".into(),
+        Vec::new(),
+        vec![DataRecord {
             metric: "bench_metric".into(),
             description: TimeSeriesDescription {
                 labels: vec![
@@ -63,9 +63,7 @@ fn workload(series: u64, duration_ms: u64) -> WorkloadSpec {
                 seed: 1,
             },
         }],
-        tables: Vec::new(),
-        one_shot_queries: Vec::new(),
-    }
+    )
 }
 
 fn arm() -> ArmSpec {
