@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -68,11 +69,16 @@ fn workload() -> WorkloadSpec {
                 id: "total".into(),
                 texts: vec![sql("SELECT SUM(v), COUNT(*) FROM events")],
                 group_by_column_positions: Vec::new(),
+                variants: BTreeMap::new(),
             },
             OneShotQuery {
                 id: "by-key".into(),
                 texts: vec![sql("SELECT k, SUM(v) FROM events GROUP BY k")],
                 group_by_column_positions: vec![0],
+                variants: BTreeMap::from([(
+                    "approximate".to_string(),
+                    vec![sql("SELECT k, SUM(v) * 1.0 FROM events GROUP BY k")],
+                )]),
             },
         ],
     }
@@ -139,28 +145,38 @@ fn duckdb_loads_runs_and_reports_against_itself() {
     )
     .unwrap();
     let database = fixture.0.join("events.db");
-    for configuration in ["exact", "exact-again"] {
-        let output = approxbench(&[
-            "one-shot-queries",
-            "--run-directory",
-            run.to_str().unwrap(),
-            "--engine",
-            "duckdb",
-            "--workload",
-            "events",
-            "--configuration",
-            configuration,
-            "--duckdb-program",
-            &duckdb,
-            "--duckdb-database",
-            database.to_str().unwrap(),
-            "--duckdb-threads",
-            "2",
-            "--data-directory",
-            fixture.0.join("source").to_str().unwrap(),
-            "--runs",
-            "2",
-        ]);
+    for (configuration, variant) in [
+        ("exact", &[][..]),
+        ("exact-again", &[][..]),
+        ("approximate", &["--query-variant", "approximate"][..]),
+    ] {
+        let output = approxbench(
+            &[
+                &[
+                    "one-shot-queries",
+                    "--run-directory",
+                    run.to_str().unwrap(),
+                    "--engine",
+                    "duckdb",
+                    "--workload",
+                    "events",
+                    "--configuration",
+                    configuration,
+                    "--duckdb-program",
+                    &duckdb,
+                    "--duckdb-database",
+                    database.to_str().unwrap(),
+                    "--duckdb-threads",
+                    "2",
+                    "--data-directory",
+                    fixture.0.join("source").to_str().unwrap(),
+                    "--runs",
+                    "2",
+                ],
+                variant,
+            ]
+            .concat(),
+        );
         assert!(
             output.status.success(),
             "{}",
@@ -181,6 +197,17 @@ fn duckdb_loads_runs_and_reports_against_itself() {
     )
     .unwrap();
     assert_eq!(again["tables"][0]["loaded_in_this_run"], false);
+    let approximate: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(run.join("results/duckdb/events__approximate.one-shot.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(approximate["query_variant"], "approximate");
+    assert_eq!(approximate["queries"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        approximate["queries"][0]["sql"],
+        "SELECT k, SUM(v) * 1.0 FROM events GROUP BY k"
+    );
     let output = approxbench(&[
         "one-shot-report",
         "--run-directory",
@@ -196,7 +223,7 @@ fn duckdb_loads_runs_and_reports_against_itself() {
         String::from_utf8_lossy(&output.stderr)
     );
     let summary = std::fs::read_to_string(run.join("one-shot-summary.csv")).unwrap();
-    assert_eq!(summary.lines().count(), 5, "{summary}");
+    assert_eq!(summary.lines().count(), 6, "{summary}");
     for line in summary.lines().skip(1) {
         let fields: Vec<&str> = line.split(',').collect();
         assert_eq!(fields[4], "ok", "{line}");

@@ -125,16 +125,25 @@ fn workload() -> WorkloadSpec {
                 id: "1".into(),
                 texts: vec![sql("SELECT COUNT(*) FROM hits", None)],
                 group_by_column_positions: Vec::new(),
+                variants: BTreeMap::new(),
             },
             OneShotQuery {
                 id: "2".into(),
                 texts: vec![sql("SELECT 2", Some(SqlDialect::ClickHouse))],
                 group_by_column_positions: Vec::new(),
+                variants: BTreeMap::from([(
+                    "approximate".to_string(),
+                    vec![sql("SELECT 2.0", Some(SqlDialect::ClickHouse))],
+                )]),
             },
             OneShotQuery {
                 id: "3".into(),
                 texts: vec![sql("SELECT 3", None)],
                 group_by_column_positions: Vec::new(),
+                variants: BTreeMap::from([(
+                    "approximate".to_string(),
+                    vec![sql("SELECT 3.0", None)],
+                )]),
             },
         ],
     }
@@ -145,6 +154,7 @@ fn schedule(runs: u32, cold_first_run: bool) -> OneShotSchedule {
         runs,
         cold_first_run,
         queries: Vec::new(),
+        query_variant: None,
     }
 }
 
@@ -349,6 +359,48 @@ fn only_the_chosen_queries_run_and_an_unknown_one_is_refused() {
         matches!(error, OneShotError::UnknownQuery { .. }),
         "{error}"
     );
+}
+
+#[test]
+fn a_variant_runs_only_the_queries_written_in_it() {
+    let directory = TempDirectory::new("variant");
+    let drop_caches = directory.0.join("drop_caches");
+    let mut approximate = schedule(1, false);
+    approximate.query_variant = Some("approximate".into());
+    let mut engine = ScriptedEngine {
+        rows: Some(10),
+        ..ScriptedEngine::default()
+    };
+    let result = run_one_shot_queries(
+        &mut engine,
+        &workload(),
+        &setup(&approximate, None, &drop_caches),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(engine.asked, vec!["SELECT 3.0"]);
+    assert_eq!(result.query_variant.as_deref(), Some("approximate"));
+    let ids: Vec<(&str, Option<&str>)> = result
+        .queries
+        .iter()
+        .map(|query| (query.id.as_str(), query.skipped.as_deref()))
+        .collect();
+    assert_eq!(
+        ids,
+        vec![
+            ("2", Some("no approximate SQL text for DuckDb")),
+            ("3", None)
+        ]
+    );
+    approximate.query_variant = Some("sampled".into());
+    let error = run_one_shot_queries(
+        &mut engine,
+        &workload(),
+        &setup(&approximate, None, &drop_caches),
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert!(matches!(error, OneShotError::NoVariant { .. }), "{error}");
 }
 
 #[test]

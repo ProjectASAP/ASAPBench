@@ -82,6 +82,7 @@ fn result(
         configuration: configuration.into(),
         configuration_options: serde_json::Value::Null,
         error_target,
+        query_variant: None,
         cold_first_run: true,
         tables: vec![TableRecord {
             name: "hits".into(),

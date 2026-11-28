@@ -131,12 +131,18 @@ pub struct OneShotQuery {
     pub texts: Vec<QueryText>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub group_by_column_positions: Vec<usize>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub variants: BTreeMap<String, Vec<QueryText>>,
 }
 
 impl OneShotQuery {
-    pub fn sql_for(&self, dialect: SqlDialect) -> Option<&str> {
+    pub fn sql_for(&self, dialect: SqlDialect, variant: Option<&str>) -> Option<&str> {
+        let texts = match variant {
+            Some(variant) => self.variants.get(variant)?,
+            None => &self.texts,
+        };
         let sql = |wanted: Option<SqlDialect>| {
-            self.texts
+            texts
                 .iter()
                 .find(|text| text.language == QueryLanguage::Sql && text.dialect == wanted)
         };
@@ -174,6 +180,7 @@ pub enum SqlDialect {
     ClickHouse,
     DuckDb,
     PostgreSql,
+    Druid,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

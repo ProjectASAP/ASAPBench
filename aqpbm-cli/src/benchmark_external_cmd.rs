@@ -185,6 +185,8 @@ pub struct OneShotQueriesArgs {
     pub configuration: String,
     #[arg(long = "query")]
     pub queries: Vec<String>,
+    #[arg(long)]
+    pub query_variant: Option<String>,
     #[arg(long, default_value_t = 3)]
     pub runs: u32,
     #[arg(long)]
@@ -327,6 +329,7 @@ fn one_shot_queries_cmd(args: OneShotQueriesArgs) -> Result<()> {
         runs: args.runs,
         cold_first_run: args.cold_first_run,
         queries: args.queries.clone(),
+        query_variant: args.query_variant.clone(),
     };
     let setup = OneShotSetup {
         configuration: &args.configuration,
