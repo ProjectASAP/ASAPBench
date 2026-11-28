@@ -121,6 +121,12 @@ fn an_unknown_engine_and_a_missing_database_are_refused() {
     let output = approxbench(&[&common[..], &["--engine", "pilotdb"]].concat());
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("--duckdb-database"));
+    let output = approxbench(&[&common[..], &["--engine", "postgresql"]].concat());
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--postgresql-connection"));
+    let output = approxbench(&[&common[..], &["--engine", "druid"]].concat());
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--druid-url"));
     let output = approxbench(&[
         "one-shot-report",
         "--run-directory",
