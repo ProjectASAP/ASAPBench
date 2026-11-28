@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -7,6 +6,7 @@ use aqpbm_core::harness::engine::{EngineDescription, EngineError, SqlDialect};
 use aqpbm_core::harness::one_shot::{OneShotQueryEngine, QueryRun, ResultTable};
 
 use super::clickhouse_server::Http;
+use super::restart_command::restart_and_wait;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClickHouseQueryTextServer {
@@ -185,32 +185,11 @@ impl OneShotQueryEngine for ClickHouseQueryTextEngine {
     }
 
     fn restart(&mut self) -> Result<(), EngineError> {
-        let Some(command) = &self.server.restart_command else {
-            return Err(EngineError(
-                "a cold run restarts the ClickHouse server; give its restart command".into(),
-            ));
-        };
-        let status = Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .status()
-            .map_err(|error| EngineError(format!("restart command: {error}")))?;
-        if !status.success() {
-            return Err(EngineError(format!("restart command exited with {status}")));
-        }
-        let start = Instant::now();
-        loop {
-            if self.text("SELECT 1").is_ok() {
-                return Ok(());
-            }
-            if start.elapsed() > self.server.ready_timeout {
-                return Err(EngineError(format!(
-                    "ClickHouse did not answer within {:?} of its restart",
-                    self.server.ready_timeout
-                )));
-            }
-            std::thread::sleep(Duration::from_millis(200));
-        }
+        let command = self.server.restart_command.clone();
+        let ready_timeout = self.server.ready_timeout;
+        restart_and_wait("ClickHouse", command.as_deref(), ready_timeout, || {
+            self.text("SELECT 1").is_ok()
+        })
     }
 
     fn run_query(&mut self, sql: &str) -> Result<QueryRun, EngineError> {

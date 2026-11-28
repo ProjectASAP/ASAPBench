@@ -21,6 +21,8 @@ pub mod clickhouse_server;
 pub mod duckdb_command_line;
 pub mod pilotdb;
 pub mod plan_file;
+pub mod postgresql_command_line;
+mod restart_command;
 pub mod victoriametrics;
 pub mod victoriametrics_server;
 
