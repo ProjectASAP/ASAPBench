@@ -186,6 +186,7 @@ pub struct OneShotSchedule {
     pub runs: u32,
     pub cold_first_run: bool,
     pub queries: Vec<String>,
+    pub query_variant: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -197,6 +198,8 @@ pub struct OneShotResult {
     pub configuration_options: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_target: Option<ErrorTarget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_variant: Option<String>,
     pub cold_first_run: bool,
     pub tables: Vec<TableRecord>,
     pub queries: Vec<QueryRecord>,
@@ -254,6 +257,8 @@ pub enum OneShotError {
     UnknownQuery { workload: String, query: String },
     #[error("workload {0} has no one-shot queries")]
     NoQueries(String),
+    #[error("no query of workload {workload} has a {variant} variant")]
+    NoVariant { workload: String, variant: String },
     #[error("runs must be at least 1")]
     NoRuns,
     #[error("table {table} holds {held} rows, the workload expects {expected}; drop it to load it again")]
@@ -326,6 +331,19 @@ pub fn run_one_shot_queries(
             });
         }
     }
+    let variant = schedule.query_variant.as_deref();
+    if let Some(variant) = variant {
+        if !workload
+            .one_shot_queries
+            .iter()
+            .any(|query| query.variants.contains_key(variant))
+        {
+            return Err(OneShotError::NoVariant {
+                workload: workload.name.clone(),
+                variant: variant.to_string(),
+            });
+        }
+    }
     let dialect = engine.dialect();
     let mut tables = Vec::with_capacity(workload.tables.len());
     for table in &workload.tables {
@@ -389,12 +407,18 @@ pub fn run_one_shot_queries(
         if !schedule.queries.is_empty() && !schedule.queries.contains(&query.id) {
             continue;
         }
-        let Some(sql) = query.sql_for(dialect) else {
+        if variant.is_some_and(|variant| !query.variants.contains_key(variant)) {
+            continue;
+        }
+        let Some(sql) = query.sql_for(dialect, variant) else {
             queries.push(QueryRecord {
                 id: query.id.clone(),
                 group_by_column_positions: query.group_by_column_positions.clone(),
                 sql: None,
-                skipped: Some(format!("no SQL text for {dialect:?}")),
+                skipped: Some(match variant {
+                    Some(variant) => format!("no {variant} SQL text for {dialect:?}"),
+                    None => format!("no SQL text for {dialect:?}"),
+                }),
                 runs: Vec::new(),
             });
             continue;
@@ -480,6 +504,7 @@ pub fn run_one_shot_queries(
         configuration: setup.configuration.to_string(),
         configuration_options: engine.configuration(),
         error_target: engine.error_target(),
+        query_variant: schedule.query_variant.clone(),
         cold_first_run: schedule.cold_first_run,
         tables,
         queries,

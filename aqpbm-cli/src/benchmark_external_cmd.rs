@@ -36,8 +36,12 @@ use system_bench::engines_external::clickhouse_query_text::{
     ClickHouseQueryTextEngine, ClickHouseQueryTextServer,
 };
 use system_bench::engines_external::clickhouse_server::{ClickHouseEngine, ClickHouseServer};
+use system_bench::engines_external::druid_sql::{context_value, DruidEngine, DruidServer};
 use system_bench::engines_external::duckdb_command_line::{DuckDbCommandLine, DuckDbEngine};
 use system_bench::engines_external::pilotdb::{PilotDbEngine, PilotDbOnDuckDb};
+use system_bench::engines_external::postgresql_command_line::{
+    PostgreSqlCommandLine, PostgreSqlEngine,
+};
 use system_bench::engines_external::victoriametrics_server::{
     VictoriaMetricsEngine, VictoriaMetricsServer,
 };
@@ -47,7 +51,7 @@ pub const ENGINES: [&str; 4] = ["fake", "clickhouse", "victoriametrics", "asapqu
 
 pub const WRITE_THROUGHPUT_ENGINES: [&str; 1] = ["asapquery-precompute-engine"];
 
-pub const ONE_SHOT_ENGINES: [&str; 3] = ["duckdb", "clickhouse", "pilotdb"];
+pub const ONE_SHOT_ENGINES: [&str; 5] = ["duckdb", "clickhouse", "pilotdb", "postgresql", "druid"];
 
 #[derive(Parser, Debug)]
 pub struct BenchmarkExternalArgs {
@@ -185,6 +189,8 @@ pub struct OneShotQueriesArgs {
     pub configuration: String,
     #[arg(long = "query")]
     pub queries: Vec<String>,
+    #[arg(long)]
+    pub query_variant: Option<String>,
     #[arg(long, default_value_t = 3)]
     pub runs: u32,
     #[arg(long)]
@@ -223,6 +229,30 @@ pub struct OneShotQueriesArgs {
     pub pilotdb_relative_error: f64,
     #[arg(long, default_value_t = 0.05)]
     pub pilotdb_failure_probability: f64,
+    #[arg(long, default_value = "psql")]
+    pub postgresql_program: PathBuf,
+    #[arg(long)]
+    pub postgresql_connection: Option<String>,
+    #[arg(long = "postgresql-setting", value_parser = parse_setting)]
+    pub postgresql_settings: Vec<(String, String)>,
+    #[arg(long)]
+    pub postgresql_restart_command: Option<String>,
+    #[arg(long, default_value_t = 120)]
+    pub postgresql_ready_timeout_seconds: u64,
+    #[arg(long)]
+    pub druid_url: Option<String>,
+    #[arg(long = "druid-context", value_parser = parse_setting)]
+    pub druid_context: Vec<(String, String)>,
+    #[arg(long, default_value_t = 600)]
+    pub druid_statement_timeout_seconds: u64,
+    #[arg(long, default_value_t = 21600)]
+    pub druid_load_timeout_seconds: u64,
+    #[arg(long)]
+    pub druid_restart_command: Option<String>,
+    #[arg(long, default_value_t = 600)]
+    pub druid_ready_timeout_seconds: u64,
+    #[arg(long, default_value_t = 3600)]
+    pub druid_idle_timeout_seconds: u64,
     #[arg(long)]
     pub cpu_frequency_governor: Option<String>,
 }
@@ -305,6 +335,40 @@ fn one_shot_engine(args: &OneShotQueriesArgs) -> Result<Box<dyn OneShotQueryEngi
             threads: args.duckdb_threads,
             scratch_directory: std::env::temp_dir(),
         })?),
+        "postgresql" => {
+            let Some(connection) = args.postgresql_connection.clone() else {
+                bail!("engine postgresql needs --postgresql-connection");
+            };
+            Box::new(PostgreSqlEngine::new(PostgreSqlCommandLine {
+                program: args.postgresql_program.clone(),
+                connection,
+                settings: args.postgresql_settings.clone(),
+                restart_command: args.postgresql_restart_command.clone(),
+                ready_timeout: std::time::Duration::from_secs(
+                    args.postgresql_ready_timeout_seconds,
+                ),
+            })?)
+        }
+        "druid" => {
+            let Some(url) = args.druid_url.clone() else {
+                bail!("engine druid needs --druid-url");
+            };
+            Box::new(DruidEngine::new(DruidServer {
+                url,
+                context: args
+                    .druid_context
+                    .iter()
+                    .map(|(name, value)| (name.clone(), context_value(value)))
+                    .collect(),
+                statement_timeout: std::time::Duration::from_secs(
+                    args.druid_statement_timeout_seconds,
+                ),
+                load_timeout: std::time::Duration::from_secs(args.druid_load_timeout_seconds),
+                restart_command: args.druid_restart_command.clone(),
+                ready_timeout: std::time::Duration::from_secs(args.druid_ready_timeout_seconds),
+                idle_timeout: std::time::Duration::from_secs(args.druid_idle_timeout_seconds),
+            })?)
+        }
         other => bail!(
             "unknown engine '{other}' for one-shot queries; known engines: {}",
             ONE_SHOT_ENGINES.join(", ")
@@ -327,6 +391,7 @@ fn one_shot_queries_cmd(args: OneShotQueriesArgs) -> Result<()> {
         runs: args.runs,
         cold_first_run: args.cold_first_run,
         queries: args.queries.clone(),
+        query_variant: args.query_variant.clone(),
     };
     let setup = OneShotSetup {
         configuration: &args.configuration,

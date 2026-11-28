@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use aqpbm_core::harness::engine::{
@@ -37,14 +38,46 @@ fn a_query_picks_its_dialect_then_plain_sql() {
             sql("SELECT 2", Some(SqlDialect::ClickHouse)),
         ],
         group_by_column_positions: Vec::new(),
+        variants: BTreeMap::new(),
     };
-    assert_eq!(query.sql_for(SqlDialect::ClickHouse), Some("SELECT 2"));
-    assert_eq!(query.sql_for(SqlDialect::DuckDb), Some("SELECT 1"));
+    assert_eq!(
+        query.sql_for(SqlDialect::ClickHouse, None),
+        Some("SELECT 2")
+    );
+    assert_eq!(query.sql_for(SqlDialect::DuckDb, None), Some("SELECT 1"));
     let only_clickhouse = OneShotQuery {
         texts: vec![sql("SELECT 2", Some(SqlDialect::ClickHouse))],
         ..query
     };
-    assert_eq!(only_clickhouse.sql_for(SqlDialect::DuckDb), None);
+    assert_eq!(only_clickhouse.sql_for(SqlDialect::DuckDb, None), None);
+}
+
+#[test]
+fn a_variant_picks_only_its_own_texts() {
+    let query: OneShotQuery = serde_json::from_str(
+        r#"{"id": "5",
+            "texts": [{"language": "Sql", "text": "SELECT COUNT(DISTINCT u) FROM t"}],
+            "variants": {"approximate": [
+                {"language": "Sql", "dialect": "PostgreSql",
+                 "text": "SELECT distinct_count(approx_count_distinct(u)) FROM t"}]}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        query.sql_for(SqlDialect::PostgreSql, Some("approximate")),
+        Some("SELECT distinct_count(approx_count_distinct(u)) FROM t")
+    );
+    assert_eq!(
+        query.sql_for(SqlDialect::PostgreSql, None),
+        Some("SELECT COUNT(DISTINCT u) FROM t")
+    );
+    assert_eq!(query.sql_for(SqlDialect::DuckDb, Some("approximate")), None);
+    assert_eq!(query.sql_for(SqlDialect::PostgreSql, Some("sampled")), None);
+    let text = serde_json::to_string(&OneShotQuery {
+        variants: BTreeMap::new(),
+        ..query
+    })
+    .unwrap();
+    assert!(!text.contains("variants"), "{text}");
 }
 
 #[test]

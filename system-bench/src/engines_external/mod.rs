@@ -18,9 +18,12 @@ pub mod asapquery_precompute_engine_server;
 pub mod clickhouse;
 pub mod clickhouse_query_text;
 pub mod clickhouse_server;
+pub mod druid_sql;
 pub mod duckdb_command_line;
 pub mod pilotdb;
 pub mod plan_file;
+pub mod postgresql_command_line;
+mod restart_command;
 pub mod victoriametrics;
 pub mod victoriametrics_server;
 
