@@ -2,7 +2,7 @@ use anyhow::{anyhow, bail, Result};
 use aqpbm_core::metrics::MetricsMask;
 use aqpbm_core::TrialMode;
 use aqpbm_datagen::{splitmix64, GeneratedTable, KeyOffset, TableDescription};
-use sketch_bench::params::{seeded_rows, takes_seed, ParamSet};
+use sketch_bench::params::{seeded_rows, ParamSet};
 use sketch_bench::registry::SketchId;
 
 use crate::cli::SketchbenchArgs;
@@ -64,7 +64,7 @@ pub fn check(
              scores values; use fresh",
             row.comparator.unwrap_or("none")
         ),
-        TrialMode::Reseed if !takes_seed(variant, library) => bail!(
+        TrialMode::Reseed if !row.takes_seed => bail!(
             "--trial-mode reseed sets the row's seed field, and {variant}/{library} uses none; \
              the rows that use one are {}",
             seeded_rows().join(", ")
