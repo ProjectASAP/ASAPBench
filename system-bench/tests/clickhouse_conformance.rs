@@ -27,12 +27,16 @@ use common::{
 };
 use serde_json::{json, Value};
 use system_bench::engines_external::clickhouse::translate;
+use system_bench::engines_external::clickhouse_connection::ClickHouseConnection;
 use system_bench::engines_external::clickhouse_server::{ClickHouseEngine, ClickHouseServer};
 use system_bench::engines_external::plan_file::PlanFile;
 
 fn server(max_threads: u32) -> ClickHouseServer {
     ClickHouseServer {
-        url: std::env::var("AQPBM_CLICKHOUSE_URL").expect("AQPBM_CLICKHOUSE_URL"),
+        connection: ClickHouseConnection {
+            url: std::env::var("AQPBM_CLICKHOUSE_URL").expect("AQPBM_CLICKHOUSE_URL"),
+            statement_timeout: Duration::from_secs(600),
+        },
         cgroup: {
             let cgroup_directory = std::env::var("AQPBM_SERVER_CGROUP_DIRECTORY")
                 .expect("AQPBM_SERVER_CGROUP_DIRECTORY")
@@ -47,7 +51,6 @@ fn server(max_threads: u32) -> ClickHouseServer {
             }
         },
         max_threads,
-        statement_timeout: Duration::from_secs(600),
     }
 }
 
@@ -589,7 +592,7 @@ fn storage_and_retention() {
     println!("stored-only footprint {footprint:?}");
 
     let deployment = translate(&PlanFile::from_value(plan).unwrap()).unwrap();
-    let url = server(1).url;
+    let url = server(1).connection.url;
     let http = |sql: &str| {
         ureq::post(&format!("{url}/"))
             .query("database", "conformance_ttl")

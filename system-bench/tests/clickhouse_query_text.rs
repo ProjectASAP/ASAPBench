@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use aqpbm_core::harness::one_shot::{OneShotQueryEngine, ResultValue};
+use system_bench::engines_external::clickhouse_connection::ClickHouseConnection;
 use system_bench::engines_external::clickhouse_query_text::{
     ClickHouseQueryTextEngine, ClickHouseQueryTextServer,
 };
@@ -11,10 +12,12 @@ fn server(
     restart_command: Option<String>,
 ) -> ClickHouseQueryTextServer {
     ClickHouseQueryTextServer {
-        url,
+        connection: ClickHouseConnection {
+            url,
+            statement_timeout: Duration::from_secs(60),
+        },
         database: database.into(),
         max_threads: Some(2),
-        statement_timeout: Duration::from_secs(60),
         restart_command,
         ready_timeout: Duration::from_secs(60),
         idle_timeout: Duration::from_secs(120),

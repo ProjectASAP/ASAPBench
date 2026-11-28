@@ -32,6 +32,7 @@ use system_bench::engines_external::asapquery_backend_server::{
 use system_bench::engines_external::asapquery_precompute_engine_server::{
     AsapqueryPrecomputeEngine, AsapqueryPrecomputeEngineServer,
 };
+use system_bench::engines_external::clickhouse_connection::ClickHouseConnection;
 use system_bench::engines_external::clickhouse_query_text::{
     ClickHouseQueryTextEngine, ClickHouseQueryTextServer,
 };
@@ -313,12 +314,14 @@ fn one_shot_engine(args: &OneShotQueriesArgs) -> Result<Box<dyn OneShotQueryEngi
                 bail!("engine clickhouse needs --clickhouse-url");
             };
             Box::new(ClickHouseQueryTextEngine::new(ClickHouseQueryTextServer {
-                url,
+                connection: ClickHouseConnection {
+                    url,
+                    statement_timeout: std::time::Duration::from_secs(
+                        args.clickhouse_statement_timeout_seconds,
+                    ),
+                },
                 database: args.clickhouse_database.clone(),
                 max_threads: args.clickhouse_max_threads,
-                statement_timeout: std::time::Duration::from_secs(
-                    args.clickhouse_statement_timeout_seconds,
-                ),
                 restart_command: args.clickhouse_restart_command.clone(),
                 ready_timeout: std::time::Duration::from_secs(
                     args.clickhouse_ready_timeout_seconds,
@@ -540,12 +543,14 @@ fn run_engine_cmd(args: RunArgs) -> Result<()> {
                 bail!("engine clickhouse needs --clickhouse-url and --server-cgroup-directory");
             };
             Box::new(ClickHouseEngine::new(ClickHouseServer {
-                url,
+                connection: ClickHouseConnection {
+                    url,
+                    statement_timeout: std::time::Duration::from_secs(
+                        args.clickhouse_statement_timeout_seconds,
+                    ),
+                },
                 cgroup,
                 max_threads: args.clickhouse_max_threads,
-                statement_timeout: std::time::Duration::from_secs(
-                    args.clickhouse_statement_timeout_seconds,
-                ),
             })?)
         }
         "victoriametrics" => {

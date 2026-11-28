@@ -5,15 +5,14 @@ use std::time::{Duration, Instant};
 use aqpbm_core::harness::engine::{EngineDescription, EngineError, SqlDialect};
 use aqpbm_core::harness::one_shot::{OneShotQueryEngine, QueryRun, ResultTable};
 
-use super::clickhouse_server::Http;
+use super::clickhouse_connection::{ClickHouseConnection, Http};
 use super::restart_command::restart_and_wait;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClickHouseQueryTextServer {
-    pub url: String,
+    pub connection: ClickHouseConnection,
     pub database: String,
     pub max_threads: Option<u32>,
-    pub statement_timeout: Duration,
     pub restart_command: Option<String>,
     pub ready_timeout: Duration,
     pub idle_timeout: Duration,
@@ -37,7 +36,7 @@ impl ClickHouseQueryTextEngine {
     pub fn new(
         server: ClickHouseQueryTextServer,
     ) -> Result<ClickHouseQueryTextEngine, EngineError> {
-        let http = Http::new(&server.url, server.statement_timeout);
+        let http = Http::new(&server.connection);
         let mut engine = ClickHouseQueryTextEngine {
             server,
             http,

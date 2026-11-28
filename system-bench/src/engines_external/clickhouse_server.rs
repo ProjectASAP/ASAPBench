@@ -22,7 +22,6 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
 
 use aqpbm_core::harness::cgroup::CgroupSource;
 use aqpbm_core::harness::engine::{
@@ -31,19 +30,17 @@ use aqpbm_core::harness::engine::{
 };
 
 use super::clickhouse::{quoted, translate, SourceTable, INSERT_SETTINGS, SERIES_IDENTITY};
+use super::clickhouse_connection::{ClickHouseConnection, Http};
 use super::plan_file::{PlanFile, PlanOperator, RangeKind};
 
 /// How to reach the server and how to run its queries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClickHouseServer {
-    /// The HTTP interface, e.g. `http://10.0.0.1:8123`.
-    pub url: String,
+    pub connection: ClickHouseConnection,
     /// Where the server's cgroup is read, e.g. over SSH from `bench@10.0.0.1`.
     pub cgroup: CgroupSource,
     /// `max_threads` of every statement (1 for the main figures).
     pub max_threads: u32,
-    /// How long one statement may take before it fails, e.g. 600 s.
-    pub statement_timeout: Duration,
 }
 
 /// A ClickHouse server; see the module docs.
@@ -65,7 +62,7 @@ impl ClickHouseEngine {
     /// database of an earlier run (`bench_*`) is refused: dropping it, or its
     /// background merges, would be charged to this run's measurements.
     pub fn new(server: ClickHouseServer) -> Result<ClickHouseEngine, EngineError> {
-        let http = Http::new(&server.url, server.statement_timeout);
+        let http = Http::new(&server.connection);
         let (leftovers, _) = http.run(
             "SELECT name FROM system.databases WHERE startsWith(name, 'bench_') FORMAT TabSeparated",
             &[],
@@ -585,102 +582,5 @@ fn parse_float(text: &str) -> Option<f64> {
         "inf" | "+inf" => Some(f64::INFINITY),
         "-inf" => Some(f64::NEG_INFINITY),
         _ => text.parse().ok(),
-    }
-}
-
-/// The server's HTTP interface. A statement is the `query` parameter; an
-/// insert's rows are the body.
-#[derive(Clone)]
-pub(crate) struct Http {
-    agent: ureq::Agent,
-    url: String,
-    /// `max_execution_time` of every statement, in whole seconds.
-    max_execution_seconds: String,
-}
-
-/// How long to wait to connect.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-
-impl Http {
-    pub(crate) fn new(url: &str, statement_timeout: Duration) -> Http {
-        Http {
-            // The client waits a little longer than the server lets a
-            // statement run, so the server's own timeout error arrives.
-            agent: ureq::AgentBuilder::new()
-                .timeout_connect(CONNECT_TIMEOUT)
-                .timeout(statement_timeout + Duration::from_secs(5))
-                .build(),
-            url: url.trim_end_matches('/').to_string(),
-            max_execution_seconds: statement_timeout.as_secs().max(1).to_string(),
-        }
-    }
-
-    /// Runs `sql` with the URL parameters `params`; its output and the
-    /// `read_bytes` of its summary header. The statement is the request
-    /// body, except for an insert, whose body is its rows.
-    fn run(
-        &self,
-        sql: &str,
-        params: &[(&str, &str)],
-        insert_rows: Option<&str>,
-    ) -> Result<(String, u64), EngineError> {
-        let (text, summary) = self.run_with_summary(sql, params, insert_rows)?;
-        let read_bytes = summary
-            .get("read_bytes")
-            .and_then(|bytes| bytes.as_str()?.parse().ok())
-            .unwrap_or(0);
-        Ok((text, read_bytes))
-    }
-
-    pub(crate) fn run_with_summary(
-        &self,
-        sql: &str,
-        params: &[(&str, &str)],
-        insert_rows: Option<&str>,
-    ) -> Result<(String, serde_json::Value), EngineError> {
-        // `wait_end_of_query`: the status and the summary header come after
-        // the statement ends, so an error raised mid-answer is a status
-        // error and `read_bytes` is complete.
-        let mut request = self
-            .agent
-            .post(&format!("{}/", self.url))
-            .query("wait_end_of_query", "1")
-            .query("max_execution_time", &self.max_execution_seconds);
-        for (name, value) in params {
-            request = request.query(name, value);
-        }
-        let sent = match insert_rows {
-            Some(rows) => request.query("query", sql).send_string(rows),
-            None => request.send_string(sql),
-        };
-        match sent {
-            Ok(response) => {
-                if let Some(code) = response.header("X-ClickHouse-Exception-Code") {
-                    let code = code.to_string();
-                    let text = response.into_string().unwrap_or_default();
-                    return Err(EngineError(format!(
-                        "ClickHouse exception {code}: {}",
-                        text.trim_end()
-                    )));
-                }
-                let summary = response
-                    .header("X-ClickHouse-Summary")
-                    .and_then(|summary| serde_json::from_str::<serde_json::Value>(summary).ok())
-                    .unwrap_or(serde_json::Value::Null);
-                // `into_string` stops at 10 MB; an answer may be larger.
-                let mut text = String::new();
-                std::io::Read::read_to_string(&mut response.into_reader(), &mut text)
-                    .map_err(|error| EngineError(format!("reading the answer: {error}")))?;
-                Ok((text, summary))
-            }
-            Err(ureq::Error::Status(code, response)) => {
-                let text = response.into_string().unwrap_or_default();
-                Err(EngineError(format!(
-                    "ClickHouse answered {code}: {}",
-                    text.trim_end()
-                )))
-            }
-            Err(error) => Err(EngineError(format!("ClickHouse at {}: {error}", self.url))),
-        }
     }
 }

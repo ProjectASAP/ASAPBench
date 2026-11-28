@@ -17,6 +17,7 @@ use aqpbm_core::harness::engine::{
 };
 use common::{fixture_path, fixture_value, payload_body};
 use serde_json::json;
+use system_bench::engines_external::clickhouse_connection::ClickHouseConnection;
 use system_bench::engines_external::clickhouse_server::{
     series_identity, ClickHouseEngine, ClickHouseServer,
 };
@@ -148,14 +149,16 @@ fn decode(text: &str) -> String {
 
 fn engine(stub: &Stub) -> ClickHouseEngine {
     ClickHouseEngine::new(ClickHouseServer {
-        url: stub.url.clone(),
+        connection: ClickHouseConnection {
+            url: stub.url.clone(),
+            statement_timeout: Duration::from_secs(5),
+        },
         cgroup: CgroupSource::Remote {
             ssh_program: "ssh".into(),
             host: "bench@10.0.0.2".into(),
             cgroup_directory: "/sys/fs/cgroup/system.slice/docker-1.scope".into(),
         },
         max_threads: 1,
-        statement_timeout: Duration::from_secs(5),
     })
     .expect("engine")
 }
@@ -601,14 +604,16 @@ fn a_server_that_never_answers_times_out() {
     });
     let started = std::time::Instant::now();
     let result = ClickHouseEngine::new(ClickHouseServer {
-        url,
+        connection: ClickHouseConnection {
+            url,
+            statement_timeout: Duration::from_secs(1),
+        },
         cgroup: CgroupSource::Remote {
             ssh_program: "ssh".into(),
             host: "bench@10.0.0.2".into(),
             cgroup_directory: "/sys/fs/cgroup/system.slice/docker-1.scope".into(),
         },
         max_threads: 1,
-        statement_timeout: Duration::from_secs(1),
     });
     assert!(result.is_err());
     assert!(started.elapsed() < Duration::from_secs(20));
@@ -664,14 +669,16 @@ fn leftover_databases_are_refused() {
             .then(|| (200, vec![], "bench_1_0\nbench_1_1\n".to_string()))
     })]);
     let error = ClickHouseEngine::new(ClickHouseServer {
-        url: stub.url.clone(),
+        connection: ClickHouseConnection {
+            url: stub.url.clone(),
+            statement_timeout: Duration::from_secs(5),
+        },
         cgroup: CgroupSource::Remote {
             ssh_program: "ssh".into(),
             host: "bench@10.0.0.2".into(),
             cgroup_directory: "/sys/fs/cgroup/system.slice/docker-1.scope".into(),
         },
         max_threads: 1,
-        statement_timeout: Duration::from_secs(5),
     })
     .err()
     .expect("refused");
