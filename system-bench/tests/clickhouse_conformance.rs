@@ -85,9 +85,9 @@ fn workload(plan: &Value, interval_ms: Option<u64>) -> WorkloadSpec {
             .iter()
             .fold(10_000, |a, &b| least_common_multiple(a, b))
     });
-    WorkloadSpec {
-        name: "conformance".into(),
-        queries: texts
+    WorkloadSpec::periodic(
+        "conformance".into(),
+        texts
             .iter()
             .enumerate()
             .map(|(i, text)| WorkloadQuery {
@@ -102,10 +102,8 @@ fn workload(plan: &Value, interval_ms: Option<u64>) -> WorkloadSpec {
                 truth: None,
             })
             .collect(),
-        data: vec![],
-        tables: Vec::new(),
-        one_shot_queries: Vec::new(),
-    }
+        vec![],
+    )
 }
 
 fn install(engine: &ClickHouseEngine, name: &str, plan: &Value) -> Box<dyn InstalledArm> {

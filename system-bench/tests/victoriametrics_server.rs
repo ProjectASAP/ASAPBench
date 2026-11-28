@@ -275,9 +275,9 @@ fn temp_dir(test: &str) -> PathBuf {
 }
 
 fn workload(texts: &[&str], interval_ms: u64) -> WorkloadSpec {
-    WorkloadSpec {
-        name: "u".into(),
-        queries: texts
+    WorkloadSpec::periodic(
+        "u".into(),
+        texts
             .iter()
             .enumerate()
             .map(|(i, text)| WorkloadQuery {
@@ -292,10 +292,8 @@ fn workload(texts: &[&str], interval_ms: u64) -> WorkloadSpec {
                 truth: None,
             })
             .collect(),
-        data: vec![],
-        tables: Vec::new(),
-        one_shot_queries: Vec::new(),
-    }
+        vec![],
+    )
 }
 
 fn arm(dir: &std::path::Path, plan: &serde_json::Value) -> ArmSpec {

@@ -178,13 +178,11 @@ fn median_of_three(values: &[u64]) -> u64 {
 fn step_costs_come_from_the_harness_clock() {
     let engine = FakeEngine::default();
     let clock = engine.clock.clone();
-    let workload = WorkloadSpec {
-        name: "w".into(),
-        queries: vec![sum_query("q", "m", 300)],
-        data: vec![data("m", 4, 250_000)],
-        tables: Vec::new(),
-        one_shot_queries: Vec::new(),
-    };
+    let workload = WorkloadSpec::periodic(
+        "w".into(),
+        vec![sum_query("q", "m", 300)],
+        vec![data("m", 4, 250_000)],
+    );
     let mut installed = engine.install(&workload, &arm()).unwrap();
     let samples = chunk("m", 4, (1..=250).map(|k| k * 1_000));
     assert_eq!(samples.samples.len(), 1_000);
@@ -258,13 +256,11 @@ fn a_harness_run_of_the_fake_is_byte_identical_under_one_seed() {
 fn the_operator_timing_hook_counts_a_shared_node_once() {
     let engine = FakeEngine::default();
     let clock = engine.clock.clone();
-    let workload = WorkloadSpec {
-        name: "w".into(),
-        queries: vec![sum_query("sum_a", "m", 10), sum_query("sum_b", "m", 10)],
-        data: vec![data("m", 2, 30_000)],
-        tables: Vec::new(),
-        one_shot_queries: Vec::new(),
-    };
+    let workload = WorkloadSpec::periodic(
+        "w".into(),
+        vec![sum_query("sum_a", "m", 10), sum_query("sum_b", "m", 10)],
+        vec![data("m", 2, 30_000)],
+    );
     let mut installed = engine.install(&workload, &arm()).unwrap();
 
     let mut evaluate_ns = Vec::new();
@@ -400,13 +396,11 @@ fn consecutive_jobs_share_one_idle_sample() {
 #[test]
 fn a_series_label_named_query_is_kept() {
     let engine = FakeEngine::default();
-    let workload = WorkloadSpec {
-        name: "w".into(),
-        queries: vec![sum_query("q", "m", 10)],
-        data: vec![data("m", 1, 10_000)],
-        tables: Vec::new(),
-        one_shot_queries: Vec::new(),
-    };
+    let workload = WorkloadSpec::periodic(
+        "w".into(),
+        vec![sum_query("q", "m", 10)],
+        vec![data("m", 1, 10_000)],
+    );
     let mut installed = engine.install(&workload, &arm()).unwrap();
     let labels: SeriesLabels = [("__name__", "m"), ("query", "x"), ("s", "s_0")]
         .into_iter()
@@ -434,13 +428,8 @@ fn a_series_label_named_query_is_kept() {
 fn a_workload_without_data_is_refused() {
     let engine = FakeEngine::default();
     let clock = engine.clock.clone();
-    let workload = WorkloadSpec {
-        name: "empty".into(),
-        queries: vec![sum_query("q", "m", 10)],
-        data: Vec::new(),
-        tables: Vec::new(),
-        one_shot_queries: Vec::new(),
-    };
+    let workload =
+        WorkloadSpec::periodic("empty".into(), vec![sum_query("q", "m", 10)], Vec::new());
     let error = run_arm(
         &engine,
         &workload,

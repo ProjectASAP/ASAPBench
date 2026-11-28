@@ -87,6 +87,36 @@ pub struct WorkloadSpec {
     pub one_shot_queries: Vec<OneShotQuery>,
 }
 
+impl WorkloadSpec {
+    pub fn periodic(
+        name: String,
+        queries: Vec<WorkloadQuery>,
+        data: Vec<DataRecord>,
+    ) -> WorkloadSpec {
+        WorkloadSpec {
+            name,
+            queries,
+            data,
+            tables: Vec::new(),
+            one_shot_queries: Vec::new(),
+        }
+    }
+
+    pub fn one_shot(
+        name: String,
+        tables: Vec<TableSource>,
+        one_shot_queries: Vec<OneShotQuery>,
+    ) -> WorkloadSpec {
+        WorkloadSpec {
+            name,
+            queries: Vec::new(),
+            data: Vec::new(),
+            tables,
+            one_shot_queries,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TableSource {

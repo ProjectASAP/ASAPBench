@@ -80,9 +80,9 @@ fn arm(name: &str, plan: &Value) -> ArmSpec {
 /// `interval_ms`, with data from 0 ms supplied by the test.
 fn workload(plan: &Value, interval_ms: u64) -> WorkloadSpec {
     let texts: Vec<String> = serde_json::from_value(plan["query_texts"].clone()).unwrap();
-    WorkloadSpec {
-        name: "conformance".into(),
-        queries: texts
+    WorkloadSpec::periodic(
+        "conformance".into(),
+        texts
             .iter()
             .enumerate()
             .map(|(i, text)| WorkloadQuery {
@@ -97,10 +97,8 @@ fn workload(plan: &Value, interval_ms: u64) -> WorkloadSpec {
                 truth: None,
             })
             .collect(),
-        data: vec![],
-        tables: Vec::new(),
-        one_shot_queries: Vec::new(),
-    }
+        vec![],
+    )
 }
 
 /// A series with `pairs` and a `conformance_run` label unique to this

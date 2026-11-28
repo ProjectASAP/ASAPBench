@@ -47,11 +47,9 @@ fn sql(text: &str) -> QueryText {
 }
 
 fn workload() -> WorkloadSpec {
-    WorkloadSpec {
-        name: "events".into(),
-        queries: Vec::new(),
-        data: Vec::new(),
-        tables: vec![TableSource {
+    WorkloadSpec::one_shot(
+        "events".into(),
+        vec![TableSource {
             name: "events".into(),
             file_name: "events.csv".into(),
             url: None,
@@ -64,7 +62,7 @@ fn workload() -> WorkloadSpec {
                 ],
             }],
         }],
-        one_shot_queries: vec![
+        vec![
             OneShotQuery {
                 id: "total".into(),
                 texts: vec![sql("SELECT SUM(v), COUNT(*) FROM events")],
@@ -81,7 +79,7 @@ fn workload() -> WorkloadSpec {
                 )]),
             },
         ],
-    }
+    )
 }
 
 fn write_workload(run: &Path) {

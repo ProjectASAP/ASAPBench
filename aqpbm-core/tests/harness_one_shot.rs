@@ -106,11 +106,9 @@ fn sql(text: &str, dialect: Option<SqlDialect>) -> QueryText {
 }
 
 fn workload() -> WorkloadSpec {
-    WorkloadSpec {
-        name: "clickbench".into(),
-        queries: Vec::new(),
-        data: Vec::new(),
-        tables: vec![TableSource {
+    WorkloadSpec::one_shot(
+        "clickbench".into(),
+        vec![TableSource {
             name: "hits".into(),
             file_name: "hits.parquet".into(),
             url: None,
@@ -120,7 +118,7 @@ fn workload() -> WorkloadSpec {
                 statements: vec!["INSERT INTO hits SELECT * FROM read_parquet('{file}')".into()],
             }],
         }],
-        one_shot_queries: vec![
+        vec![
             OneShotQuery {
                 id: "1".into(),
                 texts: vec![sql("SELECT COUNT(*) FROM hits", None)],
@@ -146,7 +144,7 @@ fn workload() -> WorkloadSpec {
                 )]),
             },
         ],
-    }
+    )
 }
 
 fn schedule(runs: u32, cold_first_run: bool) -> OneShotSchedule {

@@ -173,9 +173,9 @@ fn arm(plan: &str) -> ArmSpec {
 fn workload_of(plan: &str, interval_ms: u64, start_ms: i64) -> WorkloadSpec {
     let value = fixture_value(plan);
     let texts: Vec<String> = serde_json::from_value(value["query_texts"].clone()).unwrap();
-    WorkloadSpec {
-        name: plan.into(),
-        queries: texts
+    WorkloadSpec::periodic(
+        plan.into(),
+        texts
             .iter()
             .enumerate()
             .map(|(i, text)| WorkloadQuery {
@@ -190,10 +190,8 @@ fn workload_of(plan: &str, interval_ms: u64, start_ms: i64) -> WorkloadSpec {
                 truth: None,
             })
             .collect(),
-        data: vec![data_record(start_ms)],
-        tables: Vec::new(),
-        one_shot_queries: Vec::new(),
-    }
+        vec![data_record(start_ms)],
+    )
 }
 
 fn data_record(start_ms: i64) -> DataRecord {
@@ -731,9 +729,9 @@ fn only_a_bare_selector_keeps_the_metric_name() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("selector.plan.json");
     std::fs::write(&path, plan.to_string()).unwrap();
-    let workload = WorkloadSpec {
-        name: "selector".into(),
-        queries: vec![WorkloadQuery {
+    let workload = WorkloadSpec::periodic(
+        "selector".into(),
+        vec![WorkloadQuery {
             id: "q0".into(),
             texts: vec![QueryText {
                 language: QueryLanguage::PromQl,
@@ -744,10 +742,8 @@ fn only_a_bare_selector_keeps_the_metric_name() {
             evaluation_interval_ms: 60_000,
             truth: None,
         }],
-        data: vec![data_record(0)],
-        tables: Vec::new(),
-        one_shot_queries: Vec::new(),
-    };
+        vec![data_record(0)],
+    );
     let mut selector_arm = arm("sum_over_time_1h_stored_sum");
     selector_arm.engine_options = json!({ "plan_file": path });
     let mut installed = engine(&stub).install(&workload, &selector_arm).unwrap();
