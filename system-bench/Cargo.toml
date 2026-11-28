@@ -8,10 +8,9 @@ description = "System level: runs ASAPPlanner's plans on its executor (feature p
 
 [features]
 default = ["systemeval"]
-systemeval = ["dep:aqpbm-usecase", "dep:clap"]
+systemeval = ["dep:aqpbm-usecase"]
 planeval = [
     "dep:aqpbm-usecase",
-    "dep:clap",
     "dep:asap-planner",
     "dep:asap-executor",
     "dep:asap-types",
@@ -50,7 +49,7 @@ tokio = { version = "1", features = ["rt", "macros"], optional = true }
 aqpbm-core.workspace = true
 aqpbm-usecase = { workspace = true, optional = true }
 anyhow.workspace = true
-clap = { workspace = true, optional = true }
+clap.workspace = true
 serde.workspace = true
 serde_norway.workspace = true
 serde_json.workspace = true

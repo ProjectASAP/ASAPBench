@@ -63,6 +63,7 @@ use aqpbm_core::harness::engine::{
 use serde_json::Value;
 
 use super::plan_file::{PlanFile, PlanOperator, RangeKind, SummaryFamily};
+use super::server_cgroup::ServerCgroupOptions;
 use super::victoriametrics::{
     translate, MetricsQlQuery, StreamAggregation, VictoriaMetricsDeployment,
 };
@@ -70,6 +71,7 @@ use super::NodeId;
 use crate::prometheus_api::query_text_arm::{
     ask_every_query, queries_to_ask, write_chunk, QueryToAsk,
 };
+use aqpbm_core::harness::protocol::Protocol;
 
 /// How to reach the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1065,4 +1067,42 @@ impl VictoriaMetricsConnection {
             Err(error) => Err(EngineError(format!("VictoriaMetrics at {url}: {error}"))),
         }
     }
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct VictoriaMetricsOptions {
+    /// The VictoriaMetrics server's HTTP interface, e.g. `http://10.0.0.1:8428`
+    /// (engine `victoriametrics`).
+    #[arg(long)]
+    pub victoriametrics_url: Option<String>,
+    /// The server's `-streamAggr.config` file on the server host, replaced
+    /// for each arm with a plan file (engine `victoriametrics`).
+    #[arg(long)]
+    pub victoriametrics_stream_aggregation_config: Option<PathBuf>,
+    #[command(flatten)]
+    pub cgroup: ServerCgroupOptions,
+}
+
+pub fn periodic_queries(
+    matches: &clap::ArgMatches,
+    protocol: &Protocol,
+) -> anyhow::Result<Box<dyn EngineUnderTest>> {
+    let options = <VictoriaMetricsOptions as clap::FromArgMatches>::from_arg_matches(matches)?;
+    let (Some(url), Some(cgroup)) = (options.victoriametrics_url, options.cgroup.source()) else {
+        anyhow::bail!(
+            "engine victoriametrics needs --victoriametrics-url and --server-cgroup-directory"
+        );
+    };
+    // Wall-clock data runs one arm at a time.
+    if protocol.warmup_runs != 0 || protocol.measured_runs != 1 {
+        anyhow::bail!("engine victoriametrics runs one arm at a time: pass --warmup 0 --runs 1");
+    }
+    Ok(Box::new(VictoriaMetricsEngine::new(
+        VictoriaMetricsServer {
+            url,
+            cgroup,
+            stream_aggregation_config: options.victoriametrics_stream_aggregation_config,
+            request_timeout: Duration::from_secs(600),
+        },
+    )?))
 }

@@ -196,3 +196,39 @@ impl OneShotQueryEngine for DuckDbEngine {
         })
     }
 }
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct DuckDbOptions {
+    #[arg(long, default_value = "duckdb")]
+    pub duckdb_program: PathBuf,
+    #[command(flatten)]
+    pub database: DuckDbDatabaseOptions,
+    #[arg(long)]
+    pub duckdb_storage_version: Option<String>,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct DuckDbDatabaseOptions {
+    #[arg(long)]
+    pub duckdb_database: Option<PathBuf>,
+    #[arg(long)]
+    pub duckdb_threads: Option<u32>,
+}
+
+impl DuckDbDatabaseOptions {
+    pub fn database(&self, engine: &str) -> anyhow::Result<PathBuf> {
+        self.duckdb_database
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("engine {engine} needs --duckdb-database"))
+    }
+}
+
+pub fn one_shot_queries(matches: &clap::ArgMatches) -> anyhow::Result<Box<dyn OneShotQueryEngine>> {
+    let options = <DuckDbOptions as clap::FromArgMatches>::from_arg_matches(matches)?;
+    Ok(Box::new(DuckDbEngine::new(DuckDbCommandLine {
+        program: options.duckdb_program,
+        database: options.database.database("duckdb")?,
+        threads: options.database.duckdb_threads,
+        storage_version: options.duckdb_storage_version,
+    })?))
+}

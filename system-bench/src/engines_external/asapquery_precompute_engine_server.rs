@@ -223,3 +223,38 @@ impl SampleWriter for RemoteWriteSampleWriter {
         }
     }
 }
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct AsapqueryPrecomputeEngineOptions {
+    #[arg(long)]
+    pub asapquery_precompute_engine_url: Option<String>,
+    #[arg(long)]
+    pub asapquery_precompute_engine_streaming_config: Option<PathBuf>,
+    #[arg(long = "server-pid")]
+    pub server_pids: Vec<u32>,
+    #[arg(long, default_value = "unreported")]
+    pub server_version: String,
+    #[arg(long, default_value_t = 60)]
+    pub request_timeout_seconds: u64,
+}
+
+pub fn write_throughput(matches: &clap::ArgMatches) -> anyhow::Result<Box<dyn EngineUnderTest>> {
+    let options =
+        <AsapqueryPrecomputeEngineOptions as clap::FromArgMatches>::from_arg_matches(matches)?;
+    let (Some(url), Some(streaming_config), false) = (
+        options.asapquery_precompute_engine_url,
+        options.asapquery_precompute_engine_streaming_config,
+        options.server_pids.is_empty(),
+    ) else {
+        anyhow::bail!("engine asapquery-precompute-engine needs --asapquery-precompute-engine-url, --asapquery-precompute-engine-streaming-config and --server-pid");
+    };
+    Ok(Box::new(AsapqueryPrecomputeEngine::new(
+        AsapqueryPrecomputeEngineServer {
+            url,
+            pids: options.server_pids,
+            streaming_config,
+            version: options.server_version,
+            request_timeout: Duration::from_secs(options.request_timeout_seconds),
+        },
+    )?))
+}

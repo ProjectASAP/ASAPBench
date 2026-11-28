@@ -108,3 +108,23 @@ impl Http {
         }
     }
 }
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct ClickHouseConnectionOptions {
+    /// The ClickHouse server's HTTP interface, e.g. `http://10.0.0.1:8123`
+    /// (engine `clickhouse`).
+    #[arg(long)]
+    pub clickhouse_url: Option<String>,
+    /// How long one ClickHouse statement may run, in seconds.
+    #[arg(long, default_value_t = 600)]
+    pub clickhouse_statement_timeout_seconds: u64,
+}
+
+impl ClickHouseConnectionOptions {
+    pub fn connection(&self) -> Option<ClickHouseConnection> {
+        Some(ClickHouseConnection {
+            url: self.clickhouse_url.clone()?,
+            statement_timeout: Duration::from_secs(self.clickhouse_statement_timeout_seconds),
+        })
+    }
+}

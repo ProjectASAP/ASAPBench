@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use aqpbm_core::harness::engine::{EngineDescription, EngineError, SqlDialect};
 use aqpbm_core::harness::one_shot::{OneShotQueryEngine, QueryRun, ResultTable};
 
+use super::clickhouse_connection::ClickHouseConnectionOptions;
 use super::clickhouse_connection::{ClickHouseConnection, Http};
 use super::restart_command::restart_and_wait;
 
@@ -229,4 +230,40 @@ impl OneShotQueryEngine for ClickHouseQueryTextEngine {
         let query_id = self.last_query_id.take()?;
         self.query_cpu_seconds(&query_id)
     }
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct ClickHouseQueryTextOptions {
+    #[command(flatten)]
+    pub connection: ClickHouseConnectionOptions,
+    #[arg(long, default_value = "default")]
+    pub clickhouse_database: String,
+    #[arg(long)]
+    pub clickhouse_max_threads: Option<u32>,
+    #[arg(long)]
+    pub clickhouse_restart_command: Option<String>,
+    #[arg(long, default_value_t = 120)]
+    pub clickhouse_ready_timeout_seconds: u64,
+    #[arg(long, default_value_t = 3600)]
+    pub clickhouse_idle_timeout_seconds: u64,
+    #[arg(long = "clickhouse-setting", value_parser = super::parse_setting)]
+    pub clickhouse_settings: Vec<(String, String)>,
+}
+
+pub fn one_shot_queries(matches: &clap::ArgMatches) -> anyhow::Result<Box<dyn OneShotQueryEngine>> {
+    let options = <ClickHouseQueryTextOptions as clap::FromArgMatches>::from_arg_matches(matches)?;
+    let Some(connection) = options.connection.connection() else {
+        anyhow::bail!("engine clickhouse needs --clickhouse-url");
+    };
+    Ok(Box::new(ClickHouseQueryTextEngine::new(
+        ClickHouseQueryTextServer {
+            connection,
+            database: options.clickhouse_database,
+            max_threads: options.clickhouse_max_threads,
+            restart_command: options.clickhouse_restart_command,
+            ready_timeout: Duration::from_secs(options.clickhouse_ready_timeout_seconds),
+            idle_timeout: Duration::from_secs(options.clickhouse_idle_timeout_seconds),
+            settings: options.clickhouse_settings,
+        },
+    )?))
 }

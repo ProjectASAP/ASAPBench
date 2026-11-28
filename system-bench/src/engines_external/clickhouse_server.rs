@@ -30,8 +30,11 @@ use aqpbm_core::harness::engine::{
 };
 
 use super::clickhouse::{quoted, translate, SourceTable, INSERT_SETTINGS, SERIES_IDENTITY};
+use super::clickhouse_connection::ClickHouseConnectionOptions;
 use super::clickhouse_connection::{ClickHouseConnection, Http};
 use super::plan_file::{PlanFile, PlanOperator, RangeKind};
+use super::server_cgroup::ServerCgroupOptions;
+use aqpbm_core::harness::protocol::Protocol;
 
 /// How to reach the server and how to run its queries.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -583,4 +586,32 @@ fn parse_float(text: &str) -> Option<f64> {
         "-inf" => Some(f64::NEG_INFINITY),
         _ => text.parse().ok(),
     }
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct ClickHouseServerOptions {
+    #[command(flatten)]
+    pub connection: ClickHouseConnectionOptions,
+    #[command(flatten)]
+    pub cgroup: ServerCgroupOptions,
+    /// `max_threads` of every ClickHouse statement; 1 for the main figures.
+    #[arg(long, default_value_t = 1)]
+    pub clickhouse_max_threads: u32,
+}
+
+pub fn periodic_queries(
+    matches: &clap::ArgMatches,
+    _: &Protocol,
+) -> anyhow::Result<Box<dyn EngineUnderTest>> {
+    let options = <ClickHouseServerOptions as clap::FromArgMatches>::from_arg_matches(matches)?;
+    let (Some(connection), Some(cgroup)) =
+        (options.connection.connection(), options.cgroup.source())
+    else {
+        anyhow::bail!("engine clickhouse needs --clickhouse-url and --server-cgroup-directory");
+    };
+    Ok(Box::new(ClickHouseEngine::new(ClickHouseServer {
+        connection,
+        cgroup,
+        max_threads: options.clickhouse_max_threads,
+    })?))
 }
