@@ -53,7 +53,7 @@ impl OneShotQueryEngine for ScriptedEngine {
         }
     }
     fn dialect(&self) -> SqlDialect {
-        SqlDialect::DuckDb
+        SqlDialect::new("DuckDb")
     }
     fn table_rows(&mut self, _table: &str) -> Result<Option<u64>, EngineError> {
         Ok(self.rows)
@@ -114,7 +114,7 @@ fn workload() -> WorkloadSpec {
             url: None,
             rows: 10,
             load_statements: vec![LoadStatements {
-                dialect: SqlDialect::DuckDb,
+                dialect: SqlDialect::new("DuckDb"),
                 statements: vec!["INSERT INTO hits SELECT * FROM read_parquet('{file}')".into()],
             }],
         }],
@@ -127,11 +127,11 @@ fn workload() -> WorkloadSpec {
             },
             OneShotQuery {
                 id: "2".into(),
-                texts: vec![sql("SELECT 2", Some(SqlDialect::ClickHouse))],
+                texts: vec![sql("SELECT 2", Some(SqlDialect::new("ClickHouse")))],
                 group_by_column_positions: Vec::new(),
                 variants: BTreeMap::from([(
                     "approximate".to_string(),
-                    vec![sql("SELECT 2.0", Some(SqlDialect::ClickHouse))],
+                    vec![sql("SELECT 2.0", Some(SqlDialect::new("ClickHouse")))],
                 )]),
             },
             OneShotQuery {

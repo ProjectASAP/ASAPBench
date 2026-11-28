@@ -9,6 +9,8 @@ use aqpbm_core::harness::one_shot::{OneShotQueryEngine, QueryRun, ResultTable};
 
 use super::restart_command::restart_and_wait;
 
+pub const DIALECT: &str = "PostgreSql";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PostgreSqlCommandLine {
     pub program: PathBuf,
@@ -188,7 +190,7 @@ impl OneShotQueryEngine for PostgreSqlEngine {
     }
 
     fn dialect(&self) -> SqlDialect {
-        SqlDialect::PostgreSql
+        SqlDialect::new(DIALECT)
     }
 
     fn configuration(&self) -> serde_json::Value {

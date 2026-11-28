@@ -35,21 +35,27 @@ fn a_query_picks_its_dialect_then_plain_sql() {
                 dialect: None,
             },
             sql("SELECT 1", None),
-            sql("SELECT 2", Some(SqlDialect::ClickHouse)),
+            sql("SELECT 2", Some(SqlDialect::new("ClickHouse"))),
         ],
         group_by_column_positions: Vec::new(),
         variants: BTreeMap::new(),
     };
     assert_eq!(
-        query.sql_for(SqlDialect::ClickHouse, None),
+        query.sql_for(&SqlDialect::new("ClickHouse"), None),
         Some("SELECT 2")
     );
-    assert_eq!(query.sql_for(SqlDialect::DuckDb, None), Some("SELECT 1"));
+    assert_eq!(
+        query.sql_for(&SqlDialect::new("DuckDb"), None),
+        Some("SELECT 1")
+    );
     let only_clickhouse = OneShotQuery {
-        texts: vec![sql("SELECT 2", Some(SqlDialect::ClickHouse))],
+        texts: vec![sql("SELECT 2", Some(SqlDialect::new("ClickHouse")))],
         ..query
     };
-    assert_eq!(only_clickhouse.sql_for(SqlDialect::DuckDb, None), None);
+    assert_eq!(
+        only_clickhouse.sql_for(&SqlDialect::new("DuckDb"), None),
+        None
+    );
 }
 
 #[test]
@@ -63,15 +69,21 @@ fn a_variant_picks_only_its_own_texts() {
     )
     .unwrap();
     assert_eq!(
-        query.sql_for(SqlDialect::PostgreSql, Some("approximate")),
+        query.sql_for(&SqlDialect::new("PostgreSql"), Some("approximate")),
         Some("SELECT distinct_count(approx_count_distinct(u)) FROM t")
     );
     assert_eq!(
-        query.sql_for(SqlDialect::PostgreSql, None),
+        query.sql_for(&SqlDialect::new("PostgreSql"), None),
         Some("SELECT COUNT(DISTINCT u) FROM t")
     );
-    assert_eq!(query.sql_for(SqlDialect::DuckDb, Some("approximate")), None);
-    assert_eq!(query.sql_for(SqlDialect::PostgreSql, Some("sampled")), None);
+    assert_eq!(
+        query.sql_for(&SqlDialect::new("DuckDb"), Some("approximate")),
+        None
+    );
+    assert_eq!(
+        query.sql_for(&SqlDialect::new("PostgreSql"), Some("sampled")),
+        None
+    );
     let text = serde_json::to_string(&OneShotQuery {
         variants: BTreeMap::new(),
         ..query
@@ -88,7 +100,7 @@ fn load_statements_name_the_file() {
         url: None,
         rows: 3,
         load_statements: vec![LoadStatements {
-            dialect: SqlDialect::DuckDb,
+            dialect: SqlDialect::new("DuckDb"),
             statements: vec![
                 "CREATE TABLE hits (a INT)".into(),
                 "INSERT INTO hits SELECT * FROM read_parquet('{file}')".into(),
@@ -96,14 +108,17 @@ fn load_statements_name_the_file() {
         }],
     };
     assert_eq!(
-        table.statements_for(SqlDialect::DuckDb, Path::new("/data/hits.parquet")),
+        table.statements_for(&SqlDialect::new("DuckDb"), Path::new("/data/hits.parquet")),
         Some(vec![
             "CREATE TABLE hits (a INT)".to_string(),
             "INSERT INTO hits SELECT * FROM read_parquet('/data/hits.parquet')".to_string(),
         ])
     );
     assert_eq!(
-        table.statements_for(SqlDialect::ClickHouse, Path::new("/data/hits.parquet")),
+        table.statements_for(
+            &SqlDialect::new("ClickHouse"),
+            Path::new("/data/hits.parquet")
+        ),
         None
     );
 }

@@ -5,6 +5,8 @@ use std::process::Command;
 use aqpbm_core::harness::engine::{EngineDescription, EngineError, SqlDialect};
 use aqpbm_core::harness::one_shot::{OneShotQueryEngine, QueryRun, ResultTable};
 
+pub const DIALECT: &str = "DuckDb";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DuckDbCommandLine {
     pub program: PathBuf,
@@ -144,7 +146,7 @@ impl OneShotQueryEngine for DuckDbEngine {
     }
 
     fn dialect(&self) -> SqlDialect {
-        SqlDialect::DuckDb
+        SqlDialect::new(DIALECT)
     }
 
     fn configuration(&self) -> serde_json::Value {

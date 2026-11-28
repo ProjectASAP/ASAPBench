@@ -142,6 +142,33 @@ pub fn read_workloads(
     Ok(workloads)
 }
 
+pub fn check_dialects(
+    run_directory: &RunDirectory,
+    workloads: &BTreeMap<String, WorkloadSpec>,
+    known: &[&str],
+) -> Result<(), BenchmarkExternalError> {
+    for (name, workload) in workloads {
+        if let Some(unknown) = workload
+            .dialects()
+            .find(|dialect| !known.contains(&dialect.name()))
+        {
+            let expected: Vec<String> = known.iter().map(|name| format!("`{name}`")).collect();
+            return Err(BenchmarkExternalError::Json {
+                path: run_directory
+                    .path()
+                    .join("workloads")
+                    .join(format!("{name}.json")),
+                message: format!(
+                    "unknown variant `{}`, expected one of {}",
+                    unknown.name(),
+                    expected.join(", ")
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// The variants under `plans/`, each with one entry per workload.
 pub fn read_variants(
     run_directory: &RunDirectory,

@@ -4,14 +4,16 @@
 //! Example: `approxbench benchmark-external run --run-directory R --engine fake`, then
 //! `approxbench benchmark-external report --run-directory R --truth fake/v1`.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use anyhow::{bail, Result};
 use aqpbm_core::harness::benchmark_external::{
-    read_workloads, report, run_engine, write_report, EngineRunSetup, ReportTruth,
+    check_dialects, read_workloads, report, run_engine, write_report, EngineRunSetup, ReportTruth,
 };
 use aqpbm_core::harness::cpu_frequency::{governors, HeldGovernor, LINUX_CPU_ROOT};
 use aqpbm_core::harness::engine::ArmSpec;
+use aqpbm_core::harness::engine::WorkloadSpec;
 use aqpbm_core::harness::one_shot::{
     run_one_shot_queries, OneShotSchedule, OneShotSetup, LINUX_DROP_CACHES,
 };
@@ -173,7 +175,7 @@ pub fn run(args: BenchmarkExternalArgs) -> Result<()> {
 
 fn one_shot_queries_cmd(args: OneShotQueriesArgs) -> Result<()> {
     let run_directory = RunDirectory::open(&args.run_directory)?;
-    let mut workloads = read_workloads(&run_directory)?;
+    let mut workloads = workloads(&run_directory)?;
     let Some(workload) = workloads.remove(&args.workload) else {
         bail!(
             "no workload {} under workloads/; known workloads: {}",
@@ -258,7 +260,7 @@ fn write_throughput_cmd(args: WriteThroughputArgs) -> Result<()> {
     };
     let engine = (system.build)(&args.systems.matches)?;
     let run_directory = RunDirectory::open(&args.run_directory)?;
-    let mut workloads = read_workloads(&run_directory)?;
+    let mut workloads = workloads(&run_directory)?;
     let Some(workload) = workloads.remove(&args.workload) else {
         bail!(
             "no workload {} under workloads/; known workloads: {}",
@@ -323,6 +325,7 @@ fn run_engine_cmd(args: RunArgs) -> Result<()> {
     // The idle check watches the server's cores for an external server, the
     // harness core for an in-process engine.
     let mut probe = load_probe_for(&engine.cpu_accounting(), &ProcessCpuFiles::os())?;
+    workloads(&run_directory)?;
     let only = (!args.variants.is_empty()).then_some(args.variants.as_slice());
     let cells = run_engine(
         &run_directory,
@@ -345,8 +348,17 @@ fn run_engine_cmd(args: RunArgs) -> Result<()> {
 fn report_cmd(args: ReportArgs) -> Result<()> {
     let truth = ReportTruth::parse(&args.truth).map_err(anyhow::Error::msg)?;
     let run_directory = RunDirectory::open(&args.run_directory)?;
+    if truth == ReportTruth::Declared {
+        workloads(&run_directory)?;
+    }
     let report = report(&run_directory, &truth)?;
     write_report(&run_directory, &report)?;
     print!("{}", report.summary_markdown());
     Ok(())
+}
+
+fn workloads(run_directory: &RunDirectory) -> Result<BTreeMap<String, WorkloadSpec>> {
+    let workloads = read_workloads(run_directory)?;
+    check_dialects(run_directory, &workloads, &registry::dialects())?;
+    Ok(workloads)
 }

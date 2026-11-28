@@ -115,6 +115,23 @@ impl WorkloadSpec {
             one_shot_queries,
         }
     }
+
+    pub fn dialects(&self) -> impl Iterator<Item = &SqlDialect> {
+        let periodic = self.queries.iter().flat_map(|query| &query.texts);
+        let one_shot = self
+            .one_shot_queries
+            .iter()
+            .flat_map(|query| query.texts.iter().chain(query.variants.values().flatten()));
+        periodic
+            .chain(one_shot)
+            .filter_map(|text| text.dialect.as_ref())
+            .chain(
+                self.tables
+                    .iter()
+                    .flat_map(|table| &table.load_statements)
+                    .map(|load| &load.dialect),
+            )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -138,13 +155,13 @@ pub struct LoadStatements {
 impl TableSource {
     pub fn statements_for(
         &self,
-        dialect: SqlDialect,
+        dialect: &SqlDialect,
         file: &std::path::Path,
     ) -> Option<Vec<String>> {
         let file = file.to_string_lossy();
         self.load_statements
             .iter()
-            .find(|load| load.dialect == dialect)
+            .find(|load| &load.dialect == dialect)
             .map(|load| {
                 load.statements
                     .iter()
@@ -166,15 +183,15 @@ pub struct OneShotQuery {
 }
 
 impl OneShotQuery {
-    pub fn sql_for(&self, dialect: SqlDialect, variant: Option<&str>) -> Option<&str> {
+    pub fn sql_for(&self, dialect: &SqlDialect, variant: Option<&str>) -> Option<&str> {
         let texts = match variant {
             Some(variant) => self.variants.get(variant)?,
             None => &self.texts,
         };
-        let sql = |wanted: Option<SqlDialect>| {
+        let sql = |wanted: Option<&SqlDialect>| {
             texts
                 .iter()
-                .find(|text| text.language == QueryLanguage::Sql && text.dialect == wanted)
+                .find(|text| text.language == QueryLanguage::Sql && text.dialect.as_ref() == wanted)
         };
         sql(Some(dialect))
             .or_else(|| sql(None))
@@ -205,12 +222,24 @@ pub struct QueryText {
     pub dialect: Option<SqlDialect>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub enum SqlDialect {
-    ClickHouse,
-    DuckDb,
-    PostgreSql,
-    Druid,
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SqlDialect(String);
+
+impl SqlDialect {
+    pub fn new(name: &str) -> SqlDialect {
+        SqlDialect(name.to_string())
+    }
+
+    pub fn name(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for SqlDialect {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

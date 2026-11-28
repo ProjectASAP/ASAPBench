@@ -161,7 +161,7 @@ impl OneShotQueryEngine for PilotDbEngine {
     }
 
     fn dialect(&self) -> SqlDialect {
-        SqlDialect::DuckDb
+        SqlDialect::new(super::duckdb_command_line::DIALECT)
     }
 
     fn configuration(&self) -> serde_json::Value {

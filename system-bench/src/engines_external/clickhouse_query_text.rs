@@ -9,6 +9,8 @@ use super::clickhouse_connection::ClickHouseConnectionOptions;
 use super::clickhouse_connection::{ClickHouseConnection, Http};
 use super::restart_command::restart_and_wait;
 
+pub const DIALECT: &str = "ClickHouse";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClickHouseQueryTextServer {
     pub connection: ClickHouseConnection,
@@ -144,7 +146,7 @@ impl OneShotQueryEngine for ClickHouseQueryTextEngine {
     }
 
     fn dialect(&self) -> SqlDialect {
-        SqlDialect::ClickHouse
+        SqlDialect::new(DIALECT)
     }
 
     fn configuration(&self) -> serde_json::Value {

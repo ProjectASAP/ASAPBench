@@ -7,6 +7,8 @@ use serde_json::{json, Map, Value};
 
 use super::restart_command::restart_and_wait;
 
+pub const DIALECT: &str = "Druid";
+
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq)]
@@ -280,7 +282,7 @@ impl OneShotQueryEngine for DruidEngine {
     }
 
     fn dialect(&self) -> SqlDialect {
-        SqlDialect::Druid
+        SqlDialect::new(DIALECT)
     }
 
     fn configuration(&self) -> Value {

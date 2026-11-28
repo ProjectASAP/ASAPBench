@@ -372,10 +372,10 @@ pub fn run_one_shot_queries(
                         path: file,
                     });
                 }
-                let statements = table.statements_for(dialect, &file).ok_or_else(|| {
+                let statements = table.statements_for(&dialect, &file).ok_or_else(|| {
                     OneShotError::NoLoadStatements {
                         table: table.name.clone(),
-                        dialect,
+                        dialect: dialect.clone(),
                     }
                 })?;
                 progress(&format!("loading {} from {}", table.name, file.display()));
@@ -410,7 +410,7 @@ pub fn run_one_shot_queries(
         if variant.is_some_and(|variant| !query.variants.contains_key(variant)) {
             continue;
         }
-        let Some(sql) = query.sql_for(dialect, variant) else {
+        let Some(sql) = query.sql_for(&dialect, variant) else {
             queries.push(QueryRecord {
                 id: query.id.clone(),
                 group_by_column_positions: query.group_by_column_positions.clone(),

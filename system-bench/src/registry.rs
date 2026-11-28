@@ -37,6 +37,7 @@ pub struct WriteThroughput {
 }
 
 pub struct OneShotQueries {
+    pub dialect: &'static str,
     pub options: fn(Command) -> Command,
     pub build: fn(&ArgMatches) -> Result<Box<dyn OneShotQueryEngine>>,
 }
@@ -56,6 +57,7 @@ pub const SYSTEMS: &[System] = &[
         periodic_queries: None,
         write_throughput: None,
         one_shot_queries: Some(OneShotQueries {
+            dialect: duckdb_command_line::DIALECT,
             options: DuckDbOptions::augment_args,
             build: duckdb_command_line::one_shot_queries,
         }),
@@ -68,6 +70,7 @@ pub const SYSTEMS: &[System] = &[
         }),
         write_throughput: None,
         one_shot_queries: Some(OneShotQueries {
+            dialect: clickhouse_query_text::DIALECT,
             options: ClickHouseQueryTextOptions::augment_args,
             build: clickhouse_query_text::one_shot_queries,
         }),
@@ -104,6 +107,7 @@ pub const SYSTEMS: &[System] = &[
         periodic_queries: None,
         write_throughput: None,
         one_shot_queries: Some(OneShotQueries {
+            dialect: duckdb_command_line::DIALECT,
             options: PilotDbOptions::augment_args,
             build: pilotdb::one_shot_queries,
         }),
@@ -113,6 +117,7 @@ pub const SYSTEMS: &[System] = &[
         periodic_queries: None,
         write_throughput: None,
         one_shot_queries: Some(OneShotQueries {
+            dialect: postgresql_command_line::DIALECT,
             options: PostgreSqlOptions::augment_args,
             build: postgresql_command_line::one_shot_queries,
         }),
@@ -122,6 +127,7 @@ pub const SYSTEMS: &[System] = &[
         periodic_queries: None,
         write_throughput: None,
         one_shot_queries: Some(OneShotQueries {
+            dialect: druid_sql::DIALECT,
             options: DruidOptions::augment_args,
             build: druid_sql::one_shot_queries,
         }),
@@ -166,6 +172,16 @@ pub fn names<M: Measurement>() -> Vec<&'static str> {
         .filter(|system| M::of(system).is_some())
         .map(|system| system.name)
         .collect()
+}
+
+pub fn dialects() -> Vec<&'static str> {
+    let mut dialects: Vec<&'static str> = Vec::new();
+    for measurement in SYSTEMS.iter().filter_map(OneShotQueries::of) {
+        if !dialects.contains(&measurement.dialect) {
+            dialects.push(measurement.dialect);
+        }
+    }
+    dialects
 }
 
 pub fn find<M: Measurement>(name: &str) -> Option<&'static M> {
